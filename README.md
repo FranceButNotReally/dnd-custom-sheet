@@ -1,32 +1,15 @@
-# D&D 2024 Character Sheet PWA
+# D&D 2024 5etools Character Sheet PWA
 
-Tablet-first Progressive Web App using 5etools data cached locally on the device.
+Tablet-first D&D 2024 character builder and sheet backed by versioned 5etools data.
 
 ## Deployment
 
-Deploy the repository with GitHub Pages using `.github/workflows/pages.yml`.
+This is a static PWA intended for GitHub Pages. Keep `.github/workflows/pages.yml` unchanged and deploy from the `main` branch.
 
-## Rules data
+## Data
 
-The app checks the latest `5etools-mirror-3/5etools-src` release, discovers official 2024-era player-facing sources, downloads the relevant JSON data, and caches it locally. Character state is stored separately in IndexedDB.
+The app checks the latest 5etools release, loads the official 2024/revised player-relevant data it can identify, and caches that data locally. Character data is stored separately so rules-data updates do not overwrite characters.
 
-The app does not require your PC, a home server, or a persistent network connection during play after the rules data has been synchronized.
+## Current build
 
-## Character data
-
-Character state is independent from rules data. It includes ability scores, feat choices, proficiencies, languages, equipment, spell selections, resources, current HP, and other play-state fields.
-
-Characters can be exported/imported as JSON backups.
-
-## 0.11.0 highlights
-
-- Fixed Unarmored Defense and added an explicit AC breakdown.
-- Fixed automatic maximum HP handling/display.
-- Added language/tool choice slots.
-- Added general feat progression support.
-- Added structured starting-equipment choices.
-- Added Weapon Mastery selection.
-- Improved weapon attack and damage calculations.
-- Added class-feature, subclass-feature, and optional-feature inline references.
-- Fixed `Concentration`/`Advantage`-style 5etools reference labels.
-- Fixed known-spell progression.
+Version 0.14.0
