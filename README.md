@@ -16,7 +16,7 @@ After the first successful data sync, the sheet is usable without the internet. 
 
 ## 5etools data
 
-The app checks the latest public 5etools release through GitHub's Releases API. It then downloads the 2024 `XPHB` indexes and data it needs directly from the corresponding version tag on GitHub.
+The app checks the latest public 5etools release through GitHub's Releases API. It discovers official 2024-era sources from `books.json` and 2024 entity markers, then downloads the player-facing data it needs directly from the corresponding version tag on GitHub. New official sources added to 5etools are therefore picked up automatically on the next data sync.
 
 The **Update data** button always performs a fresh release check. Passive checks happen at most once every six hours. Cached rules data is versioned, and old versions are cleaned up after a successful update.
 
@@ -28,16 +28,17 @@ Characters can be exported/imported as JSON for backup or transfer between devic
 
 ## Current scope
 
-- 2024 XPHB classes, subclasses, species, backgrounds, origin feats, spells, and items
+- All official 2024-era player-facing sources represented in 5etools, not only `XPHB`
+- 2024 classes, subclasses, species, backgrounds, origin feats, spells, languages, and items
 - Multiple characters stored on the tablet
-- Builder for identity, class/subclass, species, background, ability scores, background ability choices, skills, origin feat, and combat overrides
+- Builder for identity, class/subclass, species, background, ability scores, background ability choices, skills, expertise, origin feat, proficiencies/languages, and combat overrides
 - Automatic proficiency bonus, saving throws, skill bonuses, HP, AC, speed, spell DC, spell attack, cantrips, prepared-spell capacity, and spell-slot progression
 - Class/subclass feature references resolved from 5etools data
 - Prepared spells, spellbook/added spells, spell reference modals, and filters
-- 2024 XPHB equipment picker and item reference data
+- 2024 official equipment picker and item reference data
 - HP controls, spell slots, hit dice, death saves, conditions, resources, notes, short/long rest controls
 - Offline service-worker shell plus IndexedDB rules/character storage
 
 ## Data source
 
-`5etools-mirror-3/5etools-src` · source `XPHB`
+`5etools-mirror-3/5etools-src` · official 2024-era source set discovered dynamically from 5etools metadata

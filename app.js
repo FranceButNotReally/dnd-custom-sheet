@@ -2,13 +2,17 @@ const REPO = "5etools-mirror-3/5etools-src";
 const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest`;
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
-const APP_VERSION = "0.4.0";
+const CORE_2024_DATE = "2024-09-17";
+const APP_VERSION = "0.5.2";
 
 const PATHS = {
+  books: "data/books.json",
   classIndex: "data/class/index.json",
   races: "data/races.json",
   backgrounds: "data/backgrounds.json",
   feats: "data/feats.json",
+  languages: "data/languages.json",
+  optionalfeatures: "data/optionalfeatures.json",
   spellIndex: "data/spells/index.json",
   items: "data/items.json",
 };
@@ -48,10 +52,11 @@ const state = {
   version: null,
   lastSync: null,
   lastReleaseCheck: null,
-  data: { classIndex: null, races: null, backgrounds: null, feats: null, spells: null, items: null, classFiles: new Map() },
+  data: { books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null, optionalfeatures: null, spells: null, items: null, classFiles: new Map(), officialSources: new Set(), sourceMeta: [] },
   character: null,
   deferredInstallPrompt: null,
   spellPickerTab: "prepared",
+  sheetPage: 1,
   lastDerived: null,
 };
 
@@ -61,7 +66,7 @@ let dbPromise;
 
 function emptyCharacter() {
   return {
-    schema: 2,
+    schema: 4,
     id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     name: "New Character",
     player: "",
@@ -71,10 +76,16 @@ function emptyCharacter() {
     species: null,
     background: null,
     feat: null,
-    stats: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
+    baseStats: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
+    manualAbilityBonuses: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 },
     classSkillChoices: [],
     customSkillProficiencies: [],
     expertise: [],
+    manualWeaponProficiencies: [],
+    manualArmorProficiencies: [],
+    manualToolProficiencies: [],
+    manualLanguages: [],
+    languageChoices: [],
     backgroundAbility: { plus2: null, plus1: null },
     hpCurrent: null,
     hpAuto: true,
@@ -102,8 +113,9 @@ function migrateCharacter(raw) {
   const base = emptyCharacter();
   if (!raw || typeof raw !== "object") return base;
   const c = { ...base, ...raw };
-  c.schema = 2;
-  c.stats = { ...base.stats, ...(raw.stats || {}) };
+  c.schema = 4;
+  c.baseStats = { ...base.baseStats, ...(raw.baseStats || raw.stats || {}) };
+  c.manualAbilityBonuses = { ...base.manualAbilityBonuses, ...(raw.manualAbilityBonuses || {}) };
   c.deathSaves = { ...base.deathSaves, ...(raw.deathSaves || {}) };
   c.currency = { ...base.currency, ...(raw.currency || {}) };
   c.backgroundAbility = { ...base.backgroundAbility, ...(raw.backgroundAbility || {}) };
@@ -112,6 +124,11 @@ function migrateCharacter(raw) {
     ? raw.customSkillProficiencies
     : (Array.isArray(raw.skillProficiencies) ? raw.skillProficiencies : []);
   c.expertise = Array.isArray(raw.expertise) ? raw.expertise : [];
+  c.manualWeaponProficiencies = Array.isArray(raw.manualWeaponProficiencies) ? raw.manualWeaponProficiencies : [];
+  c.manualArmorProficiencies = Array.isArray(raw.manualArmorProficiencies) ? raw.manualArmorProficiencies : [];
+  c.manualToolProficiencies = Array.isArray(raw.manualToolProficiencies) ? raw.manualToolProficiencies : [];
+  c.manualLanguages = Array.isArray(raw.manualLanguages) ? raw.manualLanguages : [];
+  c.languageChoices = Array.isArray(raw.languageChoices) ? raw.languageChoices : [];
   c.conditions = Array.isArray(raw.conditions) ? raw.conditions : [];
   c.spellbook = Array.isArray(raw.spellbook) ? raw.spellbook : [];
   c.knownSpells = Array.isArray(raw.knownSpells) ? raw.knownSpells : [];
@@ -120,6 +137,9 @@ function migrateCharacter(raw) {
   c.inventory = Array.isArray(raw.inventory) ? raw.inventory : [];
   c.resources = Array.isArray(raw.resources) ? raw.resources : [];
   c.attacks = Array.isArray(raw.attacks) ? raw.attacks : [];
+  c.heroicInspiration = Boolean(raw.heroicInspiration);
+  c.exhaustion = clamp(Number(raw.exhaustion || 0), 0, 6);
+  c.concentration = raw.concentration ? String(raw.concentration) : null;
   if (raw.hpCurrent == null && raw.hp != null) c.hpCurrent = raw.hp;
   if (raw.acOverride == null && raw.ac != null) c.acOverride = raw.ac;
   if (raw.speedOverride == null && raw.speed != null) c.speedOverride = raw.speed;
@@ -299,22 +319,77 @@ async function fetch5eData(version, path) {
   return json;
 }
 
-function xphbEntries(json, prop) {
-  return Array.isArray(json?.[prop]) ? json[prop].filter(x => x && x.source === DATA_SOURCE) : [];
+function sourceLabel(source) {
+  return state.data.sourceMeta?.find(x => x.source === source)?.name || source || "Unknown source";
+}
+
+function isOfficial2024Entity(entity, sourceSet = state.data.officialSources) {
+  return Boolean(entity && (
+    sourceSet?.has(entity.source) ||
+    entity.edition === "one" ||
+    entity.basicRules2024 ||
+    entity.srd52
+  ));
+}
+
+function officialEntries(json, prop) {
+  return Array.isArray(json?.[prop]) ? json[prop].filter(isOfficial2024Entity) : [];
+}
+
+function sourceEntries(json, prop, source) {
+  return Array.isArray(json?.[prop]) ? json[prop].filter(x => x && x.source === source) : [];
+}
+
+function buildOfficialSourceMeta(books) {
+  const list = Array.isArray(books?.book) ? books.book : [];
+  const seen = new Map();
+  const cutoff = new Date(CORE_2024_DATE + "T00:00:00Z").getTime();
+  for (const book of list) {
+    const date = book.published ? new Date(book.published + "T00:00:00Z").getTime() : NaN;
+    const author = String(book.author || "");
+    if (book.source && (book.source === DATA_SOURCE || book.source === "XDMG" || book.source === "XMM" || (Number.isFinite(date) && date >= cutoff))) {
+      seen.set(book.source, { source: book.source, name: book.name || book.source, published: book.published || null });
+    }
+  }
+  for (const source of [DATA_SOURCE, "XDMG"]) if (!seen.has(source)) seen.set(source, { source, name: source });
+  return [...seen.values()].sort((a,b) => (a.published || "9999").localeCompare(b.published || "9999") || a.name.localeCompare(b.name));
+}
+
+async function loadAll2024SpellData(version, spellIndex, officialSources) {
+  // Load every indexed spell file and let the entity-level 2024 markers/source set decide
+  // what belongs in the player rules dataset. This keeps future official 2024 books from
+  // being missed merely because a source is absent from books.json metadata.
+  const sources = Object.entries(spellIndex || {});
+  const files = await Promise.all(sources.map(async ([source, file]) => {
+    try { return await fetch5eData(version, `data/spells/${file}`); }
+    catch (e) { console.warn(`Unable to load spell source ${source}:`, e); return null; }
+  }));
+  const merged = { spell: [] };
+  for (const data of files) for (const spell of data?.spell || []) if (isOfficial2024Entity(spell, officialSources)) merged.spell.push(spell);
+  const seen = new Set();
+  merged.spell = merged.spell.filter(spell => {
+    const key = `${spell.name.toLowerCase()}|${spell.source}`;
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  return merged;
 }
 
 async function loadCoreData(version) {
-  const [classIndex, races, backgrounds, feats, spellIndex] = await Promise.all([
+  const [books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spellIndex] = await Promise.all([
+    fetch5eData(version, PATHS.books),
     fetch5eData(version, PATHS.classIndex),
     fetch5eData(version, PATHS.races),
     fetch5eData(version, PATHS.backgrounds),
     fetch5eData(version, PATHS.feats),
+    fetch5eData(version, PATHS.languages),
+    fetch5eData(version, PATHS.optionalfeatures),
     fetch5eData(version, PATHS.spellIndex),
   ]);
-  const spellFile = spellIndex?.[DATA_SOURCE];
-  if (!spellFile) throw new Error("The 5etools release has no XPHB spell index entry.");
-  const spells = await fetch5eData(version, `data/spells/${spellFile}`);
-  return { classIndex, races, backgrounds, feats, spells, items: null, classFiles: new Map() };
+  const sourceMeta = buildOfficialSourceMeta(books);
+  const officialSources = new Set(sourceMeta.map(x => x.source));
+  const spells = await loadAll2024SpellData(version, spellIndex, officialSources);
+  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells, items: null, classFiles: new Map(), officialSources, sourceMeta };
 }
 
 async function loadVersion(version) {
@@ -386,17 +461,30 @@ async function getItemsData() {
   return state.data.items;
 }
 
-function findXphb(arr, name) {
+function findOfficial(json, prop, name, source = null) {
   const needle = String(name || "").trim().toLowerCase();
-  return (arr || []).find(x => x && String(x.name || "").toLowerCase() === needle && x.source === DATA_SOURCE) || null;
+  const entries = officialEntries(json, prop);
+  return entries.find(x => String(x.name || "").toLowerCase() === needle && (!source || x.source === source)) || null;
 }
 
-function getClassFromFile(file, name) {
-  return findXphb(file?.class, name) || file?.class?.find(x => x.name === name) || null;
+function findBackground(name, source = null) { return findOfficial(state.data.backgrounds, "background", name, source); }
+function findSpecies(name, source = null) { return findOfficial(state.data.races, "race", name, source); }
+function findFeat(name, source = null) { return findOfficial(state.data.feats, "feat", name, source); }
+function findLanguage(name, source = null) { return findOfficial(state.data.languages, "language", name, source); }
+
+function getClassFromFile(file, name, source = null) {
+  const entries = (file?.class || []).filter(isOfficial2024Entity);
+  const needle = String(name || "").trim().toLowerCase();
+  return entries.find(x => x.name.toLowerCase() === needle && (!source || x.source === source)) ||
+    entries.find(x => x.name.toLowerCase() === needle && x.edition === "one") ||
+    entries.find(x => x.name.toLowerCase() === needle) || null;
 }
 
 function getSubclassOptions(file, className) {
-  return (file?.subclass || []).filter(s => s.className === className && s.source === DATA_SOURCE && s.classSource === DATA_SOURCE).sort((a, b) => a.name.localeCompare(b.name));
+  return (file?.subclass || []).filter(s => s && s.className === className && isOfficial2024Entity(s)).sort((a,b) => {
+    const sa = a.source === DATA_SOURCE ? 0 : 1; const sb = b.source === DATA_SOURCE ? 0 : 1;
+    return sa - sb || a.name.localeCompare(b.name);
+  });
 }
 
 function parseFeatureRef(ref) {
@@ -409,52 +497,165 @@ function parseFeatureRef(ref) {
 function getClassFeatures(file, classObj, level) {
   const all = file?.classFeature || [];
   return (classObj?.classFeatures || []).map(parseFeatureRef).filter(Boolean).map(ref => {
-    const matches = all.filter(f => f.name === ref.name && f.className === classObj.name && Number(f.level) === ref.level);
-    return matches.find(f => f.source === DATA_SOURCE) || matches.find(f => f.source === ref.source) || matches[0];
-  }).filter(f => f && f.level <= level && f.source === DATA_SOURCE);
+    const matches = all.filter(f => f.name === ref.name && f.className === classObj.name && Number(f.level) === ref.level && isOfficial2024Entity(f));
+    return matches.find(f => f.source === ref.source) || matches.find(f => f.source === DATA_SOURCE) || matches.find(f => f.edition === "one") || matches[0];
+  }).filter(f => f && f.level <= level && isOfficial2024Entity(f));
 }
 
 function getSubclassFeatures(file, subclassObj, level) {
   if (!subclassObj) return [];
   return (file?.subclassFeature || []).filter(f =>
-    f.source === DATA_SOURCE &&
+    isOfficial2024Entity(f) &&
     f.className === subclassObj.className &&
-    f.classSource === DATA_SOURCE &&
+    (!f.classSource || f.classSource === subclassObj.classSource) &&
     f.subclassShortName === subclassObj.shortName &&
-    f.subclassSource === DATA_SOURCE &&
+    (!f.subclassSource || f.subclassSource === subclassObj.source) &&
     Number(f.level) <= level
   );
 }
 
-function entriesToText(entries) {
+async function getAllClassOptions() {
+  const entries = [];
+  for (const [key, file] of Object.entries(state.data.classIndex || {})) {
+    try {
+      const data = await getClassDetails(key.charAt(0).toUpperCase() + key.slice(1));
+      for (const cls of data?.class || []) if (isOfficial2024Entity(cls)) entries.push(cls);
+    } catch (e) { console.warn("Class option load failed", key, e); }
+  }
+  const byName = new Map();
+  for (const cls of entries) {
+    const prev = byName.get(cls.name.toLowerCase());
+    if (!prev || (cls.source === DATA_SOURCE && prev.source !== DATA_SOURCE)) byName.set(cls.name.toLowerCase(), cls);
+  }
+  return [...byName.values()].sort((a,b) => a.name.localeCompare(b.name));
+}
+
+function normalizeRefId(name, source) { return `${name}|${source || DATA_SOURCE}`; }
+function splitRefId(id) { const [name, ...rest] = String(id || "").split("|"); return { name, source: rest.join("|") || null }; }
+
+function decodeHtmlEntities(text) {
+  return String(text || "").replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
+function canonicalLabel(value, kind = "") {
+  const raw = decodeHtmlEntities(String(value || "")).trim();
+  if (!raw) return "";
+  const norm = raw.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  for (const [key, [, name]] of Object.entries(SKILLS)) if (key.replace(/[^a-z0-9]/gi, "").toLowerCase() === norm || name.replace(/[^a-z0-9]/gi, "").toLowerCase() === norm) return name;
+  if (kind === "feat") {
+    const found = findFeat(raw.split("|")[0], raw.includes("|") ? raw.split("|")[1] : null);
+    if (found) return found.name;
+  }
+  if (kind === "spell") {
+    const found = spellById(raw);
+    if (found) return found.name;
+  }
+  if (kind === "item") {
+    const name = raw.split("|")[0];
+    const found = state.data.items ? officialEntries(state.data.items, "item").find(x => x.name.toLowerCase() === name.toLowerCase()) : null;
+    if (found) return found.name;
+  }
+  const aliases = {
+    animalhandling: "Animal Handling", sleightofhand: "Sleight of Hand", savageattacker: "Savage Attacker",
+    spellattack: "Spell Attack", passiveperception: "Passive Perception", heroicinspiration: "Heroic Inspiration",
+    simple: "Simple Weapons", simples: "Simple Weapons", simpleweapon: "Simple Weapons", martial: "Martial Weapons", martialweapons: "Martial Weapons",
+    light: "Light Armor", medium: "Medium Armor", heavy: "Heavy Armor", shield: "Shields"
+  };
+  if (aliases[norm]) return aliases[norm];
+  return raw.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/\s+/g, " ").replace(/\b\w/g, m => m.toUpperCase());
+}
+
+function tagLabel(tag, body) {
+  const parts = decodeHtmlEntities(body).split("|");
+  const raw = parts[0] || "";
+  if (["b", "bold", "i", "italic", "u", "underline", "s", "strike", "kbd"].includes(tag)) return raw;
+  if (["skill", "feat", "spell", "item", "race", "background", "class", "subclass", "condition", "language", "action", "sense", "variantrule", "book"].includes(tag)) return canonicalLabel(raw, tag);
+  if (tag === "dice" || tag === "damage" || tag === "dc" || tag === "hit" || tag === "chance") return parts[1] || raw;
+  if (tag === "filter") return parts[2] || parts[0] || "Filter";
+  if (tag === "link") return parts[2] || parts[0];
+  return parts[2] || parts[1] || parts[0] || tag;
+}
+
+function renderInline(text) {
+  let out = escapeHtml(String(text ?? ""));
+  for (let i = 0; i < 6; i++) {
+    out = out
+      .replace(/\{@(b|bold)\s+([^{}]+)\}/gi, (_, tag, body) => `<strong>${renderInline(body)}</strong>`)
+      .replace(/\{@(i|italic)\s+([^{}]+)\}/gi, (_, tag, body) => `<em>${renderInline(body)}</em>`)
+      .replace(/\{@(u|underline)\s+([^{}]+)\}/gi, (_, tag, body) => `<u>${renderInline(body)}</u>`)
+      .replace(/\{@(s|strike)\s+([^{}]+)\}/gi, (_, tag, body) => `<s>${renderInline(body)}</s>`)
+      .replace(/\{@kbd\s+([^{}]+)\}/gi, (_, body) => `<kbd>${renderInline(body)}</kbd>`)
+      .replace(/\{@br\}/gi, "<br>");
+  }
+  out = out.replace(/\{@([\w-]+)\s+([^{}]*)\}/g, (_, tag, body) => {
+    const label = escapeHtml(tagLabel(tag, body));
+    const interactive = ["spell", "item", "feat", "race", "background", "language"].includes(tag.toLowerCase());
+    return `<span class="rules-chip${interactive ? " rules-chip-link" : ""}" title="${escapeHtml(tag)}">${label}</span>`;
+  });
+  return out;
+}
+
+function renderRichEntry(entry, depth = 0) {
+  if (entry == null) return "";
+  if (typeof entry === "string") return `<p>${renderInline(entry)}</p>`;
+  if (typeof entry === "number" || typeof entry === "boolean") return `<p>${escapeHtml(entry)}</p>`;
+  if (Array.isArray(entry)) return entry.map(x => renderRichEntry(x, depth)).join("");
+  if (typeof entry !== "object") return "";
+  const type = String(entry.type || "").toLowerCase();
+  const title = entry.name ? `<h4>${renderInline(entry.name)}</h4>` : "";
+  if (type === "list" || type === "items") {
+    const items = entry.items || entry.entries || [];
+    return `<ul>${items.map(x => `<li>${renderRichEntry(x, depth + 1).replace(/^<p>(.*)<\/p>$/s, "$1")}</li>`).join("")}</ul>`;
+  }
+  if (type === "table") {
+    const headers = entry.colLabels || [];
+    const rows = entry.rows || [];
+    return `<div class="rules-table-wrap"><table class="rules-table">${headers.length ? `<thead><tr>${headers.map(h => `<th>${renderInline(h)}</th>`).join("")}</tr></thead>` : ""}<tbody>${rows.map(row => `<tr>${(row || []).map(cell => `<td>${renderRichEntry(cell, depth + 1).replace(/^<p>(.*)<\/p>$/s, "$1")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  }
+  if (type === "quote") return `<blockquote>${title}${renderRichEntry(entry.entries || entry.entry || [], depth + 1)}</blockquote>`;
+  if (type === "inset" || type === "insetreadaloud") return `<aside class="rules-inset">${title}${renderRichEntry(entry.entries || entry.entry || [], depth + 1)}</aside>`;
+  if (type === "image") return entryalt(entry);
+  if (entry.entries) return `<section class="rules-section depth-${Math.min(depth, 3)}">${title}${renderRichEntry(entry.entries, depth + 1)}</section>`;
+  if (entry.entry) return `<section class="rules-section depth-${Math.min(depth, 3)}">${title}${renderRichEntry(entry.entry, depth + 1)}</section>`;
+  if (entry.items) return renderRichEntry({ type: "list", items: entry.items }, depth);
+  const fragments = [];
+  if (entry.name && !title) fragments.push(`<strong>${renderInline(entry.name)}</strong>`);
+  for (const [key, value] of Object.entries(entry)) {
+    if (["name", "type", "id", "style", "colLabels", "colStyles", "rows"].includes(key)) continue;
+    fragments.push(renderRichEntry(value, depth + 1));
+  }
+  return fragments.join("");
+}
+
+function entryalt(entry) {
+  const alt = entry.altText || entry.title || "Illustration";
+  return `<div class="rules-image-placeholder">${escapeHtml(alt)}</div>`;
+}
+
+function renderRichEntries(entries) { return renderRichEntry(entries); }
+
+function plainTextFromEntries(entries) {
   if (entries == null) return "";
   if (typeof entries === "string") return stripTags(entries);
   if (typeof entries === "number" || typeof entries === "boolean") return String(entries);
-  if (Array.isArray(entries)) return entries.map(entriesToText).filter(Boolean).join(" ");
+  if (Array.isArray(entries)) return entries.map(plainTextFromEntries).filter(Boolean).join(" ");
   if (typeof entries === "object") {
-    if (entries.entry) return `${entries.name ? `${entries.name}: ` : ""}${entriesToText(entries.entry)}`;
-    if (entries.entries) return `${entries.name ? `${entries.name}: ` : ""}${entriesToText(entries.entries)}`;
-    if (entries.items) return entriesToText(entries.items);
     const parts = [];
-    if (entries.name && entries.type !== "table") parts.push(`${entries.name}:`);
-    for (const [key, value] of Object.entries(entries)) {
-      if (["name", "type", "style", "colLabels", "colStyles", "rows", "id"].includes(key)) continue;
-      const text = entriesToText(value);
-      if (text) parts.push(text);
-    }
-    return parts.join(" ");
+    if (entries.name) parts.push(canonicalLabel(entries.name));
+    if (entries.entry) parts.push(plainTextFromEntries(entries.entry));
+    if (entries.entries) parts.push(plainTextFromEntries(entries.entries));
+    if (entries.items) parts.push(plainTextFromEntries(entries.items));
+    return parts.filter(Boolean).join(" ");
   }
   return "";
 }
 
+function entriesToText(entries) { return plainTextFromEntries(entries); }
+
 function stripTags(text) {
   let out = String(text);
   for (let i = 0; i < 8; i++) {
-    out = out.replace(/\{@([\w-]+)\s+([^{}]*)\}/g, (_, tag, body) => {
-      const parts = body.split("|");
-      if (tag === "dice" || tag === "damage") return parts[1] || parts[0];
-      return parts[2] || parts[1] || parts[0] || tag;
-    });
+    out = out.replace(/\{@([\w-]+)\s+([^{}]*)\}/g, (_, tag, body) => tagLabel(tag, body));
   }
   return out.replace(/\s+/g, " ").trim();
 }
@@ -507,41 +708,191 @@ function grantedSkillsFromMap(mapList) {
 }
 function backgroundAbilitySpec(bg) {
   const entries = Array.isArray(bg?.ability) ? bg.ability : [];
-  const choices = entries.map((entry, index) => {
+  const choices = [];
+  const plus2From = new Set();
+  const plus1From = new Set();
+
+  for (const [index, entry] of entries.entries()) {
     const choose = entry?.choose;
-    if (!choose) return null;
-    const weighted = choose.weighted;
-    const from = weighted?.from || choose.from || [];
-    const amount = weighted?.weights?.includes(2) ? 2 : Number(choose.amount || 1);
-    return { index, from, amount };
-  }).filter(Boolean);
-  const fallback = choices.length ? choices : [];
+    if (choose?.weighted) {
+      // 2024 backgrounds normally encode the +2/+1 choice as one weighted choice,
+      // e.g. weights [2, 1] from the same list of abilities.
+      const from = Array.isArray(choose.weighted.from) ? choose.weighted.from : [];
+      const weights = Array.isArray(choose.weighted.weights) ? choose.weighted.weights : [];
+      choices.push({ index, from, amount: 2, weighted: true, weights });
+      if (weights.includes(2)) from.forEach(a => plus2From.add(a));
+      if (weights.includes(1)) from.forEach(a => plus1From.add(a));
+      continue;
+    }
+    if (choose) {
+      const from = Array.isArray(choose.from) ? choose.from : [];
+      const amount = Number(choose.amount || 1);
+      choices.push({ index, from, amount });
+      if (amount === 2) from.forEach(a => plus2From.add(a));
+      if (amount === 1) from.forEach(a => plus1From.add(a));
+      continue;
+    }
+    // Be tolerant of a fixed ability object such as {str: true}.
+    for (const [ability, value] of Object.entries(entry || {})) {
+      if (value === 2) plus2From.add(ability);
+      if (value === 1) plus1From.add(ability);
+    }
+  }
+
   return {
-    choices: fallback,
-    plus2From: fallback.find(x => x.amount === 2)?.from || [],
-    plus1From: fallback.find(x => x.amount === 1)?.from || [],
+    choices,
+    plus2From: [...plus2From].filter(a => ABILITIES.includes(a)),
+    plus1From: [...plus1From].filter(a => ABILITIES.includes(a)),
   };
+}
+
+function reconcileBackgroundAbilityChoices(c, bg) {
+  c.backgroundAbility = { plus2: c.backgroundAbility?.plus2 || null, plus1: c.backgroundAbility?.plus1 || null };
+  const spec = backgroundAbilitySpec(bg);
+  const plus2 = spec.plus2From || [];
+  const plus1 = spec.plus1From || [];
+  if (!plus2.includes(c.backgroundAbility.plus2)) c.backgroundAbility.plus2 = plus2[0] || null;
+  if (!plus1.includes(c.backgroundAbility.plus1) || c.backgroundAbility.plus1 === c.backgroundAbility.plus2) {
+    c.backgroundAbility.plus1 = plus1.find(a => a !== c.backgroundAbility.plus2) || null;
+  }
 }
 function backgroundFeatNames(bg) {
   const feats = bg?.feats || [];
-  const names = [];
+  const refs = [];
   for (const obj of feats) {
     if (!obj || typeof obj !== "object") continue;
-    for (const key of Object.keys(obj)) names.push(key.split("|")[0].split(";")[0].trim());
+    for (const key of Object.keys(obj)) {
+      const [nameAndSource] = key.split(";");
+      const [name, source] = nameAndSource.split("|");
+      const resolved = findFeat(name, source || null);
+      refs.push({ name: resolved?.name || name.trim(), source: resolved?.source || source || null });
+    }
   }
-  return [...new Set(names)];
+  const seen = new Set(); return refs.filter(r => { const key=`${r.name}|${r.source||""}`; if(seen.has(key)) return false; seen.add(key); return true; });
 }
-function findBackground(name) { return findXphb(state.data.backgrounds?.background, name); }
-function findSpecies(name) { return findXphb(state.data.races?.race, name); }
-function findFeat(name) { return findXphb(state.data.feats?.feat, name); }
+
+
+function calculateFinalStats(c, bg) {
+  const stats = { ...(c.baseStats || c.stats || {}) };
+  for (const a of ABILITIES) stats[a] = clamp(Number(stats[a] ?? 10), 1, 30);
+  const bonus2 = c.backgroundAbility?.plus2;
+  const bonus1 = c.backgroundAbility?.plus1;
+  if (bonus2 && ABILITIES.includes(bonus2)) stats[bonus2] = Math.min(20, Number(stats[bonus2]) + 2);
+  if (bonus1 && ABILITIES.includes(bonus1) && bonus1 !== bonus2) stats[bonus1] = Math.min(20, Number(stats[bonus1]) + 1);
+  for (const a of ABILITIES) stats[a] = Math.min(30, Number(stats[a]) + Number(c.manualAbilityBonuses?.[a] || 0));
+  return stats;
+}
+
+function friendlyProficiencyKey(key) {
+  const map = {
+    anyArtisansTool: "Choose an Artisan's Tool", anyArtisansTools: "Choose an Artisan's Tool",
+    anyGamingSet: "Choose a Gaming Set", anyMusicalInstrument: "Choose a Musical Instrument",
+    anyLanguage: "Choose a Language", anyStandard: "Choose a standard language", anyExotic: "Choose an exotic language",
+    thievesTools: "Thieves' Tools", disguiseKit: "Disguise Kit", forgeryKit: "Forgery Kit", herbalismKit: "Herbalism Kit",
+    navigatorTools: "Navigator's Tools", vehiclesLand: "Land Vehicles", vehiclesWater: "Water Vehicles", vehiclesAir: "Air Vehicles",
+  };
+  if (map[key]) return map[key];
+  const norm = String(key || "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const aliases = { simple: "Simple Weapons", martial: "Martial Weapons", light: "Light Armor", medium: "Medium Armor", heavy: "Heavy Armor", shield: "Shields", shields: "Shields" };
+  if (aliases[norm]) return aliases[norm];
+  return canonicalLabel(key);
+}
+
+function dedupeLabels(values) {
+  const seen = new Set(); const out = [];
+  for (const value of values || []) { const label = String(value || "").trim(); if (!label) continue; const k = label.toLowerCase(); if (seen.has(k)) continue; seen.add(k); out.push(label); }
+  return out;
+}
+
+function languageChoicesFromMap(map) {
+  const labels = [];
+  for (const [key, value] of Object.entries(map || {})) {
+    const count = Number(value) || 1;
+    const lower = key.toLowerCase();
+    if (lower.startsWith("any")) labels.push(`${friendlyProficiencyKey(key)}${count > 1 ? ` ×${count}` : ""}`);
+    else {
+      const lang = findLanguage(key);
+      labels.push(`${lang?.name || canonicalLabel(key)}${count > 1 ? ` ×${count}` : ""}`);
+    }
+  }
+  return labels;
+}
+
+function parseProficiencyDisplay(classObj, backgroundObj, speciesObj, featObj = null, includeManual = true) {
+  const armor = [], weapons = [], tools = [], languages = [];
+  for (const obj of [classObj?.startingProficiencies, classObj?.armorProficiencies, classObj?.multiclassing?.proficienciesGained]) {
+    for (const value of obj?.armor || obj?.armorProficiencies || []) {
+      for (const x of (typeof value === "string" ? [value] : Object.keys(value || {}))) armor.push(friendlyProficiencyKey(x));
+    }
+  }
+  for (const obj of [classObj?.startingProficiencies, classObj?.weaponProficiencies, classObj?.multiclassing?.proficienciesGained]) {
+    for (const value of obj?.weapons || obj?.weaponProficiencies || []) {
+      for (const x of (typeof value === "string" ? [value] : Object.keys(value || {}))) weapons.push(friendlyProficiencyKey(x));
+    }
+  }
+  for (const obj of [classObj?.startingProficiencies, backgroundObj, speciesObj, featObj]) {
+    for (const map of obj?.toolProficiencies || []) tools.push(...Object.entries(map || {}).map(([k,v]) => `${friendlyProficiencyKey(k)}${Number(v) > 1 ? ` ×${v}` : ""}`));
+    for (const map of obj?.languageProficiencies || []) languages.push(...languageChoicesFromMap(map));
+  }
+  return {
+    armor: dedupeLabels(includeManual ? [...armor, ...(state.character.manualArmorProficiencies || [])] : armor),
+    weapons: dedupeLabels(includeManual ? [...weapons, ...(state.character.manualWeaponProficiencies || [])] : weapons),
+    tools: dedupeLabels(includeManual ? [...tools, ...(state.character.manualToolProficiencies || [])] : tools),
+    languages: dedupeLabels(includeManual ? [...languages, ...(state.character.languageChoices || []), ...(state.character.manualLanguages || [])] : languages),
+  };
+}
+
+function hasWeaponProficiency(item, profs) {
+  const name = String(item?.name || "");
+  if (profs.some(p => p.toLowerCase() === name.toLowerCase())) return true;
+  const category = String(item?.weaponCategory || "").toLowerCase();
+  if (category === "simple" && profs.some(p => /simple weapons/i.test(p))) return true;
+  if (category === "martial" && profs.some(p => /martial weapons/i.test(p))) return true;
+  return false;
+}
+
+function weaponAbility(item, mods) {
+  const props = new Set((item?.property || []).map(String).map(x => x.split("|")[0]));
+  if (props.has("F")) return mods.dex >= mods.str ? "dex" : "str";
+  const category = String(item?.weaponCategory || "").toLowerCase();
+  return category === "ranged" || props.has("R") ? "dex" : "str";
+}
+
+async function getAttackRows(d) {
+  let itemsData = null;
+  try { itemsData = await getItemsData(); } catch {}
+  const officialItems = itemsData ? officialEntries(itemsData, "item") : [];
+  const rows = [];
+  for (const owned of state.character.inventory || []) {
+    if (!owned?.equipped || !owned.name) continue;
+    const item = officialItems.find(x => x.name === owned.name && (!owned.source || x.source === owned.source)) || officialItems.find(x => x.name === owned.name);
+    if (!item || !item.weaponCategory) continue;
+    const ability = weaponAbility(item, d.mods);
+    const proficient = hasWeaponProficiency(item, d.proficiencies.weapons);
+    const itemBonus = Number.parseInt(String(item.attackBonus ?? item.bonusWeapon ?? 0), 10) || 0;
+    const bonus = d.mods[ability] + (proficient ? d.pb : 0) + itemBonus;
+    const damage = item.dmg1 ? `${item.dmg1}${item.dmgType ? ` ${damageTypeName(item.dmgType)}` : ""}` : "—";
+    const properties = (item.property || []).map(x => canonicalLabel(String(x).split("|")[0])).join(", ");
+    const mastery = (item.mastery || []).map(x => canonicalLabel(String(x).split("|")[0])).join(", ");
+    rows.push({ name: item.name, attackBonus: `${formatMod(bonus)}${proficient ? "" : "*"}`, damage, details: [item.range ? `Range ${item.range}` : "", properties, mastery ? `Mastery: ${mastery}` : ""].filter(Boolean).join(" · ") });
+  }
+  for (const custom of state.character.attacks || []) rows.push({ name: custom.name || "Attack", attackBonus: custom.attackBonus || "—", damage: custom.damage || "—", details: custom.range || custom.notes || "" });
+  for (const spell of (state.character.cantrips || []).map(spellById).filter(Boolean)) rows.push({ name: spell.name, attackBonus: d.spellcastingAbility ? formatMod(d.pb + d.mods[d.spellcastingAbility]) : "—", damage: (spell.damageInflict || []).map(damageTypeName).join(", ") || "Cantrip", details: spell.range ? formatSpellRange(spell.range) : "" });
+  return rows.slice(0, 12);
+}
+
+function damageTypeName(value) {
+  const map = { B: "Bludgeoning", P: "Piercing", S: "Slashing", A: "Acid", C: "Cold", F: "Fire", O: "Force", L: "Lightning", N: "Necrotic", I: "Poison", Y: "Psychic", R: "Radiant", T: "Thunder" };
+  return map[String(value || "").split("|")[0]] || canonicalLabel(value);
+}
 
 function calcAutoAc(c, mods, itemsData = null) {
   const inventory = Array.isArray(c.inventory) ? c.inventory : [];
   const equipped = inventory.filter(x => x && x.equipped && x.name);
   if (!itemsData || !equipped.length) return 10 + mods.dex;
-  const items = xphbEntries(itemsData, "item");
+  const items = officialEntries(itemsData, "item");
   const resolved = equipped.map((owned, index) => {
-    const found = items.find(it => it.name === owned.name && it.source === (owned.source || DATA_SOURCE)) || items.find(it => it.name === owned.name);
+    const found = items.find(it => it.name === owned.name && it.source === owned.source) || items.find(it => it.name === owned.name);
     return found ? { owned, item: found, index } : null;
   }).filter(Boolean);
   const armor = resolved.filter(({ item }) => /^(LA|MA|HA)(\||$)/.test(String(item.type || "")));
@@ -549,61 +900,63 @@ function calcAutoAc(c, mods, itemsData = null) {
   let best = 10 + mods.dex;
   if (armor.length) {
     for (const { item } of armor) {
-      let base = Number(item.ac);
-      if (!Number.isFinite(base)) continue;
-      const bonus = Number.parseInt(String(item.bonusAc || "0"), 10) || 0;
-      let dex = 0;
+      let base = Number(item.ac); if (!Number.isFinite(base)) continue;
+      const bonus = Number.parseInt(String(item.bonusAc || "0"), 10) || 0; let dex = 0;
       const type = String(item.type || "");
       if (/^LA(\||$)/.test(type)) dex = mods.dex;
-      else if (/^MA(\||$)/.test(type)) {
-        const cap = Number(item.dexterityMax ?? item.dexMax ?? 2);
-        dex = Math.min(mods.dex, Number.isFinite(cap) ? cap : 2);
-      }
-      const candidate = base + bonus + dex;
-      if (candidate > best) best = candidate;
+      else if (/^MA(\||$)/.test(type)) { const cap = Number(item.dexterityMax ?? item.dexMax ?? 2); dex = Math.min(mods.dex, Number.isFinite(cap) ? cap : 2); }
+      const candidate = base + bonus + dex; if (candidate > best) best = candidate;
     }
   }
-  if (shields.length) {
-    const shieldAc = Math.max(...shields.map(({ item }) => Number(item.ac || 0) + (Number.parseInt(String(item.bonusAc || "0"), 10) || 0)));
-    best += shieldAc;
-  }
+  if (shields.length) { const shieldAc = Math.max(...shields.map(({ item }) => Number(item.ac || 0) + (Number.parseInt(String(item.bonusAc || "0"), 10) || 0))); best += shieldAc; }
   return best;
 }
 
 async function deriveCharacter() {
   const c = state.character;
-  const mods = Object.fromEntries(ABILITIES.map(a => [a, abilityMod(c.stats[a])]));
+  const backgroundObj = findBackground(c.background?.name, c.background?.source || null);
+  if (backgroundObj) reconcileBackgroundAbilityChoices(c, backgroundObj);
+  else c.backgroundAbility = { plus2: null, plus1: null };
+  const finalStats = calculateFinalStats(c, backgroundObj);
+  const mods = Object.fromEntries(ABILITIES.map(a => [a, abilityMod(finalStats[a])]));
   const d = {
     mods,
+    stats: finalStats,
+    baseStats: c.baseStats || c.stats || finalStats,
     pb: proficiencyBonus(c.level),
     classFile: null,
     classObj: null,
     subclassObj: null,
     subclassOptions: [],
-    speciesObj: findSpecies(c.species?.name),
-    backgroundObj: findBackground(c.background?.name),
-    featObj: findFeat(c.feat?.name),
+    speciesObj: findSpecies(c.species?.name, c.species?.source || null),
+    backgroundObj,
+    featObj: findFeat(c.feat?.name, c.feat?.source || null),
     classFeatures: [],
     subclassFeatures: [],
     skillProficiencies: new Set(),
     skillChoiceSpec: { from: [], count: 0 },
+    savingThrowProficiencies: new Set(),
     maxHp: 1,
     currentHp: Number(c.hpCurrent ?? 0),
     ac: Number(c.acOverride ?? (10 + mods.dex)),
     acAutomatic: true,
-    speed: Number(c.speedOverride ?? findSpecies(c.species?.name)?.speed ?? 30),
+    speed: Number(c.speedOverride ?? dfltSpeed(findSpecies(c.species?.name, c.species?.source || null))),
+    size: findSpecies(c.species?.name, c.species?.source || null)?.size || "—",
     spellcastingAbility: null,
     spellSlots: [],
     maxPrepared: null,
     knownSpells: null,
     cantrips: null,
     inventoryWeight: 0,
+    passivePerception: 10 + mods.wis,
+    proficiencies: { armor: [], weapons: [], tools: [], languages: [] },
+    sourceSummary: state.data.sourceMeta || [],
   };
   if (c.class?.name) {
     d.classFile = await getClassDetails(c.class.name);
-    d.classObj = getClassFromFile(d.classFile, c.class.name);
+    d.classObj = getClassFromFile(d.classFile, c.class.name, c.class.source || null);
     d.subclassOptions = getSubclassOptions(d.classFile, c.class.name);
-    d.subclassObj = d.subclassOptions.find(s => s.name === c.subclass?.name && s.source === DATA_SOURCE) || null;
+    d.subclassObj = d.subclassOptions.find(s => s.name.toLowerCase() === String(c.subclass?.name || "").toLowerCase() && (!c.subclass?.source || s.source === c.subclass.source)) || null;
     d.classFeatures = getClassFeatures(d.classFile, d.classObj, c.level);
     d.subclassFeatures = getSubclassFeatures(d.classFile, d.subclassObj, c.level);
     d.skillChoiceSpec = skillChoiceSpec(d.classObj);
@@ -612,28 +965,41 @@ async function deriveCharacter() {
     d.cantrips = classCantrips(d.classObj, c.level);
     d.maxPrepared = classPrepared(d.classObj, c.level, mods);
     d.knownSpells = classKnownSpells(d.classObj, c.level);
+    for (const save of d.classObj?.proficiency || []) d.savingThrowProficiencies.add(String(save).toLowerCase());
   }
   if (c.acOverride == null && Array.isArray(c.inventory) && c.inventory.some(x => x?.equipped)) {
-    try {
-      const itemsData = await getItemsData();
-      d.ac = calcAutoAc(c, mods, itemsData);
-    } catch (error) {
-      console.warn("Equipment AC calculation unavailable", error);
-    }
-  } else if (c.acOverride != null) {
-    d.ac = Number(c.acOverride);
-    d.acAutomatic = false;
-  }
+    try { d.ac = calcAutoAc(c, mods, await getItemsData()); } catch (error) { console.warn("Equipment AC calculation unavailable", error); }
+  } else if (c.acOverride != null) { d.ac = Number(c.acOverride); d.acAutomatic = false; }
   const bgSkills = grantedSkillsFromMap(d.backgroundObj?.skillProficiencies);
   for (const s of bgSkills) d.skillProficiencies.add(s);
   for (const s of c.classSkillChoices) d.skillProficiencies.add(s);
   for (const s of c.customSkillProficiencies) d.skillProficiencies.add(s);
   for (const s of d.speciesObj?.skillProficiencies ? grantedSkillsFromMap(d.speciesObj.skillProficiencies) : []) d.skillProficiencies.add(s);
+  const perceptionKey = Object.keys(SKILLS).find(k => k === "perception");
+  if (d.skillProficiencies.has(perceptionKey)) d.passivePerception += d.pb;
+  if (c.expertise.includes(perceptionKey)) d.passivePerception += d.pb;
+  d.proficiencies = parseProficiencyDisplay(d.classObj, d.backgroundObj, d.speciesObj, d.featObj);
   d.maxHp = defaultMaxHp(d.classObj, c.level, mods.con, c.hpMaxOverride);
-  if (c.hpAuto || c.hpCurrent == null) { c.hpCurrent = d.maxHp; d.currentHp = d.maxHp; c.hpAuto = true; await saveCharacter(); }
-  if (d.currentHp > d.maxHp && c.hpMaxOverride == null) { d.currentHp = d.maxHp; c.hpCurrent = d.maxHp; await saveCharacter(); }
+  c.hitDiceUsed = Math.min(Math.max(0, Number(c.hitDiceUsed || 0)), Math.max(0, Number(c.level || 1)));
+  if (Array.isArray(c.spellSlotsUsed) && d.spellSlots.length) {
+    c.spellSlotsUsed = c.spellSlotsUsed.slice(0, d.spellSlots.length).map((used, i) => Math.min(Math.max(0, Number(used || 0)), Number(d.spellSlots[i] || 0)));
+  }
+  c.exhaustion = clamp(Number(c.exhaustion || 0), 0, 6);
+  if (c.hpAuto || c.hpCurrent == null) { c.hpCurrent = d.maxHp; d.currentHp = d.maxHp; c.hpAuto = true; }
+  else d.currentHp = clamp(Number(c.hpCurrent || 0), 0, d.maxHp);
+  if (d.currentHp > d.maxHp && c.hpMaxOverride == null) { d.currentHp = d.maxHp; c.hpCurrent = d.maxHp; }
+  if (!c.baseStats) c.baseStats = { ...c.stats };
+  if (c.backgroundAbility?.plus2 === c.backgroundAbility?.plus1) c.backgroundAbility.plus1 = null;
   state.lastDerived = d;
+  await saveCharacter();
   return d;
+}
+
+function dfltSpeed(species) {
+  if (!species?.speed) return 30;
+  if (typeof species.speed === "number") return species.speed;
+  if (species.speed.walk) return Number(species.speed.walk);
+  return 30;
 }
 
 function updateHeader() {
@@ -684,7 +1050,7 @@ function pageHeader(kicker, title, meta, actions = "") {
 }
 
 function emptyState() {
-  return `<div class="card empty-state"><div class="empty-icon">◆</div><h2>Sync 5etools to begin</h2><p>The first sync downloads the 2024 XPHB player data to this device. After that, the character sheet can work offline.</p><button class="button button-primary" data-action="sync">Sync 5etools</button></div>`;
+  return `<div class="card empty-state"><div class="empty-icon">◆</div><h2>Sync 5etools to begin</h2><p>The first sync downloads the 2024 official player-facing data currently represented by 5etools to this device. After that, the character sheet can work offline.</p><button class="button button-primary" data-action="sync">Sync 5etools</button></div>`;
 }
 
 function metric(label, value, sub = "") {
@@ -698,79 +1064,68 @@ function pipBar(count, used, action, data = {}) {
 async function renderSheet(app) {
   const c = state.character;
   const d = await deriveCharacter();
-  const classLine = [c.species?.name, c.class?.name, c.subclass?.name, c.background?.name].filter(Boolean).join(" · ");
+  const attackRows = await getAttackRows(d);
+  const page = state.sheetPage || 1;
+  const classLine = [c.class?.name, c.subclass?.name].filter(Boolean).join(" · ");
+  const identityLine = [c.background?.name, c.species?.name].filter(Boolean).join(" · ");
   const saves = ABILITIES.map(a => {
-    const prof = d.classObj?.proficiency?.map(String).map(x => x.toLowerCase()).includes(a);
-    return `<div class="list-row"><span class="name">${ABILITY_LABELS[a]} ${prof ? "●" : "○"}</span><span class="value">${formatMod(d.mods[a] + (prof ? d.pb : 0))}</span></div>`;
+    const prof = d.savingThrowProficiencies.has(a);
+    return `<div class="sheet-save-row"><span class="check-circle ${prof ? "on" : ""}"></span><span>${ABILITY_NAMES[a]} Save</span><strong>${formatMod(d.mods[a] + (prof ? d.pb : 0))}</strong></div>`;
   }).join("");
-  const skills = Object.entries(SKILLS).map(([key,[ability,name]]) => {
-    const prof = d.skillProficiencies.has(key), exp = c.expertise.includes(key);
-    const bonus = d.mods[ability] + (prof ? d.pb : 0) + (exp ? d.pb : 0);
-    return `<div class="skill-line"><span><span class="dot ${prof ? "on" : ""}"></span>${escapeHtml(name)}</span><strong>${formatMod(bonus)}</strong></div>`;
-  }).join("");
-  const features = [...d.classFeatures.map(f => ({ ...f, sourceKind: "Class" })), ...d.subclassFeatures.map(f => ({ ...f, sourceKind: "Subclass" }))]
-    .sort((a,b) => Number(a.level) - Number(b.level) || a.name.localeCompare(b.name))
-    .map(f => `<button class="feature" data-action="feature" data-name="${encodeURIComponent(f.name)}" data-kind="${f.sourceKind}"><div class="feature-top"><strong>${escapeHtml(f.name)}</strong><span>Lv ${f.level}</span></div><div class="feature-preview">${escapeHtml(entriesToText(f.entries).slice(0, 190))}${entriesToText(f.entries).length > 190 ? "…" : ""}</div></button>`).join("");
-  const prepared = c.preparedSpells.map(spellId => spellById(spellId)).filter(Boolean).sort((a,b) => a.level - b.level || a.name.localeCompare(b.name));
-  const cantrips = c.cantrips.map(spellId => spellById(spellId)).filter(Boolean).sort((a,b) => a.name.localeCompare(b.name));
-  const spellbook = c.spellbook.map(spellId => spellById(spellId)).filter(Boolean).sort((a,b) => a.level - b.level || a.name.localeCompare(b.name));
-  const known = c.knownSpells.map(spellId => spellById(spellId)).filter(Boolean).sort((a,b) => a.level - b.level || a.name.localeCompare(b.name));
-  const conditions = CONDITIONS.map(x => `<button class="chip ${c.conditions.includes(x) ? "selected" : ""}" data-action="condition" data-condition="${escapeHtml(x)}">${escapeHtml(x)}</button>`).join("");
-  const resourceCards = c.resources.length ? c.resources.map((r,i) => `<div class="resource-card"><div class="resource-head"><strong>${escapeHtml(r.name || "Resource")}</strong><button class="icon-button" data-action="remove-resource" data-index="${i}">×</button></div><div class="resource-meta">${Number(r.current || 0)} / ${Number(r.max || 0)}${r.recharge ? ` · ${escapeHtml(r.recharge)} rest` : ""}</div>${pipBar(Number(r.max || 0), Number(r.max || 0) - Number(r.current || 0), "resource-pip", { resource: i })}</div>`).join("") : `<div class="empty">No class resources configured yet.</div>`;
-  const attacks = (c.attacks || []).map((a,i) => `<div class="attack-row"><div><strong>${escapeHtml(a.name || "Attack")}</strong><span>${escapeHtml(a.attackBonus || "—")} to hit · ${escapeHtml(a.damage || "—")}${a.range ? ` · ${escapeHtml(a.range)}` : ""}</span></div><button class="button button-small" data-action="remove-attack" data-index="${i}">Remove</button></div>`).join("") || `<div class="empty">Add the attacks you actually use at the table.</div>`;
-  const speciesTraits = (d.speciesObj?.entries || []).filter(x => x && x.type === "entries" && x.name).slice(0, 8);
-  const speciesTraitHtml = speciesTraits.map(t => `<button class="feature" data-action="species-trait" data-name="${encodeURIComponent(t.name)}"><div class="feature-top"><strong>${escapeHtml(t.name)}</strong><span>Species</span></div><div class="feature-preview">${escapeHtml(entriesToText(t.entries).slice(0, 170))}${entriesToText(t.entries).length > 170 ? "…" : ""}</div></button>`).join("");
-  const spellAbility = d.spellcastingAbility ? ABILITY_LABELS[d.spellcastingAbility] : "—";
-  const spellDc = d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—";
-  const spellAttack = d.spellcastingAbility ? formatMod(d.pb + d.mods[d.spellcastingAbility]) : "—";
+  const skillsByAbility = Object.fromEntries(ABILITIES.map(a => [a, []]));
+  for (const [key,[ability,name]] of Object.entries(SKILLS)) skillsByAbility[ability].push({ key, name, prof: d.skillProficiencies.has(key), exp: c.expertise.includes(key), bonus: d.mods[ability] + (d.skillProficiencies.has(key) ? d.pb : 0) + (c.expertise.includes(key) ? d.pb : 0) });
+  const abilityBoxes = ABILITIES.map(a => `<section class="ability-box">
+      <div class="ability-head"><span>${ABILITY_LABELS[a]}</span><strong>${formatMod(d.mods[a])}</strong></div>
+      <div class="ability-save"><span class="check-circle ${d.savingThrowProficiencies.has(a) ? "on" : ""}"></span><b>Saving Throw</b><strong>${formatMod(d.mods[a] + (d.savingThrowProficiencies.has(a) ? d.pb : 0))}</strong></div>
+      <div class="skill-stack">${skillsByAbility[a].map(sk => `<div class="sheet-skill-row"><span class="check-circle ${sk.prof ? "on" : ""}"></span><span>${escapeHtml(sk.name)}${sk.exp ? " <sup>EX</sup>" : ""}</span><strong>${formatMod(sk.bonus)}</strong></div>`).join("")}</div>
+    </section>`).join("");
+  const featureRows = [...d.classFeatures.map(f => ({...f, kind:"Class"})), ...d.subclassFeatures.map(f => ({...f, kind:"Subclass"}))]
+    .sort((a,b) => Number(a.level)-Number(b.level) || a.name.localeCompare(b.name))
+    .map(f => `<button class="sheet-feature-row" data-action="feature" data-name="${encodeURIComponent(f.name)}" data-kind="${f.kind}"><div><strong>${escapeHtml(f.name)}</strong><span>${escapeHtml(f.kind)} · Level ${f.level}</span></div><span>›</span></button>`).join("") || `<div class="sheet-empty">No class features yet.</div>`;
+  const speciesTraits = (d.speciesObj?.entries || []).filter(x => x && x.name).slice(0, 10);
+  const traitRows = speciesTraits.map(t => `<button class="sheet-feature-row" data-action="species-trait" data-name="${encodeURIComponent(t.name)}"><div><strong>${escapeHtml(t.name)}</strong><span>Species</span></div><span>›</span></button>`).join("") || `<div class="sheet-empty">Choose a species.</div>`;
+  const featRow = d.featObj ? `<button class="sheet-feature-row" data-action="feat-detail" data-name="${encodeURIComponent(d.featObj.name)}"><div><strong>${escapeHtml(d.featObj.name)}</strong><span>Origin Feat · ${escapeHtml(sourceLabel(d.featObj.source))}</span></div><span>›</span></button>` : `<div class="sheet-empty">Choose an Origin feat.</div>`;
+  const conditionChips = CONDITIONS.map(x => `<button class="sheet-chip ${c.conditions.includes(x) ? "selected" : ""}" data-action="condition" data-condition="${escapeHtml(x)}">${escapeHtml(x)}</button>`).join("");
+  const inspiration = c.heroicInspiration ? "★" : "☆";
+  const slots = Array.from({length: 9}, (_,i) => d.spellSlots[i] ? `<div class="spell-slot-box"><strong>${i+1}</strong>${pipBar(d.spellSlots[i], countSlotUsed(c,i+1), "slot", {level:i+1})}</div>` : "").filter(Boolean).join("");
+  const prepared = c.preparedSpells.map(spellById).filter(Boolean).sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
+  const cantrips = c.cantrips.map(spellById).filter(Boolean).sort((a,b)=>a.name.localeCompare(b.name));
+  const languages = d.proficiencies.languages.length ? d.proficiencies.languages : ["None recorded"];
+  const attackHtml = attackRows.map(row => `<div class="weapon-row"><span>${escapeHtml(row.name)}</span><strong>${escapeHtml(row.attackBonus)}</strong><span>${escapeHtml(row.damage)}</span><small>${escapeHtml(row.details || "")}</small></div>`).join("") || `<div class="sheet-empty">Equip a weapon or add a custom attack.</div>`;
+  const featurePreview = f => renderRichEntries((Array.isArray(f.entries) ? f.entries : [f.entries]).slice(0,2));
 
-  app.innerHTML = `
-    ${pageHeader("2024 CHARACTER", c.name || "Unnamed Character", `${classLine || "Build your character"} · Level ${c.level}`, `<button class="button" data-action="builder">Edit</button><button class="button" data-action="character-menu">Characters</button>`)}
-
-    <div class="card identity-card">
-      <div class="identity-stats">${ABILITIES.map(a => `<div class="stat"><div class="label">${ABILITY_LABELS[a]}</div><div class="value">${c.stats[a]}</div><div class="mod">${formatMod(d.mods[a])}</div></div>`).join("")}</div>
-      <div class="identity-strip"><span>PB <strong>${formatMod(d.pb)}</strong></span><span>Speed <strong>${d.speed} ft</strong></span><span>Hit Die <strong>d${hitDieFaces(d.classObj)}</strong></span><span>${d.spellcastingAbility ? `Spellcasting <strong>${spellAbility}</strong>` : ""}</span></div>
+  const pageOne = `<div class="sheet-page">
+    <div class="sheet-brandline"><div><span class="sheet-kicker">D&D 2024 · CHARACTER SHEET</span><h1>${escapeHtml(c.name || "Unnamed Character")}</h1><p>${escapeHtml(classLine || "Class not chosen")} · Level ${c.level}</p></div><div class="sheet-page-actions"><button class="sheet-nav ${page===1?"active":""}" data-action="sheet-page" data-page="1">Page 1</button><button class="sheet-nav ${page===2?"active":""}" data-action="sheet-page" data-page="2">Page 2</button><button class="sheet-nav" data-action="builder">Edit</button><button class="sheet-nav" data-action="character-menu">Characters</button></div></div>
+    <div class="identity-grid">
+      <div class="identity-fields"><div class="field-line"><span>Character Name</span><strong>${escapeHtml(c.name || "—")}</strong></div><div class="field-line"><span>Background</span><strong>${escapeHtml(c.background?.name || "—")}</strong></div><div class="field-line"><span>Species</span><strong>${escapeHtml(c.species?.name || "—")}</strong></div><div class="field-line"><span>Player</span><strong>${escapeHtml(c.player || "—")}</strong></div></div>
+      <div class="identity-fields"><div class="field-line"><span>Class & Subclass</span><strong>${escapeHtml(classLine || "—")}</strong></div><div class="field-line"><span>Level</span><strong>${c.level}</strong></div><div class="field-line"><span>Experience</span><strong>—</strong></div><div class="field-line"><span>Proficiency Bonus</span><strong>${formatMod(d.pb)}</strong></div></div>
+      <div class="identity-stat-box"><span>Armor Class</span><strong>${d.ac}</strong></div>
+      <div class="identity-stat-box hp"><span>Hit Points</span><strong>${d.currentHp}<small> / ${d.maxHp}</small></strong><div class="hp-actions"><button data-action="hp" data-delta="-1">−</button><button data-action="hp" data-delta="1">+</button></div></div>
+      <div class="identity-stat-box"><span>Hit Dice</span><strong>d${hitDieFaces(d.classObj)}</strong><small>${c.hitDiceUsed} used</small></div>
+      <div class="identity-stat-box"><span>Death Saves</span><strong>${c.deathSaves.success} ✓ · ${c.deathSaves.failure} ✕</strong><small><button data-action="death" data-type="success">Success</button> <button data-action="death" data-type="failure">Failure</button></small></div>
     </div>
+    <div class="sheet-metrics"><div><span>Initiative</span><strong>${formatMod(d.mods.dex)}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong></div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility]) : "—"}</strong></div></div>
+    <div class="sheet-grid-main"><div class="ability-column">${abilityBoxes}</div><div class="sheet-right-column">
+      <section class="sheet-panel"><div class="sheet-panel-title">Weapons & Damage Cantrips <button class="sheet-mini-btn" data-action="manage-attacks">Manage</button></div><div class="weapon-table head"><span>Name</span><span>Atk</span><span>Damage</span><span>Notes</span></div>${attackHtml}</section>
+      <section class="sheet-panel"><div class="sheet-panel-title">Class Features</div>${featureRows}</section>
+      <section class="sheet-panel"><div class="sheet-panel-title">Species Traits</div>${traitRows}</section>
+      <section class="sheet-panel"><div class="sheet-panel-title">Feats</div>${featRow}</section>
+      <section class="sheet-panel inspiration-panel"><div><div class="sheet-panel-title">Heroic Inspiration</div><p>${c.heroicInspiration ? "Available" : "Not available"}</p></div><button data-action="heroic" class="inspiration-button">${inspiration}</button></section>
+      <section class="sheet-panel"><div class="sheet-panel-title">Conditions</div><div class="sheet-chips">${conditionChips}</div></section>
+    </div></div>
+  </div>`;
 
-    <div class="dashboard-grid">
-      <section class="card card-accent"><div class="section-title">Combat</div><div class="big-metrics">
-        <div class="big-metric"><span>AC</span><strong>${d.ac}</strong></div>
-        <div class="big-metric hp-metric"><span>HP</span><strong>${d.currentHp}<small> / ${d.maxHp}</small></strong><em>${c.tempHp ? `+${c.tempHp} temp` : ""}</em></div>
-        <div class="big-metric"><span>Initiative</span><strong>${formatMod(d.mods.dex)}</strong></div>
-      </div><div class="quick-actions"><button class="button" data-action="hp" data-delta="-1">−1</button><button class="button" data-action="hp" data-delta="1">+1</button><button class="button" data-action="hp" data-delta="-10">−10</button><button class="button" data-action="hp" data-delta="10">+10</button><button class="button" data-action="rest-short">Short Rest</button><button class="button" data-action="rest-long">Long Rest</button></div></section>
-      <section class="card"><div class="section-title">Saving Throws</div><div class="list">${saves}</div></section>
-      <section class="card"><div class="section-title">Spellcasting</div><div class="metric-grid">${metric("Spell DC", spellDc)}${metric("Spell Attack", spellAttack)}${metric("Prepared", d.maxPrepared ?? "—")}${metric("Cantrips", d.cantrips ?? "—")}</div><div class="mini" style="margin-top:10px">${d.spellcastingAbility ? `Ability: ${ABILITY_NAMES[d.spellcastingAbility]} · ${c.spellbook.length} in spellbook · ${c.knownSpells.length} known` : "Choose a spellcasting class."}</div></section>
-    </div>
+  const pageTwo = `<div class="sheet-page">
+    <div class="sheet-brandline"><div><span class="sheet-kicker">D&D 2024 · CHARACTER SHEET</span><h1>${escapeHtml(c.name || "Unnamed Character")}</h1><p>Spellcasting, personality, proficiencies & equipment</p></div><div class="sheet-page-actions"><button class="sheet-nav ${page===1?"active":""}" data-action="sheet-page" data-page="1">Page 1</button><button class="sheet-nav ${page===2?"active":""}" data-action="sheet-page" data-page="2">Page 2</button></div></div>
+    <div class="spellcasting-head"><div><span>Spellcasting Ability</span><strong>${d.spellcastingAbility ? ABILITY_LABELS[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8+d.pb+d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack Bonus</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility]) : "—"}</strong></div><div><span>Prepared</span><strong>${d.maxPrepared ?? "—"}</strong></div></div>
+    <section class="sheet-panel spell-slots-panel"><div class="sheet-panel-title">Spell Slots</div><div class="spell-slot-grid">${slots || `<div class="sheet-empty">No spell slots.</div>`}</div></section>
+    <div class="sheet-grid-two"><section class="sheet-panel"><div class="sheet-panel-title">Cantrips</div>${cantrips.length ? cantrips.map(s => `<button class="sheet-list-item" data-action="spell" data-spell="${encodeURIComponent(`${s.name}|${s.source}`)}"><span>${escapeHtml(s.name)}</span><small>${escapeHtml(spellSchoolName(s.school))}</small></button>`).join("") : `<div class="sheet-empty">No cantrips selected.</div>`}</section><section class="sheet-panel"><div class="sheet-panel-title">Prepared Spells</div>${prepared.length ? prepared.map(s => `<button class="sheet-list-item" data-action="spell" data-spell="${encodeURIComponent(`${s.name}|${s.source}`)}"><span>${escapeHtml(s.name)}</span><small>Level ${s.level}</small></button>`).join("") : `<div class="sheet-empty">No prepared spells selected.</div>`}</section></div>
+    <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Proficiencies & Languages</div><div class="proficiency-groups"><div><b>Armor</b><p>${escapeHtml(d.proficiencies.armor.join(", ") || "None")}</p></div><div><b>Weapons</b><p>${escapeHtml(d.proficiencies.weapons.join(", ") || "None")}</p></div><div><b>Tools</b><p>${escapeHtml(d.proficiencies.tools.join(", ") || "None")}</p></div><div><b>Languages</b><p>${escapeHtml(languages.join(", ") || "None")}</p></div></div><button class="sheet-mini-btn" data-action="builder">Edit proficiencies</button></section><section class="sheet-panel"><div class="sheet-panel-title">Personality & Backstory</div><textarea class="sheet-notes" data-field="notes" rows="12" placeholder="Character notes, personality, ideals, bonds, flaws, backstory…">${escapeHtml(c.notes)}</textarea></section></div>
+    <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Equipment</div>${(c.inventory || []).length ? c.inventory.slice(0,12).map((it,i) => `<div class="sheet-list-item static"><span>${escapeHtml(it.name)}${it.quantity>1?` ×${it.quantity}`:""}</span><small>${it.equipped ? "Equipped" : ""}</small></div>`).join("") : `<div class="sheet-empty">No equipment.</div>`}<button class="sheet-mini-btn" data-action="equipment">Open equipment</button></section><section class="sheet-panel"><div class="sheet-panel-title">Coins & Attunement</div><div class="coin-grid">${["cp","sp","ep","gp","pp"].map(k => `<label><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" value="${Number(c.currency?.[k] || 0)}" min="0"></label>`).join("")}</div><div class="attunement"><b>Magic Item Attunement</b><p>Track attuned items in Equipment.</p></div></section></div>
+    <section class="sheet-panel compact-sheet-gap"><div class="sheet-panel-title">Rest & Resources</div><div class="resource-actions"><button class="sheet-nav" data-action="rest-short">Short Rest</button><button class="sheet-nav" data-action="rest-long">Long Rest</button><button class="sheet-nav" data-action="manage-resources">Manage Resources</button><button class="sheet-nav" data-action="temp-hp">Temporary HP</button><span>Exhaustion ${c.exhaustion}/6</span></div></section>
+  </div>`;
 
-    <div class="grid two compact-gap">
-      <section class="card"><div class="section-head"><div class="section-title">Skills</div><span class="mini">● proficient · ◎ expertise</span></div><div class="skills-grid">${skills}</div></section>
-      <section class="card"><div class="section-head"><div class="section-title">Hit Dice & Death Saves</div><button class="button button-small" data-action="death-reset">Reset saves</button></div><div class="resource-block"><div class="resource-head"><strong>Hit Dice used</strong><span>${c.hitDiceUsed} / ${c.level}</span></div>${pipBar(c.level, c.hitDiceUsed, "hitdie")}</div><div class="resource-block"><div class="resource-head"><strong>Death saves</strong><span>${c.deathSaves.success} success · ${c.deathSaves.failure} failure</span></div><div class="quick-actions"><button class="button button-small" data-action="death" data-type="success">+ Success</button><button class="button button-small" data-action="death" data-type="failure">+ Failure</button></div></div></section>
-    </div>
-
-    <div class="grid two compact-gap">
-      <section class="card"><div class="section-head"><div class="section-title">Spell Slots</div><button class="button button-small" data-action="spells">Spellbook</button></div>${d.spellSlots.map((n,i) => n ? `<div class="resource-block"><div class="resource-head"><strong>Level ${i+1}</strong><span>${countSlotUsed(c,i+1)} / ${n}</span></div>${pipBar(n, countSlotUsed(c,i+1), "slot", { level: i+1 })}</div>` : "").join("") || `<div class="empty">No spell slots.</div>`}</section>
-      <section class="card"><div class="section-head"><div class="section-title">Prepared Spells</div><button class="button button-small button-primary" data-action="spells">Manage</button></div>${prepared.length ? `<div class="spell-chips">${prepared.slice(0, 14).map(s => `<button class="spell-chip" data-action="spell" data-spell="${encodeURIComponent(s.name)}">${escapeHtml(s.name)}</button>`).join("")}</div>${prepared.length > 14 ? `<div class="mini" style="margin-top:8px">+ ${prepared.length - 14} more</div>` : ""}` : `<div class="empty">No prepared spells yet.</div>`}<div class="quick-actions" style="margin-top:10px"><button class="button button-small" data-action="spells-tab" data-spell-tab="cantrips">Cantrips (${cantrips.length}${d.cantrips != null ? `/${d.cantrips}` : ""})</button><button class="button button-small" data-action="spells-tab" data-spell-tab="spellbook">Spellbook (${spellbook.length})</button><button class="button button-small" data-action="spells-tab" data-spell-tab="known">Known (${known.length})</button></div></section>
-    </div>
-
-    <div class="grid two compact-gap">
-      <section class="card"><div class="section-head"><div class="section-title">Features</div><span class="mini">From 5etools</span></div><div class="feature-grid">${features || `<div class="empty">Choose a class and subclass to load features.</div>`}</div></section>
-      <section class="card"><div class="section-head"><div class="section-title">Resources</div><button class="button button-small" data-action="manage-resources">Manage</button></div><div class="resource-grid">${resourceCards}</div></section>
-    </div>
-
-    <div class="grid two compact-gap">
-      <section class="card"><div class="section-head"><div class="section-title">Attacks</div><button class="button button-small button-primary" data-action="manage-attacks">Manage</button></div><div class="attack-list">${attacks}</div></section>
-      <section class="card"><div class="section-head"><div class="section-title">Species & Origin</div><span class="mini">From 5etools</span></div>${speciesTraitHtml || `<div class="empty">Choose a species to see traits here.</div>`}${c.feat?.name ? `<button class="feature" data-action="feat-detail" data-name="${encodeURIComponent(c.feat.name)}"><div class="feature-top"><strong>${escapeHtml(c.feat.name)}</strong><span>Origin Feat</span></div><div class="feature-preview">${escapeHtml(entriesToText(d.featObj?.entries).slice(0,180))}</div></button>` : ""}</section>
-    </div>
-
-    <div class="grid two compact-gap">
-      <section class="card"><div class="section-head"><div class="section-title">Origin</div><span class="mini">2024 XPHB</span></div>${d.backgroundObj ? `<div class="detail-list"><div><strong>Background</strong><span>${escapeHtml(d.backgroundObj.name)}</span></div><div><strong>Skills</strong><span>${escapeHtml(grantedSkillsFromMap(d.backgroundObj.skillProficiencies).map(k=>SKILLS[k]?.[1]||k).join(", ") || "—")}</span></div><div><strong>Origin feat</strong><span>${escapeHtml(backgroundFeatNames(d.backgroundObj).join(", ") || c.feat?.name || "—")}</span></div><div><strong>Tools</strong><span>${escapeHtml(entriesToText(d.backgroundObj.toolProficiencies) || "—")}</span></div></div>` : `<div class="empty">Choose a background to populate your origin details.</div>`}</section>
-      <section class="card"><div class="section-head"><div class="section-title">Species</div><span class="mini">${escapeHtml(d.speciesObj?.name || "Not selected")}</span></div>${d.speciesObj ? `<div class="rules-text rules-preview">${escapeHtml(entriesToText(d.speciesObj.entries).slice(0,900))}${entriesToText(d.speciesObj.entries).length > 900 ? "…" : ""}</div><button class="button button-small" style="margin-top:10px" data-action="species-detail">Full species rules</button>` : `<div class="empty">Choose a species to see its traits here.</div>`}</section>
-    </div>
-
-    <section class="card compact-gap"><div class="section-head"><div class="section-title">Conditions</div><div class="quick-actions"><button class="button button-small" data-action="clear-conditions">Clear</button></div></div><div class="chips">${conditions}</div></section>
-
-    <section class="card compact-gap"><div class="section-head"><div class="section-title">Notes</div><span class="mini">Saved automatically</span></div><textarea data-field="notes" rows="6" placeholder="Character notes, reminders, campaign notes…">${escapeHtml(c.notes)}</textarea></section>
-  `;
+  app.innerHTML = `<div class="sheet-stage">${page === 1 ? pageOne : pageTwo}</div>`;
   bindEvents();
 }
 
@@ -779,52 +1134,50 @@ function setSlotUsed(c, level, value) { if (!Array.isArray(c.spellSlotsUsed)) c.
 
 async function renderBuilder(app) {
   const c = state.character;
-  const races = xphbEntries(state.data.races, "race").sort((a,b)=>a.name.localeCompare(b.name));
-  const backgrounds = xphbEntries(state.data.backgrounds, "background").sort((a,b)=>a.name.localeCompare(b.name));
-  const feats = xphbEntries(state.data.feats, "feat").sort((a,b)=>a.name.localeCompare(b.name));
-  const classNames = Object.keys(state.data.classIndex || {}).sort((a,b)=>a.localeCompare(b)).map(x => x.charAt(0).toUpperCase() + x.slice(1));
-  const bg = findBackground(c.background?.name);
+  const races = officialEntries(state.data.races, "race").sort((a,b)=>a.name.localeCompare(b.name) || String(a.source).localeCompare(String(b.source)));
+  const backgrounds = officialEntries(state.data.backgrounds, "background").sort((a,b)=>a.name.localeCompare(b.name) || String(a.source).localeCompare(String(b.source)));
+  const feats = officialEntries(state.data.feats, "feat").sort((a,b)=>a.name.localeCompare(b.name));
+  const classOptions = await getAllClassOptions();
+  const bg = findBackground(c.background?.name, c.background?.source || null);
   const d = await deriveCharacter();
   const bgAbility = backgroundAbilitySpec(bg);
-  const bgFeatNames = backgroundFeatNames(bg);
-  const availableOriginFeats = bgFeatNames.length ? feats.filter(f => bgFeatNames.some(n => n.toLowerCase() === f.name.toLowerCase())) : feats.filter(x => x.category !== "O" || !x.category);
+  const bgFeatRefs = backgroundFeatNames(bg);
+  const availableOriginFeats = bgFeatRefs.length ? feats.filter(f => bgFeatRefs.some(ref => String(ref.name || ref).toLowerCase() === f.name.toLowerCase() && (!ref.source || ref.source === f.source))) : feats.filter(x => x.category !== "O" || !x.category);
   const selectedAbility2 = c.backgroundAbility.plus2;
   const selectedAbility1 = c.backgroundAbility.plus1;
   const classSkillChoices = new Set(c.classSkillChoices);
-  const classOptions = d.skillChoiceSpec?.from || [];
+  const classOptionsSkills = d.skillChoiceSpec?.from || [];
   const maxClassSkills = d.skillChoiceSpec?.count || 0;
-  const pointBuyTotal = ABILITIES.reduce((sum,a)=>sum+(POINT_BUY_COST[Math.max(8, Math.min(15, Number(c.stats[a] || 10)))] ?? 0),0);
+  const pointBuyTotal = ABILITIES.reduce((sum,a)=>sum+(POINT_BUY_COST[Math.max(8, Math.min(15, Number(c.baseStats[a] || 10)))] ?? 0),0);
+  const sourceOptions = state.data.sourceMeta || [];
+  const backgroundProficiencies = bg ? parseProficiencyDisplay(null, bg, null, null, false) : {armor:[],weapons:[],tools:[],languages:[]};
+  const refValue = (obj) => normalizeRefId(obj.name, obj.source);
+  const selectRefOptions = (list, current) => list.map(x => `<option value="${escapeHtml(refValue(x))}" ${current?.name===x.name && current?.source===x.source?"selected":""}>${escapeHtml(x.name)}${x.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(x.source))}`:""}</option>`).join("");
+  const manualList = (key) => (c[key] || []).map((x,i)=>`<span class="editable-chip">${escapeHtml(x)}<button data-action="remove-manual" data-list="${key}" data-index="${i}">×</button></span>`).join("") || `<span class="mini">None added manually.</span>`;
+  const autoBonusLines = `<div class="final-stat-preview">${ABILITIES.map(a => `<div><span>${ABILITY_LABELS[a]}</span><strong>${c.baseStats[a]}</strong><em>${c.backgroundAbility.plus2===a?"+2":c.backgroundAbility.plus1===a?"+1":""}</em><b>${d.stats[a]}</b></div>`).join("")}</div>`;
 
   app.innerHTML = `
-    ${pageHeader("CHARACTER BUILDER", `Build ${c.name || "your character"}`, "All selectable rules entries are sourced from cached 2024 5etools data.", `<button class="button" data-action="sheet">Character</button><button class="button button-primary" data-action="save-builder">Save</button>`)}
-
+    ${pageHeader("CHARACTER BUILDER", `Build ${c.name || "your character"}`, `All 2024 official player-facing sources currently discovered in 5etools are available.`, `<button class="button" data-action="sheet">Character</button><button class="button button-primary" data-action="save-builder">Save</button>`)}
     <section class="card"><div class="section-title">Identity</div><div class="form-grid three">
       <label class="field">Character name<input type="text" data-builder="name" value="${escapeHtml(c.name)}"></label>
       <label class="field">Player<input type="text" data-builder="player" value="${escapeHtml(c.player)}"></label>
       <label class="field">Level<input type="number" min="1" max="20" data-builder="level" value="${c.level}"></label>
-      <label class="field">Species<select data-builder="species"><option value="">— Select —</option>${races.map(x=>`<option value="${escapeHtml(x.name)}" ${c.species?.name===x.name?"selected":""}>${escapeHtml(x.name)}</option>`).join("")}</select></label>
-      <label class="field">Background<select data-builder="background"><option value="">— Select —</option>${backgrounds.map(x=>`<option value="${escapeHtml(x.name)}" ${c.background?.name===x.name?"selected":""}>${escapeHtml(x.name)}</option>`).join("")}</select></label>
-      <label class="field">Class<select data-builder="class"><option value="">— Select —</option>${classNames.map(x=>`<option value="${escapeHtml(x)}" ${c.class?.name===x?"selected":""}>${escapeHtml(x)}</option>`).join("")}</select></label>
+      <label class="field">Species<select data-builder="species"><option value="">— Select —</option>${selectRefOptions(races,c.species)}</select></label>
+      <label class="field">Background<select data-builder="background"><option value="">— Select —</option>${selectRefOptions(backgrounds,c.background)}</select></label>
+      <label class="field">Class<select data-builder="class"><option value="">— Select —</option>${classOptions.map(x=>`<option value="${escapeHtml(refValue(x))}" ${c.class?.name===x.name && c.class?.source===x.source?"selected":""}>${escapeHtml(x.name)}${x.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(x.source))}`:""}</option>`).join("")}</select></label>
       <label class="field">Subclass<select data-builder="subclass" id="subclassSelect"><option value="">${c.class ? "Loading…" : "Choose a class first"}</option></select></label>
     </div></section>
 
-    <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Ability scores</div><div class="mini">The sheet stores final scores; background increases are tracked separately below.</div></div><div class="quick-actions"><button class="button button-small" data-action="apply-standard-array">Standard array</button><button class="button button-small" data-action="apply-point-buy">27-point reset</button><span class="status-pill">Point buy: ${pointBuyTotal} / 27</span></div></div><div class="ability-editor">${ABILITIES.map(a=>`<label class="ability-editor-cell"><span>${ABILITY_LABELS[a]}</span><input type="number" min="1" max="30" data-stat="${a}" value="${c.stats[a]}"></label>`).join("")}</div></section>
+    <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Ability scores</div><div class="mini">Base scores are stored separately. The final values include background increases and any manual bonuses.</div></div><div class="quick-actions"><button class="button button-small" data-action="apply-standard-array">Standard array</button><button class="button button-small" data-action="apply-point-buy">27-point reset</button><span class="status-pill">Point buy: ${pointBuyTotal} / 27</span></div></div><div class="ability-editor">${ABILITIES.map(a=>`<label class="ability-editor-cell"><span>${ABILITY_LABELS[a]}</span><input type="number" min="1" max="30" data-stat="${a}" value="${c.baseStats[a]}"><small>Final ${d.stats[a]}</small></label>`).join("")}</div></section>
 
-    <section class="card compact-gap"><div class="section-title">Background ability increases</div>${bg ? `<div class="mini" style="margin-bottom:10px">${escapeHtml(bg.name)} offers ${escapeHtml((bgAbility.plus2From || []).map(x=>ABILITY_LABELS[x]).join(", "))} for +2 and ${escapeHtml((bgAbility.plus1From || []).map(x=>ABILITY_LABELS[x]).join(", "))} for +1.</div><div class="form-grid two"><label class="field">+2 ability<select data-builder="bgPlus2"><option value="">— Select —</option>${(bgAbility.plus2From || []).map(x=>`<option value="${x}" ${selectedAbility2===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1"><option value="">— Select —</option>${(bgAbility.plus1From || []).map(x=>`<option value="${x}" ${selectedAbility1===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label></div>` : `<div class="empty">Choose a 2024 background to see its ability-score options.</div>`}</section>
+    <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Background ability increases</div><div class="mini">Choose the increases granted by the selected 2024 background. The final scores above update immediately. The +2/+1 choices are prefilled to the first legal options and remain editable.</div></div></div>${bg ? `<div class="mini" style="margin-bottom:10px">${escapeHtml(bg.name)}: +2 from ${escapeHtml((bgAbility.plus2From || []).map(x=>ABILITY_LABELS[x]).join(", ") || "choice")} and +1 from ${escapeHtml((bgAbility.plus1From || []).map(x=>ABILITY_LABELS[x]).join(", ") || "choice")}.</div><div class="form-grid two"><label class="field">+2 ability<select data-builder="bgPlus2"><option value="">— Select —</option>${(bgAbility.plus2From || []).map(x=>`<option value="${x}" ${selectedAbility2===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1"><option value="">— Select —</option>${(bgAbility.plus1From || []).filter(x=>x!==selectedAbility2).map(x=>`<option value="${x}" ${selectedAbility1===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label></div>${autoBonusLines}` : `<div class="empty">Choose a 2024 background to see its ability-score options.</div>`}</section>
 
-    <div class="grid two compact-gap">
-      <section class="card"><div class="section-head"><div class="section-title">Class skill choices</div><span class="status-pill">${classSkillChoices.size} / ${maxClassSkills || 0}</span></div>${classOptions.length ? `<div class="skill-grid">${classOptions.map(key=>`<label class="skill-check"><input type="checkbox" data-class-skill="${key}" ${classSkillChoices.has(key)?"checked":""}>${SKILLS[key]?.[1] || key}</label>`).join("")}</div><div class="mini" style="margin-top:10px">Class skills are kept separate from background and manual proficiencies.</div>` : `<div class="empty">Choose a class to load its skill choices from 5etools.</div>`}</section>
-      <section class="card"><div class="section-title">Background</div>${bg ? `<div class="detail-list"><div><strong>Skills</strong><span>${escapeHtml(grantedSkillsFromMap(bg.skillProficiencies).map(k=>SKILLS[k]?.[1]||k).join(", ") || "None")}</span></div><div><strong>Origin feat</strong><span>${escapeHtml(bgFeatNames.join(", ") || "Choice")}</span></div><div><strong>Tools</strong><span>${escapeHtml(entriesToText(bg.toolProficiencies) || "—")}</span></div></div>` : `<div class="empty">Choose a background.</div>`}</section>
-    </div>
+    <div class="grid two compact-gap"><section class="card"><div class="section-head"><div class="section-title">Class skill choices</div><span class="status-pill">${classSkillChoices.size} / ${maxClassSkills || 0}</span></div>${classOptionsSkills.length ? `<div class="skill-grid">${classOptionsSkills.map(key=>`<label class="skill-check"><input type="checkbox" data-class-skill="${key}" ${classSkillChoices.has(key)?"checked":""}>${escapeHtml(SKILLS[key]?.[1] || canonicalLabel(key))}</label>`).join("")}</div>` : `<div class="empty">Choose a class to load its skill choices from 5etools.</div>`}<div class="section-title subhead">Skill expertise</div><div class="skill-grid">${Object.entries(SKILLS).map(([key,[,name]])=>`<label class="skill-check"><input type="checkbox" data-expertise="${key}" ${c.expertise.includes(key)?"checked":""}>${escapeHtml(name)}</label>`).join("")}</div></section><section class="card"><div class="section-title">Background</div>${bg ? `<div class="detail-list"><div><strong>Skills</strong><span>${escapeHtml(grantedSkillsFromMap(bg.skillProficiencies).map(k=>SKILLS[k]?.[1]||canonicalLabel(k)).join(", ")||"None")}</span></div><div><strong>Origin feat</strong><span>${escapeHtml(bgFeatRefs.map(x=>x.name || x).join(", ")||"Choice")}</span></div><div><strong>Tools</strong><span>${escapeHtml(backgroundProficiencies.tools.join(", ")||"None")}</span></div><div><strong>Languages</strong><span>${escapeHtml(backgroundProficiencies.languages.join(", ")||"None")}</span></div></div>` : `<div class="empty">Choose a background.</div>`}</section></div>
+    <section class="card compact-gap"><div class="section-title">Origin feat</div><div class="form-grid two"><label class="field">Feat<select data-builder="feat"><option value="">— Choose —</option>${availableOriginFeats.map(x=>`<option value="${escapeHtml(refValue(x))}" ${c.feat?.name===x.name&&c.feat?.source===x.source?"selected":""}>${escapeHtml(x.name)} · ${escapeHtml(x.source)}</option>`).join("")}</select></label><div>${d.featObj ? `<button class="feature feature-block" data-action="feat-detail" data-name="${encodeURIComponent(`${d.featObj.name}|${d.featObj.source}`)}"><strong>${escapeHtml(d.featObj.name)}</strong>${renderRichEntries((d.featObj.entries||[]).slice(0,2))}</button>` : `<div class="empty">Choose a feat to keep a rules reference on the character.</div>`}</div></div></section>
 
-    <section class="card compact-gap"><div class="section-title">Origin feat</div><div class="form-grid two"><label class="field">Feat<select data-builder="feat"><option value="">— Choose —</option>${availableOriginFeats.map(x=>`<option value="${escapeHtml(x.name)}" ${c.feat?.name===x.name?"selected":""}>${escapeHtml(x.name)}</option>`).join("")}</select></label><div>${c.feat?.name ? `<button class="feature feature-block" data-action="feat-detail" data-name="${encodeURIComponent(c.feat.name)}"><strong>${escapeHtml(c.feat.name)}</strong><span>${escapeHtml(entriesToText(findFeat(c.feat.name)?.entries).slice(0,250))}</span></button>` : `<div class="empty">Choose a feat to keep a rules reference on the character.</div>`}</div></div></section>
+    <div class="grid two compact-gap"><section class="card"><div class="section-title">Proficiencies & languages</div><div class="proficiency-summary"><div><strong>Armor</strong><span>${escapeHtml(d.proficiencies.armor.join(", ")||"None")}</span></div><div><strong>Weapons</strong><span>${escapeHtml(d.proficiencies.weapons.join(", ")||"None")}</span></div><div><strong>Tools</strong><span>${escapeHtml(d.proficiencies.tools.join(", ")||"None")}</span></div><div><strong>Languages</strong><span>${escapeHtml(d.proficiencies.languages.join(", ")||"None")}</span></div></div></section><section class="card"><div class="section-title">Add manual proficiencies</div><div class="manual-add-grid"><div><div class="chips">${manualList("manualArmorProficiencies")}</div><div class="manual-add"><input data-manual-input="manualArmorProficiencies" placeholder="Armor proficiency"><button class="button button-small" data-action="add-manual" data-list="manualArmorProficiencies">Add</button></div></div><div><div class="chips">${manualList("manualWeaponProficiencies")}</div><div class="manual-add"><input data-manual-input="manualWeaponProficiencies" placeholder="Weapon proficiency"><button class="button button-small" data-action="add-manual" data-list="manualWeaponProficiencies">Add</button></div></div><div><div class="chips">${manualList("manualToolProficiencies")}</div><div class="manual-add"><input data-manual-input="manualToolProficiencies" placeholder="Tool proficiency"><button class="button button-small" data-action="add-manual" data-list="manualToolProficiencies">Add</button></div></div><div><div class="chips">${manualList("manualLanguages")}</div><div class="manual-add"><select id="languagePicker"><option value="">Choose a language</option>${officialEntries(state.data.languages, "language").sort((a,b)=>a.name.localeCompare(b.name)).map(x=>`<option value="${escapeHtml(refValue(x))}">${escapeHtml(x.name)}${x.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(x.source))}`:""}</option>`).join("")}</select><button class="button button-small" data-action="add-language-choice">Add</button></div><div class="manual-add"><input data-manual-input="manualLanguages" placeholder="Other language"><button class="button button-small" data-action="add-manual" data-list="manualLanguages">Add</button></div></div></div></section></div>
 
-    <div class="grid two compact-gap">
-      <section class="card"><div class="section-title">Combat overrides</div><div class="form-grid two"><label class="field">AC override<input type="number" min="0" max="60" data-builder="acOverride" value="${c.acOverride ?? ""}" placeholder="Automatic"></label><label class="field">Speed override<input type="number" min="0" max="200" data-builder="speedOverride" value="${c.speedOverride ?? ""}" placeholder="Automatic"></label><label class="field">Max HP override<input type="number" min="1" max="1000" data-builder="hpMaxOverride" value="${c.hpMaxOverride ?? ""}" placeholder="Automatic"></label><label class="field">Current HP<input type="number" min="0" max="1000" data-builder="hpCurrent" value="${c.hpAuto ? "" : (c.hpCurrent ?? "")}" placeholder="${c.hpAuto ? `Automatic (${c.hpCurrent ?? 0})` : "Manual"}"></label><label class="field">Temporary HP<input type="number" min="0" max="1000" data-builder="tempHp" value="${c.tempHp}"></label></div></section>
-      <section class="card"><div class="section-title">Manual skill proficiencies</div><div class="skill-grid">${Object.entries(SKILLS).map(([key,[,name]])=>`<label class="skill-check"><input type="checkbox" data-custom-skill="${key}" ${c.customSkillProficiencies.includes(key)?"checked":""}>${name}</label>`).join("")}</div></section>
-    </div>
-
-    <section class="card compact-gap"><div class="section-title">Character notes</div><textarea data-builder="notes" rows="7">${escapeHtml(c.notes)}</textarea></section>
+    <div class="grid two compact-gap"><section class="card"><div class="section-title">Combat overrides</div><div class="form-grid two"><label class="field">AC override<input type="number" min="0" max="60" data-builder="acOverride" value="${c.acOverride ?? ""}" placeholder="Automatic"></label><label class="field">Speed override<input type="number" min="0" max="200" data-builder="speedOverride" value="${c.speedOverride ?? ""}" placeholder="Automatic"></label><label class="field">Max HP override<input type="number" min="1" max="1000" data-builder="hpMaxOverride" value="${c.hpMaxOverride ?? ""}" placeholder="Automatic"></label><label class="field">Current HP<input type="number" min="0" max="1000" data-builder="hpCurrent" value="${c.hpAuto ? "" : (c.hpCurrent ?? "")}" placeholder="${c.hpAuto ? `Automatic (${c.hpCurrent ?? 0})` : "Manual"}"></label><label class="field">Temporary HP<input type="number" min="0" max="1000" data-builder="tempHp" value="${c.tempHp}"></label></div></section><section class="card"><div class="section-title">Notes</div><p class="mini">The full character sheet follows the official 2024 two-page organization; this builder is for setup and corrections.</p><textarea data-builder="notes" rows="7">${escapeHtml(c.notes)}</textarea></section></div>
   `;
   bindEvents();
   populateSubclasses(c.class?.name, c.subclass?.name);
@@ -837,16 +1190,15 @@ async function populateSubclasses(className, currentName) {
   try {
     const file = await getClassDetails(className);
     const options = getSubclassOptions(file, className);
-    select.innerHTML = `<option value="">— Select —</option>${options.map(s=>`<option value="${escapeHtml(s.name)}" ${currentName===s.name?"selected":""}>${escapeHtml(s.name)}</option>`).join("")}`;
-  } catch (e) {
-    select.innerHTML = `<option value="">Unable to load subclasses</option>`;
-  }
+    const currentSource = state.character.subclass?.source;
+    select.innerHTML = `<option value="">— Select —</option>${options.map(s=>`<option value="${escapeHtml(normalizeRefId(s.name,s.source))}" ${currentName===s.name && (!currentSource||currentSource===s.source)?"selected":""}>${escapeHtml(s.name)}${s.source!==DATA_SOURCE?` · ${escapeHtml(s.source)}`:""}</option>`).join("")}`;
+  } catch (e) { select.innerHTML = `<option value="">Unable to load subclasses</option>`; }
 }
 
 async function renderSpellbook(app) {
   const c = state.character;
   await deriveCharacter();
-  const spells = Array.isArray(state.data.spells?.spell) ? xphbEntries(state.data.spells, "spell").sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name)) : [];
+  const spells = Array.isArray(state.data.spells?.spell) ? officialEntries(state.data.spells, "spell").sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name)) : [];
   const maxPrepared = state.lastDerived?.maxPrepared ?? null;
   const maxCantrips = state.lastDerived?.cantrips ?? null;
   const tab = state.spellPickerTab;
@@ -857,7 +1209,7 @@ async function renderSpellbook(app) {
   const knownLimit = state.lastDerived?.knownSpells ?? null;
   const available = spells.filter(s => s.level === 0 ? true : s.level <= castLevel).slice(0, 1000);
 
-  app.innerHTML = `${pageHeader("SPELLBOOK", `${escapeHtml(c.name || "Character")} · Spells`, `${escapeHtml(className || "No class")} · 2024 XPHB spell data`, `<button class="button" data-action="sheet">Character</button>`)}
+  app.innerHTML = `${pageHeader("SPELLBOOK", `${escapeHtml(c.name || "Character")} · Spells`, `${escapeHtml(className || "No class")} · 2024 official spell data`, `<button class="button" data-action="sheet">Character</button>`)}
     <section class="card"><div class="tabbar"><button class="tab-inner ${tab==="prepared"?"active":""}" data-spell-tab="prepared">Prepared ${maxPrepared!=null?`(${c.preparedSpells.length}/${maxPrepared})`:""}</button><button class="tab-inner ${tab==="cantrips"?"active":""}" data-spell-tab="cantrips">Cantrips ${maxCantrips!=null?`(${c.cantrips.length}/${maxCantrips})`:""}</button><button class="tab-inner ${tab==="spellbook"?"active":""}" data-spell-tab="spellbook">Spellbook ${c.spellbook.length}</button><button class="tab-inner ${tab==="known"?"active":""}" data-spell-tab="known">Known ${knownLimit!=null?`(${c.knownSpells.length}/${knownLimit})`:""}</button></div><div class="spell-toolbar"><input id="spellSearch" type="search" placeholder="Search 2024 spells…"><select id="spellLevel"><option value="all">All levels</option>${Array.from({length:10},(_,i)=>`<option value="${i}">${i===0?"Cantrip":`Level ${i}`}</option>`).join("")}</select></div><div id="spellResults" class="spell-results"></div></section>`;
   bindEvents();
   renderSpellResults(available);
@@ -877,7 +1229,7 @@ function renderSpellResults(allSpells) {
   root.innerHTML = list.map(s => {
     const id = `${s.name}|${s.source}`;
     const checked = set.has(id.toLowerCase());
-    return `<div class="spell-row"><label class="spell-select"><input type="checkbox" data-spell-toggle="${escapeHtml(id)}" ${checked?"checked":""}> <span class="spell-title">${escapeHtml(s.name)}</span></label><span class="spell-meta">${s.level===0?"Cantrip":`Lv ${s.level}`} · ${escapeHtml(spellSchoolName(s.school))}</span><button class="button button-small" data-action="spell-info" data-spell="${encodeURIComponent(s.name)}">Info</button></div>`;
+    return `<div class="spell-row"><label class="spell-select"><input type="checkbox" data-spell-toggle="${escapeHtml(id)}" ${checked?"checked":""}> <span class="spell-title">${escapeHtml(s.name)}</span></label><span class="spell-meta">${s.level===0?"Cantrip":`Lv ${s.level}`} · ${escapeHtml(spellSchoolName(s.school))}</span><button class="button button-small" data-action="spell-info" data-spell="${encodeURIComponent(`${s.name}|${s.source}`)}">Info</button></div>`;
   }).join("") || `<div class="empty">No matching spells.</div>`;
 }
 
@@ -896,18 +1248,20 @@ function renderEquipment(app) {
 async function renderDataView(app) {
   const counts = {
     classes: Object.keys(state.data.classIndex || {}).length,
-    species: xphbEntries(state.data.races, "race").length,
-    backgrounds: xphbEntries(state.data.backgrounds, "background").length,
-    feats: xphbEntries(state.data.feats, "feat").length,
-    spells: xphbEntries(state.data.spells, "spell").length,
-    items: state.data.items ? xphbEntries(state.data.items, "item").length : null,
+    species: officialEntries(state.data.races, "race").length,
+    backgrounds: officialEntries(state.data.backgrounds, "background").length,
+    feats: officialEntries(state.data.feats, "feat").length,
+    spells: officialEntries(state.data.spells, "spell").length,
+    languages: officialEntries(state.data.languages, "language").length,
+    items: state.data.items ? officialEntries(state.data.items, "item").length : null,
   };
   const chars = await getCharacters();
-  app.innerHTML = `${pageHeader("DATA & APP", "5etools synchronization", `App ${APP_VERSION} · rules data is stored locally on this tablet.`, `<button class="button button-primary" data-action="sync">Check for updates</button>`)}
-    <section class="card"><div class="data-row"><div><strong>Rules data</strong><span>2024 XPHB release currently used by the app</span></div><strong>${escapeHtml(state.version || "Not synced")}</strong></div><div class="data-row"><div><strong>Last successful sync</strong><span>Stored locally</span></div><strong>${state.lastSync ? escapeHtml(new Date(state.lastSync).toLocaleString()) : "—"}</strong></div><div class="data-row"><div><strong>Connectivity</strong><span>Internet is only needed to update rules data</span></div><strong>${state.online ? "Online" : "Offline"}</strong></div></section>
+  app.innerHTML = `${pageHeader("DATA & APP", "5etools synchronization", `App ${APP_VERSION} · all detected 2024 official player-facing sources are included.`, `<button class="button button-primary" data-action="sync">Check for updates</button>`)}
+    <section class="card"><div class="data-row"><div><strong>Rules data</strong><span>Versioned 5etools release cached locally on this tablet</span></div><strong>${escapeHtml(state.version || "Not synced")}</strong></div><div class="data-row"><div><strong>Detected official 2024-era sources</strong><span>Discovered from 5etools source metadata and 2024 entity markers</span></div><strong>${state.data.sourceMeta?.length || 0}</strong></div><div class="data-row"><div><strong>Last successful sync</strong><span>Stored locally</span></div><strong>${state.lastSync ? escapeHtml(new Date(state.lastSync).toLocaleString()) : "—"}</strong></div><div class="data-row"><div><strong>Connectivity</strong><span>Internet is only needed to check/download newer rules data</span></div><strong>${state.online ? "Online" : "Offline"}</strong></div></section>
+    <section class="card compact-gap"><div class="section-title">Detected 2024-era official sources</div><div class="source-chip-grid">${(state.data.sourceMeta || []).map(x=>`<div class="source-chip"><strong>${escapeHtml(x.name)}</strong><span>${escapeHtml(x.source)}${x.published?` · ${escapeHtml(x.published)}`:""}</span></div>`).join("")}</div></section>
     <div class="grid three compact-gap">${Object.entries(counts).map(([k,v])=>metric(k, v == null ? "Not loaded" : v)).join("")}</div>
-    <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Characters on this device</div><div class="mini">Character state is independent of 5etools rules data.</div></div><button class="button button-small button-primary" data-action="new-character">New character</button></div><div class="character-list">${chars.map(ch=>`<div class="character-row ${ch.id===state.character.id?"current":""}"><button class="character-select" data-action="switch-character" data-id="${ch.id}"><strong>${escapeHtml(ch.name)}</strong><span>${escapeHtml([ch.species?.name,ch.class?.name,csv(ch.subclass?.name),`Level ${ch.level}`].filter(Boolean).join(" · "))}</span></button>${ch.id!==state.character.id?`<button class="icon-button" data-action="delete-character" data-id="${ch.id}">×</button>`:""}</div>`).join("")}</div></section>
-    <section class="card compact-gap"><div class="section-title">Storage model</div><p class="note">The app caches versioned 5etools JSON on the device, stores character state separately, and can continue running without a network connection after synchronization. A rules-data update does not replace your character.</p><p class="mini">Data source: ${escapeHtml(REPO)} · source ${DATA_SOURCE}</p></section>`;
+    <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Characters on this device</div><div class="mini">Character state is independent of 5etools rules data.</div></div><button class="button button-small button-primary" data-action="new-character">New character</button></div><div class="character-list">${chars.map(ch=>`<div class="character-row ${ch.id===state.character.id?"current":""}"><button class="character-select" data-action="switch-character" data-id="${ch.id}"><strong>${escapeHtml(ch.name)}</strong><span>${escapeHtml([ch.species?.name,ch.class?.name,ch.subclass?.name,`Level ${ch.level}`].filter(Boolean).join(" · "))}</span></button>${ch.id!==state.character.id?`<button class="icon-button" data-action="delete-character" data-id="${ch.id}">×</button>`:""}</div>`).join("")}</div></section>
+    <section class="card compact-gap"><div class="section-title">Storage model</div><p class="note">The app caches versioned 5etools JSON on the device, stores character state separately, and can continue running without a network connection after synchronization. A rules-data update does not replace your character.</p><p class="mini">Data source: ${escapeHtml(REPO)} · 2024 sources detected automatically</p></section>`;
   bindEvents();
 }
 function csv(value){return value||"";}
@@ -920,6 +1274,7 @@ function bindEvents() {
         if (action === "sync") return syncData(true);
         if (action === "builder") { state.view = "builder"; return render(); }
         if (action === "sheet") { state.view = "sheet"; return render(); }
+        if (action === "sheet-page") { state.sheetPage = Number(el.dataset.page || 1); return render(); }
         if (action === "spells") { state.view = "spells"; state.spellPickerTab = "prepared"; return render(); }
         if (action === "spells-tab") { state.view = "spells"; state.spellPickerTab = el.dataset.spellTab || "prepared"; return render(); }
         if (action === "equipment") { state.view = "equipment"; return render(); }
@@ -927,8 +1282,11 @@ function bindEvents() {
         if (action === "save-builder") { await readBuilder(); await saveCharacter(); await deriveCharacter(); state.view = "sheet"; showToast("Character saved."); return render(); }
         if (action === "export") return exportCharacter();
         if (action === "import") return openImport();
-        if (action === "hp") { const delta = Number(el.dataset.delta || 0); const d = await deriveCharacter(); state.character.hpCurrent = Math.max(0, Math.min(d.maxHp, Number(state.character.hpCurrent || 0) + delta)); state.character.hpAuto = false; await saveCharacter(); return render(); }
+        if (action === "hp") { const delta = Number(el.dataset.delta || 0); const d = await deriveCharacter(); const before = Number(state.character.hpCurrent || 0); const next = Math.max(0, Math.min(d.maxHp, before + delta)); state.character.hpCurrent = next; state.character.hpAuto = false; if (next > 0 && before === 0) state.character.deathSaves = { success: 0, failure: 0 }; await saveCharacter(); return render(); }
         if (action === "temp-hp") { const value = prompt("Temporary hit points", String(state.character.tempHp || 0)); if (value !== null) { state.character.tempHp = Math.max(0, Number(value || 0)); await saveCharacter(); return render(); } return; }
+        if (action === "heroic") { state.character.heroicInspiration = !state.character.heroicInspiration; await saveCharacter(); return render(); }
+        if (action === "concentration") { const value = prompt("Concentration spell (leave blank to clear)", state.character.concentration || ""); if (value !== null) { state.character.concentration = value.trim() || null; await saveCharacter(); return render(); } return; }
+        if (action === "exhaustion") { state.character.exhaustion = clamp(Number(state.character.exhaustion || 0) + Number(el.dataset.delta || 0), 0, 6); await saveCharacter(); return render(); }
         if (action === "hitdie") { const idx = Number(el.dataset.index); state.character.hitDiceUsed = idx < state.character.hitDiceUsed ? idx : Math.min(state.character.level, idx + 1); await saveCharacter(); return render(); }
         if (action === "slot") { const level = Number(el.dataset.level); const cap = Number(state.lastDerived?.spellSlots?.[level - 1] || 0); const current = countSlotUsed(state.character, level); const idx = Number(el.dataset.index); setSlotUsed(state.character, level, idx < current ? idx : Math.min(cap, idx + 1)); await saveCharacter(); return render(); }
         if (action === "death") { const type = el.dataset.type; state.character.deathSaves[type] = Math.min(3, Number(state.character.deathSaves[type] || 0) + 1); await saveCharacter(); return render(); }
@@ -936,10 +1294,9 @@ function bindEvents() {
         if (action === "condition") { toggleArray(state.character.conditions, el.dataset.condition); await saveCharacter(); return render(); }
         if (action === "clear-conditions") { state.character.conditions = []; await saveCharacter(); return render(); }
         if (action === "feature") { const f = findFeatureByButton(el); if (f) return openFeatureModal(f); }
-        if (action === "feat-detail") { const feat = findFeat(decodeURIComponent(el.dataset.name || "")); if (feat) return openFeatModal(feat); }
-        if (action === "species-detail") { if (state.lastDerived?.speciesObj) return openModal(state.lastDerived.speciesObj.name, `<div class="modal-kicker">${escapeHtml(state.lastDerived.speciesObj.source)}</div><div class="rules-text">${escapeHtml(entriesToText(state.lastDerived.speciesObj.entries))}</div>`); }
-        if (action === "spell") { const s = spellById(`${decodeURIComponent(el.dataset.spell)}|${DATA_SOURCE}`); if (s) return openSpellModal(s); }
-        if (action === "spell-info") { const s = spellById(`${decodeURIComponent(el.dataset.spell)}|${DATA_SOURCE}`); if (s) return openSpellModal(s); }
+        if (action === "feat-detail") { const ref = splitRefId(decodeURIComponent(el.dataset.name || "")); const feat = findFeat(ref.name, ref.source || null); if (feat) return openFeatModal(feat); }
+        if (action === "species-detail") { if (state.lastDerived?.speciesObj) return openModal(state.lastDerived.speciesObj.name, `<div class="modal-kicker">${escapeHtml(sourceLabel(state.lastDerived.speciesObj.source))}</div><div class="rules-text formatted-rules">${renderRichEntries(state.lastDerived.speciesObj.entries)}</div>`); }
+        if (action === "spell" || action === "spell-info") { const ref = splitRefId(decodeURIComponent(el.dataset.spell || "")); const s = spellById(normalizeRefId(ref.name, ref.source || DATA_SOURCE)); if (s) return openSpellModal(s); }
         if (action === "item-picker") return openItemPicker();
         if (action === "item-info") return openInventoryItemInfo(Number(el.dataset.index));
         if (action === "toggle-equipped") { const i = Number(el.dataset.index); const item = state.character.inventory[i]; if (!item) return; item.equipped = !item.equipped; await saveCharacter(); return render(); }
@@ -951,18 +1308,20 @@ function bindEvents() {
         if (action === "manage-resources") return openResourceManager();
         if (action === "manage-attacks") return openAttackManager();
         if (action === "remove-attack") { state.character.attacks.splice(Number(el.dataset.index),1); await saveCharacter(); return render(); }
-        if (action === "species-trait") { const trait = (state.lastDerived?.speciesObj?.entries || []).find(x => x?.name === decodeURIComponent(el.dataset.name || "")); if (trait) return openModal(trait.name, `<div class="rules-text">${escapeHtml(entriesToText(trait.entries))}</div>`); }
+        if (action === "species-trait") { const trait = (state.lastDerived?.speciesObj?.entries || []).find(x => x?.name === decodeURIComponent(el.dataset.name || "")); if (trait) return openModal(trait.name, `<div class="rules-text formatted-rules">${renderRichEntries(trait.entries)}</div>`); }
         if (action === "resource-pip") { const i = Number(el.dataset.resource); const resource = state.character.resources[i]; if (!resource) return; const used = idxUsed(resource.max, Number(el.dataset.index)); resource.current = Math.max(0, resource.max - used); await saveCharacter(); return render(); }
-        if (action === "rest-short") { return shortRest(); }
-        if (action === "rest-long") { return longRest(); }
+        if (action === "rest-short") return shortRest();
+        if (action === "rest-long") return longRest();
         if (action === "new-character") { await createCharacter(); state.view = "builder"; return render(); }
         if (action === "switch-character") { await switchCharacter(el.dataset.id); return; }
         if (action === "delete-character") { if (confirm("Delete this character from this device?")) await deleteCharacter(el.dataset.id); return; }
         if (action === "apply-standard-array") { applyStandardArray(); return; }
         if (action === "apply-point-buy") { applyPointBuyDefault(); return; }
+        if (action === "add-manual") { const list = el.dataset.list; const input = document.querySelector(`[data-manual-input="${list}"]`); const value = input?.value.trim(); if (value) { if (!Array.isArray(state.character[list])) state.character[list]=[]; if (!state.character[list].some(x=>x.toLowerCase()===value.toLowerCase())) state.character[list].push(value); input.value=""; await saveCharacter(); return render(); } return; }
+        if (action === "add-language-choice") { const select=document.querySelector("#languagePicker"); const ref=splitRefId(select?.value||""); const lang=findLanguage(ref.name, ref.source||null); if(lang){ if(!state.character.languageChoices.some(x=>x.toLowerCase()===lang.name.toLowerCase())) state.character.languageChoices.push(lang.name); await saveCharacter(); return render(); } return; }
+        if (action === "remove-manual") { const list=el.dataset.list; const idx=Number(el.dataset.index); if (Array.isArray(state.character[list])) state.character[list].splice(idx,1); await saveCharacter(); return render(); }
       } catch (err) {
-        console.error(err);
-        showToast(`Action failed: ${err.message}`);
+        console.error(err); showToast(`Action failed: ${err.message}`);
       }
     };
   });
@@ -972,27 +1331,22 @@ function bindEvents() {
     el.onchange = async () => {
       const key = el.dataset.builder;
       await readBuilder();
-      if (key === "background") render();
+      if (["background","bgPlus2","bgPlus1","species","class","subclass","feat","level"].includes(key)) render();
     };
   });
-  document.querySelectorAll("[data-stat]").forEach(el => el.onchange = async () => { state.character.stats[el.dataset.stat] = clamp(Number(el.value),1,30); await saveCharacter(); render(); });
-  document.querySelectorAll("[data-class-skill]").forEach(el => el.onchange = async () => {
-    const arr = state.character.classSkillChoices;
-    toggleArray(arr, el.dataset.classSkill, el.checked);
-    const max = state.lastDerived?.skillChoiceSpec?.count || 0;
-    if (arr.length > max) { arr.splice(arr.indexOf(el.dataset.classSkill),1); el.checked=false; showToast(`Choose only ${max} class skills.`); return; }
-    await saveCharacter(); render();
-  });
+  document.querySelectorAll("[data-stat]").forEach(el => el.onchange = async () => { state.character.baseStats[el.dataset.stat] = clamp(Number(el.value),1,30); await saveCharacter(); render(); });
+  document.querySelectorAll("[data-class-skill]").forEach(el => el.onchange = async () => { const arr=state.character.classSkillChoices; toggleArray(arr,el.dataset.classSkill,el.checked); const max=state.lastDerived?.skillChoiceSpec?.count||0; if(arr.length>max){arr.splice(arr.indexOf(el.dataset.classSkill),1);el.checked=false;showToast(`Choose only ${max} class skills.`);return;} await saveCharacter(); render(); });
   document.querySelectorAll("[data-custom-skill]").forEach(el => el.onchange = async () => { toggleArray(state.character.customSkillProficiencies, el.dataset.customSkill, el.checked); await saveCharacter(); render(); });
+  document.querySelectorAll("[data-expertise]").forEach(el => el.onchange = async () => { toggleArray(state.character.expertise, el.dataset.expertise, el.checked); await saveCharacter(); render(); });
   document.querySelectorAll("[data-spell-toggle]").forEach(el => el.onchange = async () => toggleSpellCollection(el.dataset.spellToggle, el.checked));
   document.querySelectorAll("[data-spell-tab]").forEach(el => el.onclick = () => { state.spellPickerTab = el.dataset.spellTab; render(); });
-  const search = document.querySelector("#spellSearch");
-  const level = document.querySelector("#spellLevel");
-  if (search) search.oninput = () => updateSpellResultFilter();
-  if (level) level.onchange = () => updateSpellResultFilter();
+  const search = document.querySelector("#spellSearch"); const level = document.querySelector("#spellLevel");
+  if (search) search.oninput = () => updateSpellResultFilter(); if (level) level.onchange = () => updateSpellResultFilter();
   document.querySelectorAll("[data-currency]").forEach(el => el.onchange = async () => { state.character.currency[el.dataset.currency] = Math.max(0, Number(el.value || 0)); await saveCharacter(); });
   const classSelect = document.querySelector('[data-builder="class"]');
-  if (classSelect) classSelect.onchange = async () => { await readBuilder(); state.character.subclass = null; await saveCharacter(); await populateSubclasses(state.character.class?.name, null); render(); };
+  if (classSelect) classSelect.onchange = async () => { await readBuilder(); state.character.subclass=null; await saveCharacter(); await populateSubclasses(splitRefId(classSelect.value).name, null); render(); };
+  const subclassSelect = document.querySelector('[data-builder="subclass"]');
+  if (subclassSelect) subclassSelect.onchange = async () => { await readBuilder(); render(); };
 }
 
 function debounce(fn, ms) { let timer; return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); }; }
@@ -1006,24 +1360,23 @@ async function readBuilder() {
   if (get("name")) c.name = get("name").value.trim() || "Unnamed Character";
   if (get("player")) c.player = get("player").value.trim();
   if (get("level")) c.level = clamp(Number(get("level").value || 1),1,20);
-  if (get("species")) c.species = get("species").value ? { name: get("species").value, source: DATA_SOURCE } : null;
-  if (get("background")) c.background = get("background").value ? { name: get("background").value, source: DATA_SOURCE } : null;
-  if (get("class")) c.class = get("class").value ? { name: get("class").value, source: DATA_SOURCE } : null;
-  if (get("subclass")) c.subclass = get("subclass").value ? { name: get("subclass").value, source: DATA_SOURCE } : null;
+  for (const key of ["species","background","class","subclass","feat"]) {
+    if (!get(key)) continue;
+    const ref = splitRefId(get(key).value);
+    c[key] = ref.name ? { name: ref.name, source: ref.source || DATA_SOURCE } : null;
+  }
   if (get("bgPlus2")) c.backgroundAbility.plus2 = get("bgPlus2").value || null;
   if (get("bgPlus1")) c.backgroundAbility.plus1 = get("bgPlus1").value || null;
-  if (get("feat")) c.feat = get("feat").value ? { name: get("feat").value, source: DATA_SOURCE } : null;
-  const selectedBackground = findBackground(c.background?.name);
+  if (c.backgroundAbility.plus2 && c.backgroundAbility.plus2 === c.backgroundAbility.plus1) c.backgroundAbility.plus1 = null;
+  const selectedBackground = findBackground(c.background?.name, c.background?.source || null);
   const backgroundFeats = backgroundFeatNames(selectedBackground);
   if (backgroundFeats.length === 1) {
-    const resolved = findFeat(backgroundFeats[0]);
-    if (resolved) c.feat = { name: resolved.name, source: DATA_SOURCE };
-  } else if (backgroundFeats.length > 1 && c.feat && !backgroundFeats.some(n => n.toLowerCase() === c.feat.name.toLowerCase())) {
-    c.feat = null;
-  }
+    const resolved = findFeat(backgroundFeats[0].name || backgroundFeats[0], backgroundFeats[0].source || null);
+    if (resolved) c.feat = { name: resolved.name, source: resolved.source };
+  } else if (backgroundFeats.length > 1 && c.feat && !backgroundFeats.some(n => String(n.name || n).toLowerCase() === c.feat.name.toLowerCase() && (!n.source || n.source === c.feat.source))) c.feat = null;
   if (c.class?.name) {
     const file = await getClassDetails(c.class.name);
-    const obj = getClassFromFile(file, c.class.name);
+    const obj = getClassFromFile(file, c.class.name, c.class.source || null);
     const spec = skillChoiceSpec(obj);
     c.classSkillChoices = c.classSkillChoices.filter(x => spec.from.includes(x)).slice(0, spec.count);
   }
@@ -1044,11 +1397,11 @@ function findFeatureByButton(el) {
 }
 
 function openFeatureModal(f) {
-  openModal(f.name, `<div class="modal-kicker">${escapeHtml(f.source)} · level ${f.level}</div><div class="rules-text">${escapeHtml(entriesToText(f.entries)).replace(/\n/g,"<br>")}</div>`);
+  openModal(f.name, `<div class="modal-kicker">${escapeHtml(sourceLabel(f.source))} · level ${f.level}</div><div class="rules-text formatted-rules">${renderRichEntries(f.entries)}</div>`);
 }
-function openFeatModal(feat) { openModal(feat.name, `<div class="modal-kicker">${escapeHtml(feat.source)}</div><div class="rules-text">${escapeHtml(entriesToText(feat.entries))}</div>`); }
+function openFeatModal(feat) { openModal(feat.name, `<div class="modal-kicker">${escapeHtml(sourceLabel(feat.source))}</div><div class="rules-text formatted-rules">${renderRichEntries(feat.entries)}</div>`); }
 function openSpellModal(s) {
-  openModal(s.name, `<div class="modal-kicker">${s.source} · ${s.level===0?"Cantrip":`Level ${s.level}`} · ${escapeHtml(spellSchoolName(s.school))}</div><div class="spell-facts"><span>${escapeHtml(formatSpellTime(s.time))}</span><span>${escapeHtml(formatSpellRange(s.range))}</span><span>${escapeHtml(formatComponents(s.components))}</span><span>${escapeHtml(formatDuration(s.duration))}</span></div><div class="rules-text">${escapeHtml(entriesToText(s.entries))}</div>${s.entriesHigherLevel?`<hr><div class="modal-kicker">Higher Levels</div><div class="rules-text">${escapeHtml(entriesToText(s.entriesHigherLevel))}</div>`:""}`);
+  openModal(s.name, `<div class="modal-kicker">${escapeHtml(sourceLabel(s.source))} · ${s.level===0?"Cantrip":`Level ${s.level}`} · ${escapeHtml(spellSchoolName(s.school))}</div><div class="spell-facts"><span>${escapeHtml(formatSpellTime(s.time))}</span><span>${escapeHtml(formatSpellRange(s.range))}</span><span>${escapeHtml(formatComponents(s.components))}</span><span>${escapeHtml(formatDuration(s.duration))}</span></div><div class="rules-text formatted-rules">${renderRichEntries(s.entries)}</div>${s.entriesHigherLevel?`<hr><div class="modal-kicker">Higher Levels</div><div class="rules-text formatted-rules">${renderRichEntries(s.entriesHigherLevel)}</div>`:""}`);
 }
 function formatSpellTime(time){const t=time?.[0];return t?`${t.number} ${t.unit}`:"";}
 function formatSpellRange(range){const d=range?.distance; if(!d)return ""; return d.amount!=null?`${d.amount} ${d.type}`:d.type||"";}
@@ -1108,7 +1461,7 @@ function openAttackManager() {
 async function openItemPicker() {
   try {
     const data = await getItemsData();
-    const items = xphbEntries(data, "item").sort((a,b)=>a.name.localeCompare(b.name));
+    const items = officialEntries(data, "item").sort((a,b)=>a.name.localeCompare(b.name));
     openModal("Add 2024 item", `<div class="spell-toolbar"><input id="itemSearch" type="search" placeholder="Search items…"></div><div id="itemResults" class="spell-results"></div>`);
     const rerender = () => {
       const q = (document.querySelector("#itemSearch")?.value || "").toLowerCase().trim();
@@ -1116,17 +1469,17 @@ async function openItemPicker() {
       const root = document.querySelector("#itemResults"); if(!root)return;
       root.innerHTML = list.map((it,i)=>`<div class="spell-row"><div><strong>${escapeHtml(it.name)}</strong><div class="spell-meta">${escapeHtml(it.type || "Item")}</div></div><button class="button button-small button-primary" data-add-item="${i}">Add</button><button class="button button-small" data-item-detail="${i}">Info</button></div>`).join("")||`<div class="empty">No matching items.</div>`;
       root.querySelectorAll("[data-add-item]").forEach(btn=>btn.onclick=async()=>{const it=list[Number(btn.dataset.addItem)]; if(!it)return; addInventoryItem(it); closeModal(); state.view="equipment"; render();});
-      root.querySelectorAll("[data-item-detail]").forEach(btn=>btn.onclick=()=>{const it=list[Number(btn.dataset.itemDetail)]; if(it)openModal(it.name,`<div class="modal-kicker">${escapeHtml(it.source)} · ${escapeHtml(it.type||"")}</div><div class="rules-text">${escapeHtml(entriesToText(it.entries))}</div>`);});
+      root.querySelectorAll("[data-item-detail]").forEach(btn=>btn.onclick=()=>{const it=list[Number(btn.dataset.itemDetail)]; if(it)openModal(it.name,`<div class="modal-kicker">${escapeHtml(sourceLabel(it.source))} · ${escapeHtml(it.type||"")}</div><div class="rules-text formatted-rules">${renderRichEntries(it.entries)}</div>`);});
     };
     document.querySelector("#itemSearch").oninput=rerender; rerender();
   } catch(e){showToast(`Items could not be loaded: ${e.message}`);}
 }
 function addInventoryItem(it){const existing=state.character.inventory.find(x=>x.name===it.name&&x.source===it.source);if(existing)existing.quantity=Number(existing.quantity||1)+1;else state.character.inventory.push({name:it.name,source:it.source,quantity:1,equipped:false});saveCharacter();}
 function adjustItemQty(i,delta){const item=state.character.inventory[i];if(!item)return;item.quantity=Number(item.quantity||1)+delta;if(item.quantity<=0)state.character.inventory.splice(i,1);saveCharacter().then(render);}
-async function openInventoryItemInfo(i){const item=state.character.inventory[i];if(!item)return;const data=await getItemsData();const found=xphbEntries(data,"item").find(x=>x.name===item.name&&x.source===item.source)||xphbEntries(data,"item").find(x=>x.name===item.name);if(found)openModal(found.name,`<div class="modal-kicker">${escapeHtml(found.source)} · ${escapeHtml(found.type||"")}</div><div class="rules-text">${escapeHtml(entriesToText(found.entries))}</div>`);}
+async function openInventoryItemInfo(i){const item=state.character.inventory[i];if(!item)return;const data=await getItemsData();const found=officialEntries(data,"item").find(x=>x.name===item.name&&x.source===item.source)||officialEntries(data,"item").find(x=>x.name===item.name);if(found)openModal(found.name,`<div class="modal-kicker">${escapeHtml(sourceLabel(found.source))} · ${escapeHtml(found.type||"")}</div><div class="rules-text formatted-rules">${renderRichEntries(found.entries)}</div>`);}
 
 function updateSpellResultFilter(){
-  const spells = xphbEntries(state.data.spells,"spell").sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
+  const spells = officialEntries(state.data.spells,"spell").sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
   const maxSpellLevel = Math.max(0, Number(state.character.level || 1));
   const available = spells.filter(s => s.level === 0 || s.level <= maxSpellLevel).slice(0,1000);
   renderSpellResults(available);
@@ -1169,16 +1522,27 @@ function safeFileName(s){return String(s).replace(/[^a-z0-9-_]+/gi,"-").replace(
 function openImport(){const input=document.createElement("input");input.type="file";input.accept="application/json";input.onchange=async()=>{const file=input.files?.[0];if(!file)return;try{const parsed=migrateCharacter(JSON.parse(await file.text()));await idbPut("characters",parsed.id,parsed);state.character=parsed;await idbPut("kv","currentCharacterId",parsed.id);state.view="sheet";render();showToast("Character imported.");}catch(e){showToast(`Import failed: ${e.message}`);}};input.click();}
 
 function applyStandardArray(){
-  ABILITIES.forEach((a,i)=>state.character.stats[a]=STANDARD_ARRAY[i]);saveCharacter().then(render);
+  ABILITIES.forEach((a,i)=>state.character.baseStats[a]=STANDARD_ARRAY[i]);saveCharacter().then(render);
 }
 function applyPointBuyDefault(){
-  const values=[15,14,13,12,10,8];ABILITIES.forEach((a,i)=>state.character.stats[a]=values[i]);saveCharacter().then(render);showToast("Loaded the 27-point-buy baseline (15, 14, 13, 12, 10, 8). Adjust individual scores as needed.");
+  const values=[15,14,13,12,10,8];ABILITIES.forEach((a,i)=>state.character.baseStats[a]=values[i]);saveCharacter().then(render);showToast("Loaded the 27-point-buy baseline (15, 14, 13, 12, 10, 8). Adjust individual scores as needed.");
 }
 function shortRest(){
   const c=state.character;c.deathSaves={success:0,failure:0};for(const r of c.resources){if(r.recharge==="short")r.current=r.max;}saveCharacter().then(()=>{showToast("Short rest recorded.");render();});
 }
 function longRest(){
-  const c=state.character;c.hpCurrent=state.lastDerived?.maxHp??c.hpCurrent;c.tempHp=0;c.hitDiceUsed=0;c.deathSaves={success:0,failure:0};c.spellSlotsUsed=[];for(const r of c.resources){if(r.recharge==="short"||r.recharge==="long")r.current=r.max;}saveCharacter().then(()=>{showToast("Long rest recorded.");render();});
+  const c=state.character;
+  c.hpCurrent=state.lastDerived?.maxHp??c.hpCurrent;
+  c.hpAuto=false;
+  c.tempHp=0;
+  const totalHitDice=Math.max(1, Number(c.level||1));
+  c.hitDiceUsed=Math.max(0, Number(c.hitDiceUsed||0)-Math.ceil(totalHitDice/2));
+  c.deathSaves={success:0,failure:0};
+  c.spellSlotsUsed=[];
+  c.exhaustion=Math.max(0, Number(c.exhaustion||0)-1);
+  c.concentration=null;
+  for(const r of c.resources){if(r.recharge==="short"||r.recharge==="long")r.current=r.max;}
+  saveCharacter().then(()=>{showToast("Long rest recorded. HP, spell slots, hit dice, and exhaustion updated.");render();});
 }
 
 window.addEventListener("online",()=>{state.online=true;updateHeader();showToast("Back online.");});
