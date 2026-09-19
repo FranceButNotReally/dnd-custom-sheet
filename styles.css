@@ -446,3 +446,10 @@ button, select, input[type="checkbox"] { cursor: pointer; }
 .proficiency-summary > div strong { display:block; font-size:.68rem; color:var(--muted-2); text-transform:uppercase; letter-spacing:.08em; }
 .proficiency-summary > div span { display:block; margin-top:4px; color:var(--text); font-size:.72rem; line-height:1.45; }
 .manual-add-grid > div { min-width:0; }
+.feat-choice-row { margin-top:9px; padding:10px; border:1px solid var(--border); background:var(--panel-2); border-radius:11px; }
+.derived-effects-panel { margin-top:10px; }
+.active-effect-list { display:flex; flex-wrap:wrap; gap:7px; }
+.active-effect-chip { display:inline-flex; align-items:center; padding:6px 9px; border-radius:999px; border:1px solid var(--border-strong); background:var(--panel-2); color:var(--text); font-size:.7rem; font-weight:800; }
+.derived-subgroup { margin-top:10px; padding-top:8px; border-top:1px solid var(--border); }
+.derived-subgroup b { display:block; font-size:.7rem; color:var(--muted-2); text-transform:uppercase; letter-spacing:.06em; }
+.derived-subgroup p { margin:4px 0 0; color:var(--text); font-size:.78rem; }

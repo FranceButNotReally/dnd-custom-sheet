@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.5.2";
+const APP_VERSION = "0.6.0";
 
 const PATHS = {
   books: "data/books.json",
@@ -66,7 +66,7 @@ let dbPromise;
 
 function emptyCharacter() {
   return {
-    schema: 4,
+    schema: 5,
     id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     name: "New Character",
     player: "",
@@ -76,6 +76,9 @@ function emptyCharacter() {
     species: null,
     background: null,
     feat: null,
+    feats: [],
+    featAbilityChoices: {},
+    featSaveChoices: {},
     baseStats: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
     manualAbilityBonuses: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 },
     classSkillChoices: [],
@@ -113,17 +116,17 @@ function migrateCharacter(raw) {
   const base = emptyCharacter();
   if (!raw || typeof raw !== "object") return base;
   const c = { ...base, ...raw };
-  c.schema = 4;
+  c.schema = 5;
   c.baseStats = { ...base.baseStats, ...(raw.baseStats || raw.stats || {}) };
   c.manualAbilityBonuses = { ...base.manualAbilityBonuses, ...(raw.manualAbilityBonuses || {}) };
   c.deathSaves = { ...base.deathSaves, ...(raw.deathSaves || {}) };
   c.currency = { ...base.currency, ...(raw.currency || {}) };
   c.backgroundAbility = { ...base.backgroundAbility, ...(raw.backgroundAbility || {}) };
-  c.classSkillChoices = Array.isArray(raw.classSkillChoices) ? raw.classSkillChoices : [];
+  c.classSkillChoices = Array.isArray(raw.classSkillChoices) ? raw.classSkillChoices.map(normalizeSkillKey).filter(Boolean) : [];
+  c.expertise = Array.isArray(raw.expertise) ? raw.expertise.map(normalizeSkillKey).filter(Boolean) : [];
   c.customSkillProficiencies = Array.isArray(raw.customSkillProficiencies)
     ? raw.customSkillProficiencies
     : (Array.isArray(raw.skillProficiencies) ? raw.skillProficiencies : []);
-  c.expertise = Array.isArray(raw.expertise) ? raw.expertise : [];
   c.manualWeaponProficiencies = Array.isArray(raw.manualWeaponProficiencies) ? raw.manualWeaponProficiencies : [];
   c.manualArmorProficiencies = Array.isArray(raw.manualArmorProficiencies) ? raw.manualArmorProficiencies : [];
   c.manualToolProficiencies = Array.isArray(raw.manualToolProficiencies) ? raw.manualToolProficiencies : [];
@@ -137,6 +140,12 @@ function migrateCharacter(raw) {
   c.inventory = Array.isArray(raw.inventory) ? raw.inventory : [];
   c.resources = Array.isArray(raw.resources) ? raw.resources : [];
   c.attacks = Array.isArray(raw.attacks) ? raw.attacks : [];
+  c.feats = Array.isArray(raw.feats) ? raw.feats : (raw.feat ? [raw.feat] : []);
+  c.feat = c.feats[0] || null;
+  c.featAbilityChoices = { ...(raw.featAbilityChoices || {}) };
+  c.featSaveChoices = { ...(raw.featSaveChoices || {}) };
+  c.customSkillProficiencies = c.customSkillProficiencies.map(normalizeSkillKey).filter(Boolean);
+  c.expertise = [...new Set(c.expertise || [])];
   c.heroicInspiration = Boolean(raw.heroicInspiration);
   c.exhaustion = clamp(Number(raw.exhaustion || 0), 0, 6);
   c.concentration = raw.concentration ? String(raw.concentration) : null;
@@ -324,8 +333,9 @@ function sourceLabel(source) {
 }
 
 function isOfficial2024Entity(entity, sourceSet = state.data.officialSources) {
+  const sources = sourceSet && typeof sourceSet.has === "function" ? sourceSet : state.data.officialSources;
   return Boolean(entity && (
-    sourceSet?.has(entity.source) ||
+    sources.has(entity.source) ||
     entity.edition === "one" ||
     entity.basicRules2024 ||
     entity.srd52
@@ -333,7 +343,7 @@ function isOfficial2024Entity(entity, sourceSet = state.data.officialSources) {
 }
 
 function officialEntries(json, prop) {
-  return Array.isArray(json?.[prop]) ? json[prop].filter(isOfficial2024Entity) : [];
+  return Array.isArray(json?.[prop]) ? json[prop].filter(x => isOfficial2024Entity(x)) : [];
 }
 
 function sourceEntries(json, prop, source) {
@@ -473,7 +483,7 @@ function findFeat(name, source = null) { return findOfficial(state.data.feats, "
 function findLanguage(name, source = null) { return findOfficial(state.data.languages, "language", name, source); }
 
 function getClassFromFile(file, name, source = null) {
-  const entries = (file?.class || []).filter(isOfficial2024Entity);
+  const entries = (file?.class || []).filter(x => isOfficial2024Entity(x));
   const needle = String(name || "").trim().toLowerCase();
   return entries.find(x => x.name.toLowerCase() === needle && (!source || x.source === source)) ||
     entries.find(x => x.name.toLowerCase() === needle && x.edition === "one") ||
@@ -537,6 +547,82 @@ function decodeHtmlEntities(text) {
   return String(text || "").replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 }
 
+function normalizeSkillKey(value) {
+  const raw = decodeHtmlEntities(String(value || "")).trim();
+  if (!raw) return null;
+  if (SKILLS[raw]) return raw;
+  const norm = raw.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const found = Object.entries(SKILLS).find(([key, [, name]]) => key.replace(/[^a-z0-9]/gi, "").toLowerCase() === norm || name.replace(/[^a-z0-9]/gi, "").toLowerCase() === norm);
+  return found ? found[0] : null;
+}
+function normalizeAbilityKey(value) {
+  const raw = decodeHtmlEntities(String(value || "")).trim().toLowerCase();
+  const aliases = { strength:"str", dexterity:"dex", constitution:"con", intelligence:"int", wisdom:"wis", charisma:"cha" };
+  return ABILITIES.includes(raw) ? raw : aliases[raw] || null;
+}
+function normalizeSkillArray(values) { return [...new Set((values || []).map(normalizeSkillKey).filter(Boolean))]; }
+function featRefKey(feat, index = 0) { return `${feat?.name || "Feat"}|${feat?.source || ""}|${index}`; }
+function selectedFeatObjects(c) {
+  const refs = Array.isArray(c?.feats) && c.feats.length ? c.feats : (c?.feat ? [c.feat] : []);
+  const out = [];
+  for (const ref of refs) {
+    const obj = findFeat(ref?.name, ref?.source || null);
+    if (obj && !out.some(x => x.name.toLowerCase() === obj.name.toLowerCase() && x.source === obj.source)) out.push(obj);
+  }
+  return out;
+}
+function featAbilitySpecs(feat) {
+  const specs = [];
+  for (const [index, entry] of (Array.isArray(feat?.ability) ? feat.ability : []).entries()) {
+    if (entry?.choose?.weighted) {
+      const from = entry.choose.weighted.from || [];
+      const weights = entry.choose.weighted.weights || [];
+      for (const amount of weights) specs.push({ index, from: from.map(normalizeAbilityKey).filter(Boolean), amount: Number(amount) || 1 });
+      continue;
+    }
+    if (entry?.choose) {
+      const from = Array.isArray(entry.choose.from) ? entry.choose.from : (Array.isArray(entry.choose) ? entry.choose : []);
+      const amount = Number(entry.choose.amount ?? entry.amount ?? 1);
+      specs.push({ index, from: from.map(normalizeAbilityKey).filter(Boolean), amount });
+      continue;
+    }
+    for (const [ability, value] of Object.entries(entry || {})) {
+      const key = normalizeAbilityKey(ability);
+      if (key && Number(value) !== 0 && Number.isFinite(Number(value))) specs.push({ index, from: [key], amount: Number(value), fixed: true });
+    }
+  }
+  return specs;
+}
+function featSaveSpecs(feat) {
+  const specs = [];
+  for (const [index, entry] of (Array.isArray(feat?.savingThrowProficiencies) ? feat.savingThrowProficiencies : []).entries()) {
+    if (typeof entry === "string") { const key = normalizeAbilityKey(entry); if (key) specs.push({ index, from: [key], count: 1, fixed: true }); continue; }
+    const choose = entry?.choose;
+    if (choose) {
+      const from = Array.isArray(choose.from) ? choose.from.map(normalizeAbilityKey).filter(Boolean) : [];
+      specs.push({ index, from, count: Number(choose.count || 1) });
+      continue;
+    }
+    for (const [ability, value] of Object.entries(entry || {})) if (value) { const key = normalizeAbilityKey(ability); if (key) specs.push({ index, from: [key], count: 1, fixed: true }); }
+  }
+  return specs;
+}
+function reconcileFeatChoices(c, feats) {
+  c.featAbilityChoices = { ...(c.featAbilityChoices || {}) };
+  c.featSaveChoices = { ...(c.featSaveChoices || {}) };
+  for (const feat of feats || []) {
+    for (const spec of featAbilitySpecs(feat)) {
+      const key = featRefKey(feat, spec.index);
+      if (spec.fixed) { c.featAbilityChoices[key] = spec.from[0]; continue; }
+      if (!spec.from.includes(c.featAbilityChoices[key])) c.featAbilityChoices[key] = spec.from[0] || null;
+    }
+    for (const spec of featSaveSpecs(feat)) {
+      const key = featRefKey(feat, spec.index);
+      if (spec.fixed) { c.featSaveChoices[key] = spec.from[0]; continue; }
+      if (!spec.from.includes(c.featSaveChoices[key])) c.featSaveChoices[key] = spec.from[0] || null;
+    }
+  }
+}
 function canonicalLabel(value, kind = "") {
   const raw = decodeHtmlEntities(String(value || "")).trim();
   if (!raw) return "";
@@ -571,7 +657,7 @@ function tagLabel(tag, body) {
   if (["b", "bold", "i", "italic", "u", "underline", "s", "strike", "kbd"].includes(tag)) return raw;
   if (["skill", "feat", "spell", "item", "race", "background", "class", "subclass", "condition", "language", "action", "sense", "variantrule", "book"].includes(tag)) return canonicalLabel(raw, tag);
   if (tag === "dice" || tag === "damage" || tag === "dc" || tag === "hit" || tag === "chance") return parts[1] || raw;
-  if (tag === "filter") return parts[2] || parts[0] || "Filter";
+  if (tag === "filter") return parts[0] || "Filter";
   if (tag === "link") return parts[2] || parts[0];
   return parts[2] || parts[1] || parts[0] || tag;
 }
@@ -699,11 +785,11 @@ function spellSchoolName(code) { return SPELL_SCHOOLS[code] || code || ""; }
 function skillChoiceSpec(classObj) {
   const groups = classObj?.startingProficiencies?.skills || [];
   const choose = groups.find(x => x?.choose)?.choose;
-  return choose ? { from: choose.from || [], count: Number(choose.count || 1) } : { from: [], count: 0 };
+  return choose ? { from: normalizeSkillArray(choose.from || []), count: Number(choose.count || 1) } : { from: [], count: 0 };
 }
 function grantedSkillsFromMap(mapList) {
   const out = new Set();
-  for (const obj of mapList || []) for (const [skill, enabled] of Object.entries(obj || {})) if (enabled) out.add(skill);
+  for (const obj of mapList || []) for (const [skill, enabled] of Object.entries(obj || {})) if (enabled) { const key = normalizeSkillKey(skill); if (key) out.add(key); }
   return [...out];
 }
 function backgroundAbilitySpec(bg) {
@@ -772,13 +858,20 @@ function backgroundFeatNames(bg) {
 }
 
 
-function calculateFinalStats(c, bg) {
+function calculateFinalStats(c, bg, featObjs = selectedFeatObjects(c)) {
   const stats = { ...(c.baseStats || c.stats || {}) };
   for (const a of ABILITIES) stats[a] = clamp(Number(stats[a] ?? 10), 1, 30);
   const bonus2 = c.backgroundAbility?.plus2;
   const bonus1 = c.backgroundAbility?.plus1;
   if (bonus2 && ABILITIES.includes(bonus2)) stats[bonus2] = Math.min(20, Number(stats[bonus2]) + 2);
   if (bonus1 && ABILITIES.includes(bonus1) && bonus1 !== bonus2) stats[bonus1] = Math.min(20, Number(stats[bonus1]) + 1);
+  for (const feat of featObjs || []) {
+    for (const spec of featAbilitySpecs(feat)) {
+      const key = featRefKey(feat, spec.index);
+      const ability = c.featAbilityChoices?.[key] || spec.from[0];
+      if (ability && ABILITIES.includes(ability)) stats[ability] = Math.min(30, Number(stats[ability]) + Number(spec.amount || 0));
+    }
+  }
   for (const a of ABILITIES) stats[a] = Math.min(30, Number(stats[a]) + Number(c.manualAbilityBonuses?.[a] || 0));
   return stats;
 }
@@ -795,7 +888,7 @@ function friendlyProficiencyKey(key) {
   const norm = String(key || "").replace(/[^a-z0-9]/gi, "").toLowerCase();
   const aliases = { simple: "Simple Weapons", martial: "Martial Weapons", light: "Light Armor", medium: "Medium Armor", heavy: "Heavy Armor", shield: "Shields", shields: "Shields" };
   if (aliases[norm]) return aliases[norm];
-  return canonicalLabel(key);
+  return canonicalLabel(stripTags(key));
 }
 
 function dedupeLabels(values) {
@@ -818,8 +911,9 @@ function languageChoicesFromMap(map) {
   return labels;
 }
 
-function parseProficiencyDisplay(classObj, backgroundObj, speciesObj, featObj = null, includeManual = true) {
+function parseProficiencyDisplay(classObj, backgroundObj, speciesObj, featObjs = null, includeManual = true) {
   const armor = [], weapons = [], tools = [], languages = [];
+  const featList = Array.isArray(featObjs) ? featObjs : (featObjs ? [featObjs] : []);
   for (const obj of [classObj?.startingProficiencies, classObj?.armorProficiencies, classObj?.multiclassing?.proficienciesGained]) {
     for (const value of obj?.armor || obj?.armorProficiencies || []) {
       for (const x of (typeof value === "string" ? [value] : Object.keys(value || {}))) armor.push(friendlyProficiencyKey(x));
@@ -830,7 +924,7 @@ function parseProficiencyDisplay(classObj, backgroundObj, speciesObj, featObj = 
       for (const x of (typeof value === "string" ? [value] : Object.keys(value || {}))) weapons.push(friendlyProficiencyKey(x));
     }
   }
-  for (const obj of [classObj?.startingProficiencies, backgroundObj, speciesObj, featObj]) {
+  for (const obj of [classObj?.startingProficiencies, backgroundObj, speciesObj, ...featList]) {
     for (const map of obj?.toolProficiencies || []) tools.push(...Object.entries(map || {}).map(([k,v]) => `${friendlyProficiencyKey(k)}${Number(v) > 1 ? ` ×${v}` : ""}`));
     for (const map of obj?.languageProficiencies || []) languages.push(...languageChoicesFromMap(map));
   }
@@ -843,11 +937,16 @@ function parseProficiencyDisplay(classObj, backgroundObj, speciesObj, featObj = 
 }
 
 function hasWeaponProficiency(item, profs) {
-  const name = String(item?.name || "");
-  if (profs.some(p => p.toLowerCase() === name.toLowerCase())) return true;
+  const name = String(item?.name || "").toLowerCase();
+  const clean = (profs || []).map(p => stripTags(String(p || "")).toLowerCase());
+  if (clean.some(p => p === name)) return true;
   const category = String(item?.weaponCategory || "").toLowerCase();
-  if (category === "simple" && profs.some(p => /simple weapons/i.test(p))) return true;
-  if (category === "martial" && profs.some(p => /martial weapons/i.test(p))) return true;
+  const props = new Set((item?.property || []).map(String).map(x => x.split("|")[0]));
+  if (category === "simple" && clean.some(p => p === "simple weapons")) return true;
+  if (category === "martial") {
+    if (clean.some(p => p === "martial weapons")) return true;
+    if (clean.some(p => /martial weapons.*light property/i.test(p)) && props.has("L")) return true;
+  }
   return false;
 }
 
@@ -886,11 +985,10 @@ function damageTypeName(value) {
   return map[String(value || "").split("|")[0]] || canonicalLabel(value);
 }
 
-function calcAutoAc(c, mods, itemsData = null) {
+function calcAutoAc(c, mods, itemsData = null, effects = null) {
   const inventory = Array.isArray(c.inventory) ? c.inventory : [];
   const equipped = inventory.filter(x => x && x.equipped && x.name);
-  if (!itemsData || !equipped.length) return 10 + mods.dex;
-  const items = officialEntries(itemsData, "item");
+  const items = itemsData ? officialEntries(itemsData, "item") : [];
   const resolved = equipped.map((owned, index) => {
     const found = items.find(it => it.name === owned.name && it.source === owned.source) || items.find(it => it.name === owned.name);
     return found ? { owned, item: found, index } : null;
@@ -898,6 +996,12 @@ function calcAutoAc(c, mods, itemsData = null) {
   const armor = resolved.filter(({ item }) => /^(LA|MA|HA)(\||$)/.test(String(item.type || "")));
   const shields = resolved.filter(({ item }) => /^S(\||$)/.test(String(item.type || "")));
   let best = 10 + mods.dex;
+  let reason = "10 + Dexterity modifier";
+  const formula = effects?.acFormulas?.[0] || null;
+  if (!armor.length && formula && (!shields.length || formula.allowShield)) {
+    best = Number(formula.base || 10) + formula.abilities.reduce((sum, key) => sum + Number(mods[key] || 0), 0);
+    reason = formula.label || "Feature formula";
+  }
   if (armor.length) {
     for (const { item } of armor) {
       let base = Number(item.ac); if (!Number.isFinite(base)) continue;
@@ -905,11 +1009,72 @@ function calcAutoAc(c, mods, itemsData = null) {
       const type = String(item.type || "");
       if (/^LA(\||$)/.test(type)) dex = mods.dex;
       else if (/^MA(\||$)/.test(type)) { const cap = Number(item.dexterityMax ?? item.dexMax ?? 2); dex = Math.min(mods.dex, Number.isFinite(cap) ? cap : 2); }
-      const candidate = base + bonus + dex; if (candidate > best) best = candidate;
+      const candidate = base + bonus + dex; if (candidate > best || !best) { best = candidate; reason = item.name; }
     }
   }
-  if (shields.length) { const shieldAc = Math.max(...shields.map(({ item }) => Number(item.ac || 0) + (Number.parseInt(String(item.bonusAc || "0"), 10) || 0))); best += shieldAc; }
-  return best;
+  if (shields.length) {
+    const shieldAc = Math.max(...shields.map(({ item }) => Number(item.ac || 0) + (Number.parseInt(String(item.bonusAc || "0"), 10) || 0)));
+    best += shieldAc;
+    reason += " + shield";
+  }
+  best += Number(effects?.acBonus || 0);
+  return { value: best, reason };
+}
+
+function textNorm(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); }
+function classTableNumericValue(classObj, labelNeedle, level) {
+  const target = String(labelNeedle || "").toLowerCase();
+  for (const group of classObj?.classTableGroups || []) {
+    const labels = group.colLabels || [];
+    const idx = labels.findIndex(label => stripTags(String(label)).toLowerCase().includes(target));
+    if (idx < 0) continue;
+    const row = group.rows?.[Math.max(0, level - 1)];
+    const cell = Array.isArray(row) ? row[idx] : null;
+    if (Number.isFinite(Number(cell))) return Number(cell);
+    if (cell && typeof cell === "object") {
+      for (const key of ["value", "amount"]) if (Number.isFinite(Number(cell[key]))) return Number(cell[key]);
+      if (Number.isFinite(Number(cell.bonusSpeed?.value))) return Number(cell.bonusSpeed.value);
+    }
+  }
+  return 0;
+}
+function buildDerivedEffects(c, d, featObjs) {
+  const effects = {
+    acFormulas: [], acBonus: 0, hpPerLevel: 0, hpFlat: 0, speedBonus: 0, initiativeBonus: 0,
+    passivePerceptionBonus: 0, passiveInvestigationBonus: 0, resistances: [], senses: [], active: [],
+    savingThrows: new Set(), skills: new Set(), tools: [], languages: []
+  };
+  const allFeatures = [...(d.classFeatures || []), ...(d.subclassFeatures || [])];
+  for (const feature of allFeatures) {
+    const n = textNorm(feature.name);
+    if (n === "unarmoreddefense") {
+      if (textNorm(d.classObj?.name) === "barbarian") {
+        effects.acFormulas.push({ base: 10, abilities: ["dex", "con"], allowShield: true, label: "Unarmored Defense (10 + DEX + CON)" });
+        effects.active.push("Unarmored Defense: 10 + Dexterity + Constitution");
+      } else if (textNorm(d.classObj?.name) === "monk") {
+        effects.acFormulas.push({ base: 10, abilities: ["dex", "wis"], allowShield: false, label: "Unarmored Defense: 10 + DEX + WIS" });
+        effects.active.push("Unarmored Defense: 10 + Dexterity + Wisdom");
+      }
+    }
+    if (n === "unarmoredmovement") {
+      const bonus = classTableNumericValue(d.classObj, "unarmored movement", c.level);
+      if (bonus) { effects.speedBonus += bonus; effects.active.push(`Unarmored Movement: +${bonus} ft.`); }
+    }
+    if (n === "fastmovement") { effects.speedBonus += 10; effects.active.push("Fast Movement: +10 ft."); }
+  }
+  for (const feat of featObjs || []) {
+    const n = textNorm(feat.name);
+    if (n === "tough") { effects.hpPerLevel += 2; effects.active.push("Tough: +2 Hit Points per character level"); }
+    if (n === "alert") { effects.initiativeBonus += d.pb; effects.active.push("Alert: Initiative proficiency"); }
+    if (n === "observant") { effects.passivePerceptionBonus += 5; effects.passiveInvestigationBonus += 5; effects.active.push("Observant: +5 passive Perception and Investigation"); }
+    for (const spec of featSaveSpecs(feat)) {
+      const selected = c.featSaveChoices?.[featRefKey(feat, spec.index)];
+      if (selected) effects.savingThrows.add(selected);
+    }
+    for (const map of feat.skillProficiencies || []) for (const key of grantedSkillsFromMap([map])) effects.skills.add(key);
+    for (const r of feat.resist || []) effects.resistances.push(canonicalLabel(stripTags(String(r))));
+  }
+  return effects;
 }
 
 async function deriveCharacter() {
@@ -917,40 +1082,22 @@ async function deriveCharacter() {
   const backgroundObj = findBackground(c.background?.name, c.background?.source || null);
   if (backgroundObj) reconcileBackgroundAbilityChoices(c, backgroundObj);
   else c.backgroundAbility = { plus2: null, plus1: null };
-  const finalStats = calculateFinalStats(c, backgroundObj);
+  const featObjs = selectedFeatObjects(c);
+  reconcileFeatChoices(c, featObjs);
+  const finalStats = calculateFinalStats(c, backgroundObj, featObjs);
   const mods = Object.fromEntries(ABILITIES.map(a => [a, abilityMod(finalStats[a])]));
   const d = {
-    mods,
-    stats: finalStats,
-    baseStats: c.baseStats || c.stats || finalStats,
-    pb: proficiencyBonus(c.level),
-    classFile: null,
-    classObj: null,
-    subclassObj: null,
-    subclassOptions: [],
-    speciesObj: findSpecies(c.species?.name, c.species?.source || null),
-    backgroundObj,
-    featObj: findFeat(c.feat?.name, c.feat?.source || null),
-    classFeatures: [],
-    subclassFeatures: [],
-    skillProficiencies: new Set(),
-    skillChoiceSpec: { from: [], count: 0 },
-    savingThrowProficiencies: new Set(),
-    maxHp: 1,
-    currentHp: Number(c.hpCurrent ?? 0),
-    ac: Number(c.acOverride ?? (10 + mods.dex)),
-    acAutomatic: true,
-    speed: Number(c.speedOverride ?? dfltSpeed(findSpecies(c.species?.name, c.species?.source || null))),
-    size: findSpecies(c.species?.name, c.species?.source || null)?.size || "—",
-    spellcastingAbility: null,
-    spellSlots: [],
-    maxPrepared: null,
-    knownSpells: null,
-    cantrips: null,
-    inventoryWeight: 0,
-    passivePerception: 10 + mods.wis,
-    proficiencies: { armor: [], weapons: [], tools: [], languages: [] },
-    sourceSummary: state.data.sourceMeta || [],
+    mods, stats: finalStats, baseStats: c.baseStats || c.stats || finalStats, pb: proficiencyBonus(c.level),
+    classFile: null, classObj: null, subclassObj: null, subclassOptions: [],
+    speciesObj: findSpecies(c.species?.name, c.species?.source || null), backgroundObj,
+    featObj: featObjs[0] || null, featObjs, classFeatures: [], subclassFeatures: [],
+    skillProficiencies: new Set(), skillChoiceSpec: { from: [], count: 0 }, savingThrowProficiencies: new Set(),
+    effects: null, maxHp: 1, currentHp: Number(c.hpCurrent ?? 0), ac: Number(c.acOverride ?? (10 + mods.dex)), acAutomatic: true,
+    acReason: "10 + Dexterity modifier", speed: Number(c.speedOverride ?? dfltSpeed(findSpecies(c.species?.name, c.species?.source || null))),
+    size: sizeLabel(findSpecies(c.species?.name, c.species?.source || null)?.size), spellcastingAbility: null, spellSlots: [],
+    maxPrepared: null, knownSpells: null, cantrips: null, inventoryWeight: 0, passivePerception: 10 + mods.wis,
+    passiveInvestigation: 10 + mods.int, proficiencies: { armor: [], weapons: [], tools: [], languages: [] },
+    resistances: [], senses: [], sourceSummary: state.data.sourceMeta || []
   };
   if (c.class?.name) {
     d.classFile = await getClassDetails(c.class.name);
@@ -965,28 +1112,43 @@ async function deriveCharacter() {
     d.cantrips = classCantrips(d.classObj, c.level);
     d.maxPrepared = classPrepared(d.classObj, c.level, mods);
     d.knownSpells = classKnownSpells(d.classObj, c.level);
-    for (const save of d.classObj?.proficiency || []) d.savingThrowProficiencies.add(String(save).toLowerCase());
+    for (const save of d.classObj?.proficiency || []) { const key = normalizeAbilityKey(save); if (key) d.savingThrowProficiencies.add(key); }
   }
-  if (c.acOverride == null && Array.isArray(c.inventory) && c.inventory.some(x => x?.equipped)) {
-    try { d.ac = calcAutoAc(c, mods, await getItemsData()); } catch (error) { console.warn("Equipment AC calculation unavailable", error); }
-  } else if (c.acOverride != null) { d.ac = Number(c.acOverride); d.acAutomatic = false; }
+  d.effects = buildDerivedEffects(c, d, featObjs);
+  for (const save of d.effects.savingThrows) d.savingThrowProficiencies.add(save);
+  d.activeEffects = [...(d.effects.active || [])];
+  for (const value of d.effects.resistances || []) if (value && !d.resistances.includes(value)) d.resistances.push(value);
+  const speciesResists = Array.isArray(d.speciesObj?.resist) ? d.speciesObj.resist : [];
+  for (const value of speciesResists) { const label = canonicalLabel(stripTags(String(value))); if (label && !d.resistances.includes(label)) d.resistances.push(label); }
+  if (d.speciesObj?.darkvision) d.senses.push(`Darkvision ${d.speciesObj.darkvision} ft.`);
+  for (const [sense, value] of Object.entries(d.speciesObj?.senses || {})) if (value) d.senses.push(`${canonicalLabel(sense)} ${value} ft.`);
+  if (c.acOverride == null) {
+    try { const acResult = calcAutoAc(c, mods, await getItemsData(), d.effects); d.ac = acResult.value; d.acReason = acResult.reason; }
+    catch (error) { console.warn("Equipment AC calculation unavailable", error); }
+  } else { d.ac = Number(c.acOverride); d.acAutomatic = false; d.acReason = "Manual override"; }
   const bgSkills = grantedSkillsFromMap(d.backgroundObj?.skillProficiencies);
   for (const s of bgSkills) d.skillProficiencies.add(s);
-  for (const s of c.classSkillChoices) d.skillProficiencies.add(s);
-  for (const s of c.customSkillProficiencies) d.skillProficiencies.add(s);
+  for (const s of normalizeSkillArray(c.classSkillChoices)) d.skillProficiencies.add(s);
+  for (const s of normalizeSkillArray(c.customSkillProficiencies)) d.skillProficiencies.add(s);
   for (const s of d.speciesObj?.skillProficiencies ? grantedSkillsFromMap(d.speciesObj.skillProficiencies) : []) d.skillProficiencies.add(s);
-  const perceptionKey = Object.keys(SKILLS).find(k => k === "perception");
+  for (const s of d.effects.skills) d.skillProficiencies.add(s);
+  const perceptionKey = "perception";
   if (d.skillProficiencies.has(perceptionKey)) d.passivePerception += d.pb;
   if (c.expertise.includes(perceptionKey)) d.passivePerception += d.pb;
-  d.proficiencies = parseProficiencyDisplay(d.classObj, d.backgroundObj, d.speciesObj, d.featObj);
-  d.maxHp = defaultMaxHp(d.classObj, c.level, mods.con, c.hpMaxOverride);
+  d.passivePerception += Number(d.effects.passivePerceptionBonus || 0);
+  if (d.skillProficiencies.has("investigation")) d.passiveInvestigation += d.pb;
+  if (c.expertise.includes("investigation")) d.passiveInvestigation += d.pb;
+  d.passiveInvestigation += Number(d.effects.passiveInvestigationBonus || 0);
+  d.proficiencies = parseProficiencyDisplay(d.classObj, d.backgroundObj, d.speciesObj, featObjs);
+  d.speed = Number(c.speedOverride ?? (dfltSpeed(d.speciesObj) + Number(d.effects.speedBonus || 0)));
+  const baseMaxHp = defaultMaxHp(d.classObj, c.level, mods.con, c.hpMaxOverride);
+  d.maxHp = c.hpMaxOverride == null ? baseMaxHp + Number(d.effects.hpPerLevel || 0) * Number(c.level || 1) + Number(d.effects.hpFlat || 0) : baseMaxHp;
+  if (c.acOverride == null && !Number.isFinite(d.ac)) d.ac = 10 + mods.dex;
   c.hitDiceUsed = Math.min(Math.max(0, Number(c.hitDiceUsed || 0)), Math.max(0, Number(c.level || 1)));
-  if (Array.isArray(c.spellSlotsUsed) && d.spellSlots.length) {
-    c.spellSlotsUsed = c.spellSlotsUsed.slice(0, d.spellSlots.length).map((used, i) => Math.min(Math.max(0, Number(used || 0)), Number(d.spellSlots[i] || 0)));
-  }
+  if (Array.isArray(c.spellSlotsUsed) && d.spellSlots.length) c.spellSlotsUsed = c.spellSlotsUsed.slice(0, d.spellSlots.length).map((used, i) => Math.min(Math.max(0, Number(used || 0)), Number(d.spellSlots[i] || 0)));
   c.exhaustion = clamp(Number(c.exhaustion || 0), 0, 6);
   if (c.hpAuto || c.hpCurrent == null) { c.hpCurrent = d.maxHp; d.currentHp = d.maxHp; c.hpAuto = true; }
-  else d.currentHp = clamp(Number(c.hpCurrent || 0), 0, d.maxHp);
+  else { d.currentHp = clamp(Number(c.hpCurrent || 0), 0, d.maxHp); }
   if (d.currentHp > d.maxHp && c.hpMaxOverride == null) { d.currentHp = d.maxHp; c.hpCurrent = d.maxHp; }
   if (!c.baseStats) c.baseStats = { ...c.stats };
   if (c.backgroundAbility?.plus2 === c.backgroundAbility?.plus1) c.backgroundAbility.plus1 = null;
@@ -994,6 +1156,8 @@ async function deriveCharacter() {
   await saveCharacter();
   return d;
 }
+
+function sizeLabel(value) { return Array.isArray(value) ? value.join(" / ") : (value || "—"); }
 
 function dfltSpeed(species) {
   if (!species?.speed) return 30;
@@ -1084,7 +1248,7 @@ async function renderSheet(app) {
     .map(f => `<button class="sheet-feature-row" data-action="feature" data-name="${encodeURIComponent(f.name)}" data-kind="${f.kind}"><div><strong>${escapeHtml(f.name)}</strong><span>${escapeHtml(f.kind)} · Level ${f.level}</span></div><span>›</span></button>`).join("") || `<div class="sheet-empty">No class features yet.</div>`;
   const speciesTraits = (d.speciesObj?.entries || []).filter(x => x && x.name).slice(0, 10);
   const traitRows = speciesTraits.map(t => `<button class="sheet-feature-row" data-action="species-trait" data-name="${encodeURIComponent(t.name)}"><div><strong>${escapeHtml(t.name)}</strong><span>Species</span></div><span>›</span></button>`).join("") || `<div class="sheet-empty">Choose a species.</div>`;
-  const featRow = d.featObj ? `<button class="sheet-feature-row" data-action="feat-detail" data-name="${encodeURIComponent(d.featObj.name)}"><div><strong>${escapeHtml(d.featObj.name)}</strong><span>Origin Feat · ${escapeHtml(sourceLabel(d.featObj.source))}</span></div><span>›</span></button>` : `<div class="sheet-empty">Choose an Origin feat.</div>`;
+  const featRow = d.featObjs.length ? d.featObjs.map(feat => `<button class="sheet-feature-row" data-action="feat-detail" data-name="${encodeURIComponent(`${feat.name}|${feat.source}`)}"><div><strong>${escapeHtml(feat.name)}</strong><span>Feat · ${escapeHtml(sourceLabel(feat.source))}</span></div><span>›</span></button>`).join("") : `<div class="sheet-empty">Choose a feat.</div>`;
   const conditionChips = CONDITIONS.map(x => `<button class="sheet-chip ${c.conditions.includes(x) ? "selected" : ""}" data-action="condition" data-condition="${escapeHtml(x)}">${escapeHtml(x)}</button>`).join("");
   const inspiration = c.heroicInspiration ? "★" : "☆";
   const slots = Array.from({length: 9}, (_,i) => d.spellSlots[i] ? `<div class="spell-slot-box"><strong>${i+1}</strong>${pipBar(d.spellSlots[i], countSlotUsed(c,i+1), "slot", {level:i+1})}</div>` : "").filter(Boolean).join("");
@@ -1099,12 +1263,12 @@ async function renderSheet(app) {
     <div class="identity-grid">
       <div class="identity-fields"><div class="field-line"><span>Character Name</span><strong>${escapeHtml(c.name || "—")}</strong></div><div class="field-line"><span>Background</span><strong>${escapeHtml(c.background?.name || "—")}</strong></div><div class="field-line"><span>Species</span><strong>${escapeHtml(c.species?.name || "—")}</strong></div><div class="field-line"><span>Player</span><strong>${escapeHtml(c.player || "—")}</strong></div></div>
       <div class="identity-fields"><div class="field-line"><span>Class & Subclass</span><strong>${escapeHtml(classLine || "—")}</strong></div><div class="field-line"><span>Level</span><strong>${c.level}</strong></div><div class="field-line"><span>Experience</span><strong>—</strong></div><div class="field-line"><span>Proficiency Bonus</span><strong>${formatMod(d.pb)}</strong></div></div>
-      <div class="identity-stat-box"><span>Armor Class</span><strong>${d.ac}</strong></div>
+      <div class="identity-stat-box"><span>Armor Class</span><strong>${d.ac}</strong><small>${escapeHtml(d.acReason || "Automatic")}</small></div>
       <div class="identity-stat-box hp"><span>Hit Points</span><strong>${d.currentHp}<small> / ${d.maxHp}</small></strong><div class="hp-actions"><button data-action="hp" data-delta="-1">−</button><button data-action="hp" data-delta="1">+</button></div></div>
       <div class="identity-stat-box"><span>Hit Dice</span><strong>d${hitDieFaces(d.classObj)}</strong><small>${c.hitDiceUsed} used</small></div>
       <div class="identity-stat-box"><span>Death Saves</span><strong>${c.deathSaves.success} ✓ · ${c.deathSaves.failure} ✕</strong><small><button data-action="death" data-type="success">Success</button> <button data-action="death" data-type="failure">Failure</button></small></div>
     </div>
-    <div class="sheet-metrics"><div><span>Initiative</span><strong>${formatMod(d.mods.dex)}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong></div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility]) : "—"}</strong></div></div>
+    <div class="sheet-metrics"><div><span>Initiative</span><strong>${formatMod(d.mods.dex + Number(d.effects?.initiativeBonus || 0))}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong></div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility]) : "—"}</strong></div></div>${d.activeEffects?.length ? `<section class="sheet-panel derived-effects-panel"><div class="sheet-panel-title">Active Rules Effects</div><div class="active-effect-list">${d.activeEffects.map(x=>`<span class="active-effect-chip">${escapeHtml(x)}</span>`).join("")}</div></section>` : ""}
     <div class="sheet-grid-main"><div class="ability-column">${abilityBoxes}</div><div class="sheet-right-column">
       <section class="sheet-panel"><div class="sheet-panel-title">Weapons & Damage Cantrips <button class="sheet-mini-btn" data-action="manage-attacks">Manage</button></div><div class="weapon-table head"><span>Name</span><span>Atk</span><span>Damage</span><span>Notes</span></div>${attackHtml}</section>
       <section class="sheet-panel"><div class="sheet-panel-title">Class Features</div>${featureRows}</section>
@@ -1120,7 +1284,7 @@ async function renderSheet(app) {
     <div class="spellcasting-head"><div><span>Spellcasting Ability</span><strong>${d.spellcastingAbility ? ABILITY_LABELS[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8+d.pb+d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack Bonus</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility]) : "—"}</strong></div><div><span>Prepared</span><strong>${d.maxPrepared ?? "—"}</strong></div></div>
     <section class="sheet-panel spell-slots-panel"><div class="sheet-panel-title">Spell Slots</div><div class="spell-slot-grid">${slots || `<div class="sheet-empty">No spell slots.</div>`}</div></section>
     <div class="sheet-grid-two"><section class="sheet-panel"><div class="sheet-panel-title">Cantrips</div>${cantrips.length ? cantrips.map(s => `<button class="sheet-list-item" data-action="spell" data-spell="${encodeURIComponent(`${s.name}|${s.source}`)}"><span>${escapeHtml(s.name)}</span><small>${escapeHtml(spellSchoolName(s.school))}</small></button>`).join("") : `<div class="sheet-empty">No cantrips selected.</div>`}</section><section class="sheet-panel"><div class="sheet-panel-title">Prepared Spells</div>${prepared.length ? prepared.map(s => `<button class="sheet-list-item" data-action="spell" data-spell="${encodeURIComponent(`${s.name}|${s.source}`)}"><span>${escapeHtml(s.name)}</span><small>Level ${s.level}</small></button>`).join("") : `<div class="sheet-empty">No prepared spells selected.</div>`}</section></div>
-    <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Proficiencies & Languages</div><div class="proficiency-groups"><div><b>Armor</b><p>${escapeHtml(d.proficiencies.armor.join(", ") || "None")}</p></div><div><b>Weapons</b><p>${escapeHtml(d.proficiencies.weapons.join(", ") || "None")}</p></div><div><b>Tools</b><p>${escapeHtml(d.proficiencies.tools.join(", ") || "None")}</p></div><div><b>Languages</b><p>${escapeHtml(languages.join(", ") || "None")}</p></div></div><button class="sheet-mini-btn" data-action="builder">Edit proficiencies</button></section><section class="sheet-panel"><div class="sheet-panel-title">Personality & Backstory</div><textarea class="sheet-notes" data-field="notes" rows="12" placeholder="Character notes, personality, ideals, bonds, flaws, backstory…">${escapeHtml(c.notes)}</textarea></section></div>
+    <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Proficiencies & Languages</div><div class="proficiency-groups"><div><b>Armor</b><p>${escapeHtml(d.proficiencies.armor.join(", ") || "None")}</p></div><div><b>Weapons</b><p>${escapeHtml(d.proficiencies.weapons.join(", ") || "None")}</p></div><div><b>Tools</b><p>${escapeHtml(d.proficiencies.tools.join(", ") || "None")}</p></div><div><b>Languages</b><p>${escapeHtml(languages.join(", ") || "None")}</p></div></div>${d.resistances.length ? `<div class="derived-subgroup"><b>Damage Resistances</b><p>${escapeHtml(d.resistances.join(", "))}</p></div>` : ""}${d.senses.length ? `<div class="derived-subgroup"><b>Senses</b><p>${escapeHtml(d.senses.join(", "))}</p></div>` : ""}<button class="sheet-mini-btn" data-action="builder">Edit proficiencies</button></section><section class="sheet-panel"><div class="sheet-panel-title">Personality & Backstory</div><textarea class="sheet-notes" data-field="notes" rows="12" placeholder="Character notes, personality, ideals, bonds, flaws, backstory…">${escapeHtml(c.notes)}</textarea></section></div>
     <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Equipment</div>${(c.inventory || []).length ? c.inventory.slice(0,12).map((it,i) => `<div class="sheet-list-item static"><span>${escapeHtml(it.name)}${it.quantity>1?` ×${it.quantity}`:""}</span><small>${it.equipped ? "Equipped" : ""}</small></div>`).join("") : `<div class="sheet-empty">No equipment.</div>`}<button class="sheet-mini-btn" data-action="equipment">Open equipment</button></section><section class="sheet-panel"><div class="sheet-panel-title">Coins & Attunement</div><div class="coin-grid">${["cp","sp","ep","gp","pp"].map(k => `<label><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" value="${Number(c.currency?.[k] || 0)}" min="0"></label>`).join("")}</div><div class="attunement"><b>Magic Item Attunement</b><p>Track attuned items in Equipment.</p></div></section></div>
     <section class="sheet-panel compact-sheet-gap"><div class="sheet-panel-title">Rest & Resources</div><div class="resource-actions"><button class="sheet-nav" data-action="rest-short">Short Rest</button><button class="sheet-nav" data-action="rest-long">Long Rest</button><button class="sheet-nav" data-action="manage-resources">Manage Resources</button><button class="sheet-nav" data-action="temp-hp">Temporary HP</button><span>Exhaustion ${c.exhaustion}/6</span></div></section>
   </div>`;
@@ -1142,10 +1306,10 @@ async function renderBuilder(app) {
   const d = await deriveCharacter();
   const bgAbility = backgroundAbilitySpec(bg);
   const bgFeatRefs = backgroundFeatNames(bg);
-  const availableOriginFeats = bgFeatRefs.length ? feats.filter(f => bgFeatRefs.some(ref => String(ref.name || ref).toLowerCase() === f.name.toLowerCase() && (!ref.source || ref.source === f.source))) : feats.filter(x => x.category !== "O" || !x.category);
+  const availableOriginFeats = bgFeatRefs.length ? feats.filter(f => bgFeatRefs.some(ref => String(ref.name || ref).toLowerCase() === f.name.toLowerCase() && (!ref.source || ref.source === f.source))) : [];
   const selectedAbility2 = c.backgroundAbility.plus2;
   const selectedAbility1 = c.backgroundAbility.plus1;
-  const classSkillChoices = new Set(c.classSkillChoices);
+  const classSkillChoices = new Set(normalizeSkillArray(c.classSkillChoices));
   const classOptionsSkills = d.skillChoiceSpec?.from || [];
   const maxClassSkills = d.skillChoiceSpec?.count || 0;
   const pointBuyTotal = ABILITIES.reduce((sum,a)=>sum+(POINT_BUY_COST[Math.max(8, Math.min(15, Number(c.baseStats[a] || 10)))] ?? 0),0);
@@ -1173,7 +1337,7 @@ async function renderBuilder(app) {
     <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Background ability increases</div><div class="mini">Choose the increases granted by the selected 2024 background. The final scores above update immediately. The +2/+1 choices are prefilled to the first legal options and remain editable.</div></div></div>${bg ? `<div class="mini" style="margin-bottom:10px">${escapeHtml(bg.name)}: +2 from ${escapeHtml((bgAbility.plus2From || []).map(x=>ABILITY_LABELS[x]).join(", ") || "choice")} and +1 from ${escapeHtml((bgAbility.plus1From || []).map(x=>ABILITY_LABELS[x]).join(", ") || "choice")}.</div><div class="form-grid two"><label class="field">+2 ability<select data-builder="bgPlus2"><option value="">— Select —</option>${(bgAbility.plus2From || []).map(x=>`<option value="${x}" ${selectedAbility2===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1"><option value="">— Select —</option>${(bgAbility.plus1From || []).filter(x=>x!==selectedAbility2).map(x=>`<option value="${x}" ${selectedAbility1===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label></div>${autoBonusLines}` : `<div class="empty">Choose a 2024 background to see its ability-score options.</div>`}</section>
 
     <div class="grid two compact-gap"><section class="card"><div class="section-head"><div class="section-title">Class skill choices</div><span class="status-pill">${classSkillChoices.size} / ${maxClassSkills || 0}</span></div>${classOptionsSkills.length ? `<div class="skill-grid">${classOptionsSkills.map(key=>`<label class="skill-check"><input type="checkbox" data-class-skill="${key}" ${classSkillChoices.has(key)?"checked":""}>${escapeHtml(SKILLS[key]?.[1] || canonicalLabel(key))}</label>`).join("")}</div>` : `<div class="empty">Choose a class to load its skill choices from 5etools.</div>`}<div class="section-title subhead">Skill expertise</div><div class="skill-grid">${Object.entries(SKILLS).map(([key,[,name]])=>`<label class="skill-check"><input type="checkbox" data-expertise="${key}" ${c.expertise.includes(key)?"checked":""}>${escapeHtml(name)}</label>`).join("")}</div></section><section class="card"><div class="section-title">Background</div>${bg ? `<div class="detail-list"><div><strong>Skills</strong><span>${escapeHtml(grantedSkillsFromMap(bg.skillProficiencies).map(k=>SKILLS[k]?.[1]||canonicalLabel(k)).join(", ")||"None")}</span></div><div><strong>Origin feat</strong><span>${escapeHtml(bgFeatRefs.map(x=>x.name || x).join(", ")||"Choice")}</span></div><div><strong>Tools</strong><span>${escapeHtml(backgroundProficiencies.tools.join(", ")||"None")}</span></div><div><strong>Languages</strong><span>${escapeHtml(backgroundProficiencies.languages.join(", ")||"None")}</span></div></div>` : `<div class="empty">Choose a background.</div>`}</section></div>
-    <section class="card compact-gap"><div class="section-title">Origin feat</div><div class="form-grid two"><label class="field">Feat<select data-builder="feat"><option value="">— Choose —</option>${availableOriginFeats.map(x=>`<option value="${escapeHtml(refValue(x))}" ${c.feat?.name===x.name&&c.feat?.source===x.source?"selected":""}>${escapeHtml(x.name)} · ${escapeHtml(x.source)}</option>`).join("")}</select></label><div>${d.featObj ? `<button class="feature feature-block" data-action="feat-detail" data-name="${encodeURIComponent(`${d.featObj.name}|${d.featObj.source}`)}"><strong>${escapeHtml(d.featObj.name)}</strong>${renderRichEntries((d.featObj.entries||[]).slice(0,2))}</button>` : `<div class="empty">Choose a feat to keep a rules reference on the character.</div>`}</div></div></section>
+    <section class="card compact-gap"><div class="section-title">Origin feat</div><div class="form-grid two"><label class="field">Feat<select data-builder="feat"><option value="">— Choose —</option>${availableOriginFeats.map(x=>`<option value="${escapeHtml(refValue(x))}" ${c.feat?.name===x.name&&c.feat?.source===x.source?"selected":""}>${escapeHtml(x.name)} · ${escapeHtml(x.source)}</option>`).join("")}</select></label><div>${d.featObj ? `<button class="feature feature-block" data-action="feat-detail" data-name="${encodeURIComponent(`${d.featObj.name}|${d.featObj.source}`)}"><strong>${escapeHtml(d.featObj.name)}</strong>${renderRichEntries((d.featObj.entries||[]).slice(0,2))}</button>` : `<div class="empty">Choose a feat to keep a rules reference on the character.</div>`}</div></div>${d.featObjs.flatMap(feat => featAbilitySpecs(feat).map(spec => { const key=featRefKey(feat,spec.index); return spec.fixed || !spec.from.length ? "" : `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Ability increase (+${spec.amount})<select data-feat-ability="${escapeHtml(key)}">${spec.from.map(a=>`<option value="${a}" ${c.featAbilityChoices?.[key]===a?"selected":""}>${ABILITY_NAMES[a]}</option>`).join("")}</select></label></div>`; })).join("")}</section>
 
     <div class="grid two compact-gap"><section class="card"><div class="section-title">Proficiencies & languages</div><div class="proficiency-summary"><div><strong>Armor</strong><span>${escapeHtml(d.proficiencies.armor.join(", ")||"None")}</span></div><div><strong>Weapons</strong><span>${escapeHtml(d.proficiencies.weapons.join(", ")||"None")}</span></div><div><strong>Tools</strong><span>${escapeHtml(d.proficiencies.tools.join(", ")||"None")}</span></div><div><strong>Languages</strong><span>${escapeHtml(d.proficiencies.languages.join(", ")||"None")}</span></div></div></section><section class="card"><div class="section-title">Add manual proficiencies</div><div class="manual-add-grid"><div><div class="chips">${manualList("manualArmorProficiencies")}</div><div class="manual-add"><input data-manual-input="manualArmorProficiencies" placeholder="Armor proficiency"><button class="button button-small" data-action="add-manual" data-list="manualArmorProficiencies">Add</button></div></div><div><div class="chips">${manualList("manualWeaponProficiencies")}</div><div class="manual-add"><input data-manual-input="manualWeaponProficiencies" placeholder="Weapon proficiency"><button class="button button-small" data-action="add-manual" data-list="manualWeaponProficiencies">Add</button></div></div><div><div class="chips">${manualList("manualToolProficiencies")}</div><div class="manual-add"><input data-manual-input="manualToolProficiencies" placeholder="Tool proficiency"><button class="button button-small" data-action="add-manual" data-list="manualToolProficiencies">Add</button></div></div><div><div class="chips">${manualList("manualLanguages")}</div><div class="manual-add"><select id="languagePicker"><option value="">Choose a language</option>${officialEntries(state.data.languages, "language").sort((a,b)=>a.name.localeCompare(b.name)).map(x=>`<option value="${escapeHtml(refValue(x))}">${escapeHtml(x.name)}${x.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(x.source))}`:""}</option>`).join("")}</select><button class="button button-small" data-action="add-language-choice">Add</button></div><div class="manual-add"><input data-manual-input="manualLanguages" placeholder="Other language"><button class="button button-small" data-action="add-manual" data-list="manualLanguages">Add</button></div></div></div></section></div>
 
@@ -1335,9 +1499,11 @@ function bindEvents() {
     };
   });
   document.querySelectorAll("[data-stat]").forEach(el => el.onchange = async () => { state.character.baseStats[el.dataset.stat] = clamp(Number(el.value),1,30); await saveCharacter(); render(); });
-  document.querySelectorAll("[data-class-skill]").forEach(el => el.onchange = async () => { const arr=state.character.classSkillChoices; toggleArray(arr,el.dataset.classSkill,el.checked); const max=state.lastDerived?.skillChoiceSpec?.count||0; if(arr.length>max){arr.splice(arr.indexOf(el.dataset.classSkill),1);el.checked=false;showToast(`Choose only ${max} class skills.`);return;} await saveCharacter(); render(); });
-  document.querySelectorAll("[data-custom-skill]").forEach(el => el.onchange = async () => { toggleArray(state.character.customSkillProficiencies, el.dataset.customSkill, el.checked); await saveCharacter(); render(); });
-  document.querySelectorAll("[data-expertise]").forEach(el => el.onchange = async () => { toggleArray(state.character.expertise, el.dataset.expertise, el.checked); await saveCharacter(); render(); });
+  document.querySelectorAll("[data-feat-ability]").forEach(el => el.onchange = async () => { state.character.featAbilityChoices[el.dataset.featAbility] = el.value; await saveCharacter(); render(); });
+  document.querySelectorAll("[data-feat-save]").forEach(el => el.onchange = async () => { state.character.featSaveChoices[el.dataset.featSave] = el.value; await saveCharacter(); render(); });
+  document.querySelectorAll("[data-class-skill]").forEach(el => el.onchange = async () => { const arr=state.character.classSkillChoices; toggleArray(arr,normalizeSkillKey(el.dataset.classSkill),el.checked); const max=state.lastDerived?.skillChoiceSpec?.count||0; if(arr.length>max){arr.splice(arr.indexOf(el.dataset.classSkill),1);el.checked=false;showToast(`Choose only ${max} class skills.`);return;} await saveCharacter(); render(); });
+  document.querySelectorAll("[data-custom-skill]").forEach(el => el.onchange = async () => { toggleArray(state.character.customSkillProficiencies, normalizeSkillKey(el.dataset.customSkill), el.checked); await saveCharacter(); render(); });
+  document.querySelectorAll("[data-expertise]").forEach(el => el.onchange = async () => { toggleArray(state.character.expertise, normalizeSkillKey(el.dataset.expertise), el.checked); await saveCharacter(); render(); });
   document.querySelectorAll("[data-spell-toggle]").forEach(el => el.onchange = async () => toggleSpellCollection(el.dataset.spellToggle, el.checked));
   document.querySelectorAll("[data-spell-tab]").forEach(el => el.onclick = () => { state.spellPickerTab = el.dataset.spellTab; render(); });
   const search = document.querySelector("#spellSearch"); const level = document.querySelector("#spellLevel");
@@ -1365,20 +1531,29 @@ async function readBuilder() {
     const ref = splitRefId(get(key).value);
     c[key] = ref.name ? { name: ref.name, source: ref.source || DATA_SOURCE } : null;
   }
+  c.feats = c.feat ? [c.feat] : [];
   if (get("bgPlus2")) c.backgroundAbility.plus2 = get("bgPlus2").value || null;
   if (get("bgPlus1")) c.backgroundAbility.plus1 = get("bgPlus1").value || null;
   if (c.backgroundAbility.plus2 && c.backgroundAbility.plus2 === c.backgroundAbility.plus1) c.backgroundAbility.plus1 = null;
+  c.classSkillChoices = normalizeSkillArray(c.classSkillChoices);
+  c.customSkillProficiencies = normalizeSkillArray(c.customSkillProficiencies);
+  c.expertise = normalizeSkillArray(c.expertise);
   const selectedBackground = findBackground(c.background?.name, c.background?.source || null);
   const backgroundFeats = backgroundFeatNames(selectedBackground);
   if (backgroundFeats.length === 1) {
     const resolved = findFeat(backgroundFeats[0].name || backgroundFeats[0], backgroundFeats[0].source || null);
     if (resolved) c.feat = { name: resolved.name, source: resolved.source };
-  } else if (backgroundFeats.length > 1 && c.feat && !backgroundFeats.some(n => String(n.name || n).toLowerCase() === c.feat.name.toLowerCase() && (!n.source || n.source === c.feat.source))) c.feat = null;
+  } else if (!backgroundFeats.length) {
+    c.feat = null;
+  } else if (c.feat && !backgroundFeats.some(n => String(n.name || n).toLowerCase() === c.feat.name.toLowerCase() && (!n.source || n.source === c.feat.source))) {
+    c.feat = null;
+  }
+  c.feats = c.feat ? [c.feat] : [];
   if (c.class?.name) {
     const file = await getClassDetails(c.class.name);
     const obj = getClassFromFile(file, c.class.name, c.class.source || null);
     const spec = skillChoiceSpec(obj);
-    c.classSkillChoices = c.classSkillChoices.filter(x => spec.from.includes(x)).slice(0, spec.count);
+    c.classSkillChoices = normalizeSkillArray(c.classSkillChoices).filter(x => spec.from.includes(x)).slice(0, spec.count);
   }
   if (get("acOverride")) c.acOverride = get("acOverride").value === "" ? null : Number(get("acOverride").value);
   if (get("speedOverride")) c.speedOverride = get("speedOverride").value === "" ? null : Number(get("speedOverride").value);

@@ -1,21 +1,11 @@
-## 0.5.2
-
-- Expanded player-data loading beyond `XPHB` to all official 2024-era sources discoverable from 5etools metadata/entity markers; future qualifying sources are included automatically after sync.
-- Corrected 2024 background ability parsing for weighted +2/+1 choices and auto-populated the first legal choices when a background is selected.
-- Added explicit skill expertise tracking and improved background tool/language display.
-- Added manual armor proficiency tracking alongside weapon/tool/language proficiencies.
-- Improved formatted rules rendering for lists/options/read-aloud entries and ensured item reference dialogs use the structured renderer.
-- Updated the app shell/cache version.
-
 # Changelog
 
-## 0.3.0
-
-- Added Heroic Inspiration, concentration, and exhaustion tracking.
-- Corrected Long Rest Hit Dice recovery to half of expended Hit Dice, rounded up.
-- Long Rest now reduces exhaustion by one and clears concentration.
-- Recovering from 0 HP resets death saves.
-- Equipped inventory items now feed the automatic armor/shield AC calculation.
-- Improved 2024 background-origin-feat filtering.
-- Added character-schema migration for the new table-state fields.
-- Bumped the service-worker shell cache version.
+## 0.6.0
+- Fixed the `sourceSet?.has is not a function` startup crash caused by passing `Array.filter` arguments into the source-check helper.
+- Added a rules-effect layer for selected feats and class features, including Unarmored Defense, Unarmored Movement, Fast Movement, Tough, Alert, Observant, feat ability increases, and feat saving-throw proficiency choices.
+- Normalized 5etools skill identifiers so values such as `animal handling` correctly become the internal `animalHandling` skill and contribute to skill bonuses.
+- Improved automatic AC derivation and expose the reason/source on the sheet.
+- Added derived passive Investigation, damage-resistance, sense, initiative, speed, and HP effects where the selected 5etools data provides them.
+- Made the origin-feat picker stop offering arbitrary feats when a background has no origin-feat reference.
+- Migrated character schema to v5 and bumped the service-worker shell cache.
+- Added visible Active Rules Effects so automated modifiers can be checked at the table.
