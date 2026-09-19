@@ -1,37 +1,43 @@
 # 5etools 2024 Character Sheet PWA
 
-A tablet-first, offline-capable D&D 2024 character sheet prototype which uses the 5etools JSON data as its rules/reference source. It does **not** bundle a copy of the data; it downloads a pinned 5etools release to the device and keeps that data in IndexedDB.
+A tablet-first, offline-first D&D 2024 character sheet. Rules/reference data comes from a pinned 5etools release and is stored locally on the Android device in IndexedDB. Character state is stored separately.
 
-## What this prototype already does
+## Deploy with GitHub Pages
 
-- Android/PWA-friendly responsive layout.
-- 2024 `XPHB` class, subclass, species, background, feat, and spell data.
-- Detects the latest 5etools release through the GitHub Releases API.
-- Downloads and caches the 5etools JSON needed by the sheet.
-- Keeps character state separate from rules data.
-- Works offline after the initial data sync.
-- Uses the cached rules data when there is no network.
-- Interactive HP/temp HP, spell-slot pips, death saves, conditions, notes, skills, prepared-spell selection, and inventory notes.
-- Character JSON export/import.
-- GitHub Pages deployment workflow included.
+Put the contents of this folder at the root of a GitHub repository, including `.github/workflows/pages.yml`.
 
-## Deploy on GitHub Pages
+In **Settings → Pages**, choose **GitHub Actions** as the source. The included workflow deploys the static PWA whenever `main` changes.
 
-1. Create a new GitHub repository.
-2. Copy all files from this folder into it.
-3. Push to the `main` branch.
-4. In GitHub, open **Settings → Pages** and use **GitHub Actions** as the source if GitHub asks for a Pages source.
-5. Wait for the workflow to deploy.
-6. Open the resulting HTTPS URL on the Android tablet in Chrome.
-7. Use Chrome's **Add to Home screen / Install app** option.
-8. Open the app once while online and press **Update data**.
+## Android tablet
 
-## Update behavior
+Open the GitHub Pages URL in Chrome on the tablet. Use **Install** when the browser offers it, or Chrome's **Add to Home screen / Install app** command.
 
-The app checks `https://api.github.com/repos/5etools-mirror-3/5etools-src/releases/latest` for the latest release tag. Data itself is downloaded from the corresponding immutable GitHub tag under `raw.githubusercontent.com`. The currently selected data version is shown in the **Data** tab.
+After the first successful data sync, the sheet is usable without the internet. The PC does not need to be running and the tablet can be on a completely different network.
 
-The prototype uses only official `XPHB` 2024 player material for the selectable core data. It intentionally does not include homebrew.
+## 5etools data
 
-## Notes about the first prototype
+The app checks the latest public 5etools release through GitHub's Releases API. It then downloads the 2024 `XPHB` indexes and data it needs directly from the corresponding version tag on GitHub.
 
-This is deliberately a foundation rather than a full D&D Beyond replacement. The data integration is the important part: the app reads the actual 5etools data structures, including the 2024 class progression and feature records. The next development pass should add more complete equipment/armor calculations, multiclassing, detailed background/feat choices, automatic feature-grant resolution, and richer spellbook management.
+The **Update data** button always performs a fresh release check. Passive checks happen at most once every six hours. Cached rules data is versioned, and old versions are cleaned up after a successful update.
+
+## Character storage
+
+Characters are stored independently in IndexedDB. HP, spell-slot usage, conditions, inventory, resources, notes, and other play state therefore survive rules-data updates.
+
+Characters can be exported/imported as JSON for backup or transfer between devices.
+
+## Current scope
+
+- 2024 XPHB classes, subclasses, species, backgrounds, origin feats, spells, and items
+- Multiple characters stored on the tablet
+- Builder for identity, class/subclass, species, background, ability scores, background ability choices, skills, origin feat, and combat overrides
+- Automatic proficiency bonus, saving throws, skill bonuses, HP, AC, speed, spell DC, spell attack, cantrips, prepared-spell capacity, and spell-slot progression
+- Class/subclass feature references resolved from 5etools data
+- Prepared spells, spellbook/added spells, spell reference modals, and filters
+- 2024 XPHB equipment picker and item reference data
+- HP controls, spell slots, hit dice, death saves, conditions, resources, notes, short/long rest controls
+- Offline service-worker shell plus IndexedDB rules/character storage
+
+## Data source
+
+`5etools-mirror-3/5etools-src` · source `XPHB`
