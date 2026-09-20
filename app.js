@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.27.2";
+const APP_VERSION = "0.27.3";
 
 const PATHS = {
   books: "data/books.json",
@@ -62,7 +62,7 @@ const state = {
   version: null,
   lastSync: null,
   lastReleaseCheck: null,
-  data: { books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null, optionalfeatures: null, spells: null, spellIndex: null, items: null, conditionsdiseases: null, variantrules: null, actions: null, classFiles: new Map(), spellFiles: new Map(), referenceCache: new Map(), officialSources: new Set(), sourceMeta: [] },
+  data: { books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null, optionalfeatures: null, spells: null, spellIndex: null, items: null, itemIndex: new Map(), weaponIndex: new Map(), conditionsdiseases: null, variantrules: null, actions: null, classFiles: new Map(), spellFiles: new Map(), referenceCache: new Map(), officialSources: new Set(), sourceMeta: [] },
   character: null,
   deferredInstallPrompt: null,
   spellPickerTab: "prepared",
@@ -460,7 +460,9 @@ async function loadCoreData(version) {
   for (const sense of SPECIAL_SENSES) referenceCache.set(referenceCacheKey("sense", sense, DATA_SOURCE), SPECIAL_SENSE_FALLBACKS[sense]);
   const itemIndex = new Map();
   for (const item of Array.isArray(items?.item) ? items.item : []) if (isOfficial2024Entity(item, officialSources)) itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
-  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, itemIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
+  const weaponIndex = new Map();
+  for (const item of itemIndex.values()) if (item?.weaponCategory) weaponIndex.set(`${String(item.name||"").toLowerCase()}|${String(item.source||"").toLowerCase()}`, item);
+  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, itemIndex, weaponIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
 }
 
 async function loadSpellSource(version, source) {
@@ -514,6 +516,8 @@ async function hydrateBackgroundData(version) {
   try {
     // Keep startup light, but warm the 2024 core spell catalog in the background so the
     // picker and hover references do not begin from an empty cache.
+    await getItemsData();
+    hydrateWeaponIndex();
     await loadSpellSource(version, DATA_SOURCE);
     mergeOfficialSpells();
     // The current character's class is the only class file needed for the initial sheet.
@@ -591,8 +595,9 @@ async function getClassDetails(className) {
 }
 
 async function getItemsData() {
-  if (state.data.items) return state.data.items;
-  state.data.items = await fetch5eData(state.version, PATHS.items);
+  if (!state.data.items) state.data.items = await fetch5eData(state.version, PATHS.items);
+  officialItemCatalog();
+  hydrateWeaponIndex();
   return state.data.items;
 }
 
@@ -606,21 +611,38 @@ function officialItemCatalog() {
   return entries;
 }
 
+function hydrateWeaponIndex() {
+  const weapons = officialItemCatalog().filter(it => Boolean(it?.weaponCategory));
+  state.data.weaponIndex = new Map();
+  for (const item of weapons) state.data.weaponIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
+  return weapons;
+}
+
 function officialWeaponCatalog() {
-  return officialItemCatalog().filter(it => Boolean(it?.weaponCategory) && masteryObjects(it).length > 0);
+  const weapons = hydrateWeaponIndex();
+  return weapons.filter(it => masteryObjects(it).length > 0);
 }
 
 function itemFromCatalog(name, source=null) {
   const raw = String(name||'').trim();
   const src = source ? String(source).toLowerCase() : null;
   const index = state.data.itemIndex || new Map();
+  const weaponIndex = state.data.weaponIndex || new Map();
   if (src) {
-    const exact = index.get(`${raw.toLowerCase()}|${src}`);
+    const exact = index.get(`${raw.toLowerCase()}|${src}`) || weaponIndex.get(`${raw.toLowerCase()}|${src}`);
     if (exact) return exact;
+    // 2014/legacy references can point at a reprinted 2024 weapon.
+    for (const candidate of [...index.values(), ...weaponIndex.values()]) {
+      if (String(candidate.name||'').toLowerCase() !== raw.toLowerCase()) continue;
+      if (String(candidate.source||'').toLowerCase() === src) return candidate;
+      if (candidate.baseItem && String(candidate.baseItem).toLowerCase() === `${raw}|${src}`.toLowerCase()) return candidate;
+    }
   }
   for (const candidate of [raw, canonicalLabel(raw, 'item')]) {
     const hit = [...index.values()].find(x => String(x.name||'').toLowerCase() === String(candidate).toLowerCase() && (!src || String(x.source||'').toLowerCase() === src));
     if (hit) return hit;
+    const weaponHit = [...weaponIndex.values()].find(x => String(x.name||'').toLowerCase() === String(candidate).toLowerCase() && (!src || String(x.source||'').toLowerCase() === src));
+    if (weaponHit) return weaponHit;
   }
   return null;
 }
@@ -3045,7 +3067,7 @@ function spellById(id) {
 }
 
 async function renderEquipment(app) {
-  try { await getItemsData(); officialItemCatalog(); } catch (e) { console.warn("Equipment catalog hydration failed", e); }
+  try { await getItemsData(); hydrateWeaponIndex(); } catch (e) { console.warn("Equipment catalog hydration failed", e); }
   const items = state.character.inventory || [];
   app.innerHTML = `${pageHeader("EQUIPMENT", `${escapeHtml(state.character.name || "Character")} · Equipment`, "Items are resolved against the cached 2024 5etools equipment catalog.", `<button class="button" data-action="sheet">Character</button><button class="button button-primary" data-action="item-picker">Add item</button>`)}
   <section class="card"><div class="equipment-total-value">Total currency value: <strong>${formatCurrencyValue(currencyToCp(state.character.currency))}</strong></div><div class="currency-grid">${["pp","gp","ep","sp","cp"].map(k=>`<label class="field"><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" min="0" step="1" value="${Number(state.character.currency?.[k] || 0)}"></label>`).join("")}</div>
