@@ -2760,7 +2760,7 @@ function applySelectedSpeciesOptionEffects(c, speciesObj, effects) {
 
 function buildDerivedEffects(c, d, featObjs) {
   const effects = {
-    acFormulas: [], acBonus: 0, acBonusWhileArmored: 0, acBonusWhileUnarmored: 0, hpPerLevel: 0, hpFlat: 0, speedBonus: 0, speedMinimum: 0, initiativeBonus: 0, d20Penalty: effectiveD20Penalty(c),
+    acFormulas: [], acBonus: 0, acBonusWhileArmored: 0, acBonusWhileUnarmored: 0, hpPerLevel: 0, hpFlat: 0, speedBonus: 0, speedMinimum: 0, initiativeBonus: 0, initiativeAdvantage: false, savingThrowBonus: 0, unproficientSkillBonus: 0, d20Penalty: effectiveD20Penalty(c),
     passivePerceptionBonus: 0, passiveInvestigationBonus: 0, resistances: [], senses: [], active: [], flags: new Set(),
     savingThrows: new Set(), savingThrowAdvantages: new Set(), skills: new Set(), expertise: new Set(), tools: [], languages: [], attackBonuses: {}, damageBonuses: {}
   };
@@ -2780,6 +2780,21 @@ function buildDerivedEffects(c, d, featObjs) {
       if (bonus) { effects.speedBonus += bonus; effects.active.push(`Unarmored Movement: +${bonus} ft.`); }
     }
     if (n === "fastmovement") { effects.flags.add("fastMovement"); effects.active.push("Fast Movement: +10 ft. while not wearing heavy armor"); }
+    if (n === "feralinstinct") { effects.initiativeAdvantage = true; effects.active.push("Feral Instinct: Advantage on Initiative"); }
+    if (n === "auraofprotection") {
+      effects.savingThrowBonus += Math.max(1, Number(d.mods?.cha || 0));
+      effects.active.push(`Aura of Protection: +${Math.max(1, Number(d.mods?.cha || 0))} to saving throws`);
+    }
+    if (n === "roving") { effects.flags.add("roving"); effects.active.push("Roving: +10 ft. Speed while not wearing Heavy armor; Climb and Swim Speed equal Speed"); }
+    if (n === "slipperymind") {
+      effects.savingThrows.add("wis");
+      effects.savingThrows.add("cha");
+      effects.active.push("Slippery Mind: Wisdom and Charisma saving throw proficiency");
+    }
+    if (n === "jackofalltrades") {
+      effects.unproficientSkillBonus = Math.max(effects.unproficientSkillBonus, Math.floor(Number(d.pb || 0) / 2));
+      effects.active.push(`Jack of All Trades: +${effects.unproficientSkillBonus} to unproficient skill checks`);
+    }
   }
   if (d.classObj && ["barbarian", "monk"].includes(textNorm(d.classObj.name)) && !hasNamedFeature(allFeatures, "Unarmored Defense")) {
     effects.active.push(`${uad.label} (class rule)`);
@@ -3140,13 +3155,16 @@ async function deriveCharacter() {
   d.effectiveExpertise = effectiveExpertise;
   const perceptionKey = "perception";
   if (d.skillProficiencies.has(perceptionKey)) d.passivePerception += d.pb;
+  else d.passivePerception += Number(d.effects.unproficientSkillBonus || 0);
   if (effectiveExpertise.has(perceptionKey)) d.passivePerception += d.pb;
   d.passivePerception += Number(d.effects.passivePerceptionBonus || 0);
   if (d.skillProficiencies.has("investigation")) d.passiveInvestigation += d.pb;
+  else d.passiveInvestigation += Number(d.effects.unproficientSkillBonus || 0);
   if (effectiveExpertise.has("investigation")) d.passiveInvestigation += d.pb;
   d.passiveInvestigation += Number(d.effects.passiveInvestigationBonus || 0);
   const fastMovementBonus = d.effects.flags.has("fastMovement") && !d.heavyArmorWorn ? 10 : 0;
-  d.speed = Number(c.speedOverride ?? Math.max(0, Math.max(dfltSpeed(d.speciesObj) + Number(d.effects.speedBonus || 0), Number(d.effects.speedMinimum || 0)) + fastMovementBonus - 5 * Number(c.exhaustion || 0) - Number(d.armorSpeedPenalty || 0)));
+  const rovingBonus = d.effects.flags.has("roving") && !d.heavyArmorWorn ? 10 : 0;
+  d.speed = Number(c.speedOverride ?? Math.max(0, Math.max(dfltSpeed(d.speciesObj) + Number(d.effects.speedBonus || 0), Number(d.effects.speedMinimum || 0)) + fastMovementBonus + rovingBonus - 5 * Number(c.exhaustion || 0) - Number(d.armorSpeedPenalty || 0)));
   const baseMaxHp = defaultMaxHp(d.classObj, c.level, mods.con, c.hpMaxOverride);
   const hpPerLevelBonus = Number(d.effects.hpPerLevel || 0) * Number(c.level || 1) + Number(d.effects.hpFlat || 0);
   d.maxHp = c.hpMaxOverride == null ? baseMaxHp + hpPerLevelBonus : baseMaxHp;
@@ -3489,13 +3507,13 @@ async function renderSheet(app) {
   const identityLine = [c.background?.name, c.species?.name].filter(Boolean).join(" · ");
   const saves = ABILITIES.map(a => {
     const prof = d.savingThrowProficiencies.has(a), adv = d.savingThrowAdvantages?.has(a);
-    return `<div class="sheet-save-row"><span class="check-circle ${prof ? "on" : ""}"></span><span>${ABILITY_NAMES[a]} Save${adv ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${formatMod(d.mods[a] + (prof ? d.pb : 0) + Number(d.d20Penalty || 0))}</strong></div>`;
+    return `<div class="sheet-save-row"><span class="check-circle ${prof ? "on" : ""}"></span><span>${ABILITY_NAMES[a]} Save${adv ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${formatMod(d.mods[a] + (prof ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>`;
   }).join("");
   const skillsByAbility = Object.fromEntries(ABILITIES.map(a => [a, []]));
-  for (const [key,[ability,name]] of Object.entries(SKILLS)) skillsByAbility[ability].push({ key, name, prof: d.skillProficiencies.has(key), exp: d.effectiveExpertise?.has(key) || false, bonus: d.mods[ability] + (d.skillProficiencies.has(key) ? d.pb : 0) + (d.effectiveExpertise?.has(key) ? d.pb : 0) + Number(d.d20Penalty || 0) });
+  for (const [key,[ability,name]] of Object.entries(SKILLS)) skillsByAbility[ability].push({ key, name, prof: d.skillProficiencies.has(key), exp: d.effectiveExpertise?.has(key) || false, bonus: d.mods[ability] + (d.skillProficiencies.has(key) ? d.pb : Number(d.effects?.unproficientSkillBonus || 0)) + (d.effectiveExpertise?.has(key) ? d.pb : 0) + Number(d.d20Penalty || 0) });
   const abilityBoxes = ABILITIES.map(a => `<section class="ability-box">
       <div class="ability-head"><span>${ABILITY_LABELS[a]}</span><strong>${d.stats[a]}</strong><em>${formatMod(d.mods[a])}</em></div>
-      <div class="ability-save"><span class="check-circle ${d.savingThrowProficiencies.has(a) ? "on" : ""}"></span><b>Saving Throw${d.savingThrowAdvantages?.has(a) ? ` <sup class="save-advantage">ADV</sup>` : ""}</b><strong>${formatMod(d.mods[a] + (d.savingThrowProficiencies.has(a) ? d.pb : 0) + Number(d.d20Penalty || 0))}</strong></div>
+      <div class="ability-save"><span class="check-circle ${d.savingThrowProficiencies.has(a) ? "on" : ""}"></span><b>Saving Throw${d.savingThrowAdvantages?.has(a) ? ` <sup class="save-advantage">ADV</sup>` : ""}</b><strong>${formatMod(d.mods[a] + (d.savingThrowProficiencies.has(a) ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>
       <div class="skill-stack">${skillsByAbility[a].map(sk => `<div class="sheet-skill-row"><span class="check-circle ${sk.prof ? "on" : ""}"></span><span>${escapeHtml(sk.name)}${sk.exp ? " <sup>EX</sup>" : ""}</span><strong>${formatMod(sk.bonus)}</strong></div>`).join("")}</div>
     </section>`).join("");
   const featureRows = [...d.classFeatures.map(f => ({...f, kind:"Class"})), ...d.subclassFeatures.map(f => ({...f, kind:"Subclass"}))]
@@ -3523,7 +3541,7 @@ async function renderSheet(app) {
       <div class="identity-stat-box"><span>Hit Dice</span><strong>d${hitDieFaces(d.classObj)}</strong><small>${c.hitDiceUsed} used</small></div>
       <div class="identity-stat-box"><span>Death Saves</span><strong>${c.deathSaves.success} ✓ · ${c.deathSaves.failure} ✕</strong><small>${d.currentHp === 0 ? `<button data-action="death" data-type="success">Success</button> <button data-action="death" data-type="failure">Failure</button>` : `Only tracked at 0 HP.`}</small></div>
     </div>
-    <div class="sheet-metrics"><div><span>Initiative</span><strong>${formatMod(d.mods.dex + Number(d.effects?.initiativeBonus || 0) + Number(d.d20Penalty || 0))}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong></div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—"}</strong></div></div>${d.activeEffects?.length || d.optionalFeatureObjects?.length || d.weaponMasteryCount ? `<section class="sheet-panel derived-effects-panel"><div class="sheet-panel-title">Active Rules Effects</div><div class="active-effect-list">${d.activeEffects.map(x=>`<span class="active-effect-chip">${escapeHtml(x)}</span>`).join("")}${d.optionalFeatureObjects.map(x=>`<button class="active-effect-chip effect-link" data-action="optional-feature-detail" data-name="${encodeURIComponent(`${x.name}|${x.source}`)}">${escapeHtml(x.name)}</button>`).join("")}${d.weaponMasteryCount ? `<span class="active-effect-chip">Weapon Mastery ${Math.min(selectedWeaponMasteryRefs(c).length,d.weaponMasteryCount)}/${d.weaponMasteryCount}</span>` : ""}</div></section>` : ""}
+    <div class="sheet-metrics"><div><span>Initiative${d.effects?.initiativeAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${formatMod(d.mods.dex + Number(d.effects?.initiativeBonus || 0) + Number(d.d20Penalty || 0))}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong></div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—"}</strong></div></div>${d.activeEffects?.length || d.optionalFeatureObjects?.length || d.weaponMasteryCount ? `<section class="sheet-panel derived-effects-panel"><div class="sheet-panel-title">Active Rules Effects</div><div class="active-effect-list">${d.activeEffects.map(x=>`<span class="active-effect-chip">${escapeHtml(x)}</span>`).join("")}${d.optionalFeatureObjects.map(x=>`<button class="active-effect-chip effect-link" data-action="optional-feature-detail" data-name="${encodeURIComponent(`${x.name}|${x.source}`)}">${escapeHtml(x.name)}</button>`).join("")}${d.weaponMasteryCount ? `<span class="active-effect-chip">Weapon Mastery ${Math.min(selectedWeaponMasteryRefs(c).length,d.weaponMasteryCount)}/${d.weaponMasteryCount}</span>` : ""}</div></section>` : ""}
     <div class="sheet-grid-main"><div class="ability-column">${abilityBoxes}</div><div class="sheet-right-column">
       <section class="sheet-panel"><div class="sheet-panel-title">Weapons & Damage Cantrips <button class="sheet-mini-btn" data-action="manage-attacks">Manage</button></div><div class="weapon-table head"><span>Name</span><span>Atk</span><span>Damage</span><span>Notes</span></div>${attackHtml}</section>
       ${d.weaponMasteryCount ? `<section class="sheet-panel"><div class="sheet-panel-title">Weapon Masteries</div><div class="selection-count">${selectedWeaponMasteryRefs(c).length} / ${d.weaponMasteryCount}</div>${selectedWeaponMasteryRefs(c).map(ref => { const item = findOfficialItemByName(splitRefId(ref).name, splitRefId(ref).source); return item ? `<div class="mastery-sheet-row"><span>${renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`)}</span><span>${masteryObjects(item).map(x=>renderWeaponMasteryLink(x.name)).join(", ") || "—"}</span></div>` : `<div class="mastery-sheet-row"><span>${escapeHtml(splitRefId(ref).name)}</span><span>—</span></div>`; }).join("") || `<div class="sheet-empty">No Weapon Masteries selected.</div>`}</section>` : ""}
