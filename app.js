@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.27.8";
+const APP_VERSION = "0.28.1";
 
 const PATHS = {
   books: "data/books.json",
@@ -205,6 +205,14 @@ function migrateCharacter(raw) {
   c.languageChoiceSlots = { ...(raw.languageChoiceSlots || {}) };
   c.toolChoiceSlots = { ...(raw.toolChoiceSlots || {}) };
   for (const key of ["appearance","age","height","weight","eyes","skin","hair","alignment","faith","allies","organization","backstory","personality","ideals","bonds","flaws"]) c[key] = raw[key] == null ? "" : String(raw[key]);
+  // This is a 2024-only sheet. Older saved characters may carry a legacy
+  // PHB source even though the class name is the same as the 2024 XPHB class.
+  // Normalize those class refs so 2024-only features such as Weapon Mastery
+  // are not silently lost when the character is reloaded.
+  if (c.class?.name) c.class = { ...c.class, source: DATA_SOURCE };
+  if (c.subclass?.name && (!c.subclass.source || String(c.subclass.source).toLowerCase() === "phb")) {
+    c.subclass = { ...c.subclass, source: DATA_SOURCE };
+  }
   c.feats = Array.isArray(raw.feats) ? raw.feats : (raw.feat ? [raw.feat] : []);
   c.feat = raw.feat ? raw.feat : (c.feats[0] || null);
   c.additionalFeats = Array.isArray(raw.additionalFeats) ? raw.additionalFeats : c.feats.slice(1);
@@ -770,8 +778,12 @@ function findLanguage(name, source = null) { return findOfficial(state.data.lang
 function getClassFromFile(file, name, source = null) {
   const entries = (file?.class || []).filter(x => isOfficial2024Entity(x));
   const needle = String(name || "").trim().toLowerCase();
-  return entries.find(x => x.name.toLowerCase() === needle && (!source || String(x.source || "").toLowerCase() === String(source).toLowerCase())) ||
+  // The app is 2024-only. Prefer the canonical XPHB class even when an older
+  // saved character still says PHB; otherwise 2014 class data can suppress
+  // 2024-only features such as Weapon Mastery.
+  return entries.find(x => x.name.toLowerCase() === needle && String(x.source || "").toLowerCase() === String(DATA_SOURCE).toLowerCase()) ||
     entries.find(x => x.name.toLowerCase() === needle && x.edition === "one") ||
+    entries.find(x => x.name.toLowerCase() === needle && (!source || String(x.source || "").toLowerCase() === String(source).toLowerCase())) ||
     entries.find(x => x.name.toLowerCase() === needle) || null;
 }
 
@@ -2109,11 +2121,15 @@ function weaponFlags(item) {
 async function getAttackRows(d) {
   let itemsData = null;
   try { itemsData = await getItemsData(); } catch {}
-  const officialItems = itemsData ? officialEntries(itemsData, "item") : [];
+  const officialItems = itemsData ? officialItemCatalog() : [];
   const rows = [];
   for (const owned of state.character.inventory || []) {
-    if (!owned?.equipped || owned.wielding === false || !owned.name) continue;
-    const item = officialItems.find(x => x.name === owned.name && (!owned.source || x.source === owned.source)) || officialItems.find(x => x.name === owned.name);
+    // Equipped is the character-sheet source of truth. "Wielding" is only an
+    // equipment-panel convenience state and must never prevent an equipped
+    // weapon from appearing in Weapons & Damage Cantrips.
+    if (!owned?.equipped || !owned.name) continue;
+    const item = findOfficialItemByName(owned.name, owned.source) ||
+      officialItems.find(x => normalizeItemLookupName(x.name) === normalizeItemLookupName(owned.name));
     if (!item || !item.weaponCategory) continue;
     const ability = weaponAbility(item, d.mods);
     const proficient = hasWeaponProficiency(item, d.proficiencies.weapons);
@@ -2129,20 +2145,34 @@ async function getAttackRows(d) {
       if (otherWeaponCount === 0) extraDamage += Number(d.effects.damageBonuses.dueling || 0);
     }
     if (d.effects?.damageBonuses?.thrown && flags.thrown) extraDamage += Number(d.effects.damageBonuses.thrown || 0);
-    const damageFormula = item.dmg1 ? `${item.dmg1}${abilityDamage || extraDamage ? ` ${formatMod(abilityDamage + extraDamage)}` : ""}` : "—";
+    const damageFormula = item.dmg1 ? `${item.dmg1}${abilityDamage || extraDamage ? ` ${formatMod(abilityDamage + extraDamage)}` : ""}${item.dmgType ? ` ${damageTypeName(item.dmgType)}` : ""}` : "—";
     const properties = (item.property || []).map(x => canonicalLabel(String(x).split("|")[0])).join(", ");
     const selectedMastery = hasSelectedWeaponMastery(state.character, item);
     const mastery = selectedMastery ? masteryLabel(item) : "";
     rows.push({ nameHtml: renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`), name: item.name, attackBonus: `${formatMod(bonus)}${proficient ? "" : "*"}`, damage: damageFormula, details: [item.range ? `Range ${item.range}` : "", properties, mastery ? `Mastery: ${mastery}` : ""].filter(Boolean).join(" · ") });
   }
   for (const custom of state.character.attacks || []) rows.push({ name: custom.name || "Attack", attackBonus: custom.attackBonus || "—", damage: custom.damage || "—", details: custom.range || custom.notes || "" });
-  for (const spell of (state.character.cantrips || []).map(spellById).filter(Boolean)) rows.push({ nameHtml: renderReferenceTag("spell", `${spell.name}|${spell.source}|${spell.name}`), name: spell.name, attackBonus: d.spellcastingAbility ? formatMod(d.pb + d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—", damage: (spell.damageInflict || []).map(damageTypeName).join(", ") || "Cantrip", details: spell.range ? formatSpellRange(spell.range) : "" });
+  for (const spell of (state.character.cantrips || []).map(spellById).filter(Boolean)) rows.push({ nameHtml: renderReferenceTag("spell", `${spell.name}|${spell.source}|${spell.name}`), name: spell.name, attackBonus: d.spellcastingAbility ? formatMod(d.pb + d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—", damage: cantripDamageFormula(spell, state.character.level), details: spell.range ? formatSpellRange(spell.range) : "" });
   return rows.slice(0, 12);
 }
 
 function damageTypeName(value) {
   const map = { B: "Bludgeoning", P: "Piercing", S: "Slashing", A: "Acid", C: "Cold", F: "Fire", O: "Force", L: "Lightning", N: "Necrotic", I: "Poison", Y: "Psychic", R: "Radiant", T: "Thunder" };
   return map[String(value || "").split("|")[0]] || canonicalLabel(value);
+}
+
+function cantripDamageFormula(spell, characterLevel = 1) {
+  const scaling = spell?.scalingLevelDice?.scaling;
+  if (scaling && typeof scaling === "object") {
+    const levels = Object.keys(scaling).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);
+    let chosen = null;
+    for (const level of levels) if (Number(characterLevel) >= level) chosen = scaling[String(level)];
+    if (chosen) return `${chosen} ${(spell.damageInflict || []).map(damageTypeName).join("/")}`.trim();
+  }
+  const raw = JSON.stringify(spell?.entries || []);
+  const m = raw.match(/\{@damage\s+([^}|]+)[^}]*\}/i);
+  if (m) return `${m[1]} ${(spell.damageInflict || []).map(damageTypeName).join("/")}`.trim();
+  return (spell.damageInflict || []).map(damageTypeName).join("/") || "—";
 }
 
 function hasArmorTraining(proficiencies, itemType) {
@@ -2541,7 +2571,7 @@ async function deriveCharacter() {
     if (d.weaponMasteryCount <= 0) c.weaponMasteries = [];
     else {
       try {
-        const masteryItems = officialEntries(await getItemsData(), "item").filter(it => String(it.source || "") === DATA_SOURCE && it.weaponCategory && masteryLabel(it) && (it.rarity == null || String(it.rarity).toLowerCase() === "none") && hasWeaponProficiency(it, parseProficiencyDisplay(d.classObj, backgroundObj, d.speciesObj, featObjs).weapons));
+        const masteryItems = officialWeaponCatalog().filter(it => String(it.source || "").toLowerCase() === String(DATA_SOURCE).toLowerCase() && (it.rarity == null || String(it.rarity).toLowerCase() === "none") && hasWeaponProficiency(it, parseProficiencyDisplay(d.classObj, backgroundObj, d.speciesObj, featObjs).weapons));
         const validKeys = new Set(masteryItems.map(it => normalizeRefId(it.name, it.source).toLowerCase()));
         c.weaponMasteries = (c.weaponMasteries || []).filter(x => validKeys.has(String(x).toLowerCase())).slice(0, d.weaponMasteryCount);
       } catch {}
@@ -3259,7 +3289,14 @@ async function openRuleReference(ref) {
   let body = `<div class="modal-kicker">${escapeHtml(kicker || info.tag || "Reference")}</div>`;
   if (entity.entries) body += `<div class="rules-text formatted-rules">${renderRichEntries(entity.entries)}</div>`;
   else if (entity.entry) body += `<div class="rules-text formatted-rules">${renderRichEntries(entity.entry)}</div>`;
-  else body += `<pre class="reference-json">${escapeHtml(JSON.stringify(entity, null, 2))}</pre>`;
+  else if (String(info.tag || "").toLowerCase() === "item") {
+    // Base equipment frequently stores its useful data as structured fields
+    // rather than prose `entries`. Never expose the raw 5etools JSON to the
+    // player for an item reference.
+    body += renderItemFacts(entity);
+    if (!entity.weaponCategory && entity.type) body += `<p>${escapeHtml(canonicalLabel(entity.type))}</p>`;
+    if (!entity.weaponCategory && !entity.type) body += `<div class="empty">No further description is available for this item.</div>`;
+  } else body += `<pre class="reference-json">${escapeHtml(JSON.stringify(entity, null, 2))}</pre>`;
   openModal(title, body);
 }
 
@@ -3440,12 +3477,19 @@ function bindEvents() {
     await saveCharacter(); render();
   });
   document.querySelectorAll("[data-weapon-mastery-select]").forEach(el => el.onchange = async () => {
-    const key = el.value; const max = state.lastDerived?.weaponMasteryCount || 0;
+    const key = el.value;
     if (!key) return;
+    // Do not rely on a possibly stale state.lastDerived value. Re-derive the
+    // current class/level first so the actual Weapon Mastery allowance is used.
+    const derived = await deriveCharacter();
+    const max = Number(derived.weaponMasteryCount || 0);
+    if (!max) { showToast("This character does not currently have Weapon Mastery."); return; }
     if (!Array.isArray(state.character.weaponMasteries)) state.character.weaponMasteries = [];
-    if (state.character.weaponMasteries.length >= max) { showToast(`Choose only ${max} weapon masteries.`); return; }
+    if (state.character.weaponMasteries.length >= max) { showToast(`Choose only ${max} weapon master${max === 1 ? "y" : "ies"}.`); return; }
     if (!state.character.weaponMasteries.some(x=>String(x).toLowerCase()===key.toLowerCase())) state.character.weaponMasteries.push(key);
-    await saveCharacter(); render();
+    await saveCharacter();
+    state.lastDerived = await deriveCharacter();
+    render();
   });
   document.querySelectorAll("[data-remove-weapon-mastery]").forEach(el => el.onclick = async () => {
     const key=String(el.dataset.removeWeaponMastery||"").toLowerCase();
@@ -3703,7 +3747,35 @@ async function openItemPicker() {
 }
 async function addInventoryItem(it){const existing=state.character.inventory.find(x=>x.name===it.name&&x.source===it.source);if(existing)existing.quantity=Number(existing.quantity||1)+1;else state.character.inventory.push({name:it.name,source:it.source,quantity:1,equipped:false,wielding:false}); await saveCharacter();}
 function adjustItemQty(i,delta){const item=state.character.inventory[i];if(!item)return;item.quantity=Number(item.quantity||1)+delta;if(item.quantity<=0)state.character.inventory.splice(i,1);saveCharacter().then(render);}
-async function openInventoryItemInfo(i){const item=state.character.inventory[i];if(!item)return;await getItemsData();const found=findOfficialItemByName(item.name,item.source)||findOfficialItemByName(item.name);if(found){cacheReferenceEntity("item",found);openModal(found.name,`<div class="modal-kicker">${escapeHtml(sourceLabel(found.source))} · ${escapeHtml(found.type||"")}</div><div class="rules-text formatted-rules">${renderRichEntries(found.entries||found.entry||[])}</div>`);}}
+function renderItemFacts(item) {
+  if (!item) return "";
+  const facts = [];
+  if (item.weaponCategory) {
+    facts.push(`${canonicalLabel(item.weaponCategory)} weapon`);
+    if (item.dmg1) facts.push(`${item.dmg1} ${damageTypeName(item.dmgType)}`);
+    if (item.range) facts.push(`Range ${item.range}`);
+    const props = (item.property || []).map(x => canonicalLabel(String(x).split("|")[0])).filter(Boolean);
+    if (props.length) facts.push(props.join(", "));
+    const mastery = masteryLabel(item);
+    if (mastery) facts.push(`Mastery: ${mastery}`);
+  }
+  if (item.weight != null) facts.push(`${item.weight} lb.`);
+  if (item.value != null && !item.weaponCategory) facts.push(`Value: ${item.value}`);
+  return facts.length ? `<div class="spell-facts">${facts.map(x=>`<span>${escapeHtml(x)}</span>`).join("")}</div>` : "";
+}
+
+async function openInventoryItemInfo(i){
+  const item=state.character.inventory[i]; if(!item)return;
+  await getItemsData();
+  const found=findOfficialItemByName(item.name,item.source)||findOfficialItemByName(item.name);
+  if(found){
+    cacheReferenceEntity("item",found);
+    const entries = found.entries || found.entry;
+    const renderedEntries = Array.isArray(entries) || typeof entries === "string" ? `<div class="rules-text formatted-rules">${renderRichEntries(entries)}</div>` : "";
+    const body = `${renderItemFacts(found)}${renderedEntries}`;
+    openModal(found.name,`<div class="modal-kicker">${escapeHtml(sourceLabel(found.source))} · ${escapeHtml(found.type||"")}</div>${body || `<div class="empty">No further description is available for this item.</div>`}`);
+  }
+}
 
 function maxCastableSpellLevel(d = state.lastDerived) {
   const slots = d?.spellSlots || [];
