@@ -139,11 +139,11 @@ test('full casters expose PHB spell-slot progressions and martial classes do not
   }
 });
 
-test('Paladin and Ranger start without spell slots at level 1 and gain them at level 2', () => {
+test('2024 Paladin and Ranger have spell slots from level 1', () => {
   for (const name of ['Paladin','Ranger']) {
     const cls=byName(name).cls;
-    assert.equal(a.classSpellSlots(cls,1).reduce((a,b)=>a+b,0),0,name);
-    assert.ok(a.classSpellSlots(cls,2).reduce((a,b)=>a+b,0)>0,name);
+    assert.equal(a.classSpellSlots(cls,1).reduce((a,b)=>a+b,0),2,name);
+    assert.ok(a.classSpellSlots(cls,2).reduce((a,b)=>a+b,0)>=2,name);
   }
 });
 
