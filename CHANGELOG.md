@@ -1,3 +1,11 @@
+# v0.33.0
+
+- Fixed a regression where the equipment catalog could be considered cached even when core 2024 items such as Dagger and Quarterstaff were missing or excluded from the item index.
+- Added explicit 2024 equipment catalog validation for Dagger, Quarterstaff, Mace, Shield, and Leather Armor.
+- Added fresh online repair of the item catalog when cached equipment data fails validation.
+- Rebuilt the item index using explicit 2024 core sources (XPHB/XDMG/XMM) as well as 2024-marked entries.
+- Kept the staged full-library synchronization model; no separate extended-cache action was added.
+
 ## v0.32.0
 
 - Reworked rules-data loading into staged batches with a visible progress overlay.

@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.32.0";
+const APP_VERSION = "0.33.0";
 
 const PATHS = {
   books: "data/books.json",
@@ -453,6 +453,16 @@ function isOfficial2024Entity(entity, sourceSet = state.data.officialSources) {
   ));
 }
 
+function isCore2024Item(item) {
+  const source = String(item?.source || "").toUpperCase();
+  return source === "XPHB" || source === "XDMG" || source === "XMM" || Boolean(item?.basicRules2024 || item?.srd52);
+}
+
+function officialItemEntries(json, sourceSet = state.data.officialSources) {
+  if (!Array.isArray(json?.item)) return [];
+  return json.item.filter(item => isOfficial2024Entity(item, sourceSet) || isCore2024Item(item));
+}
+
 function officialEntries(json, prop) {
   return Array.isArray(json?.[prop]) ? json[prop].filter(x => isOfficial2024Entity(x)) : [];
 }
@@ -570,6 +580,13 @@ function officialSpellSourcesForData(core) {
 
 async function cacheAllLibraryData(version, core = null) {
   const loadedCore = core || await loadCoreData(version);
+  if (!hasRequired2024Equipment(loadedCore.items)) {
+    if (!state.online) throw new Error("The cached 2024 equipment catalog is incomplete while offline.");
+    setCacheProgress({label: "Repairing equipment catalog", detail: "The cached item file is missing core 2024 weapons; downloading a fresh copy…", done: 0, total: 1, phase: "Equipment"});
+    loadedCore.items = await refreshItemsData(version);
+    loadedCore.itemIndex = new Map();
+    for (const item of officialItemEntries(loadedCore.items)) loadedCore.itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
+  }
   const classEntries = Object.entries(loadedCore.classIndex || {});
   const spellSources = officialSpellSourcesForData(loadedCore);
   const total = CORE_CACHE_PATHS.length + classEntries.length + spellSources.length;
@@ -605,7 +622,9 @@ async function loadCoreData(version) {
   const referenceCache = new Map();
   for (const sense of SPECIAL_SENSES) referenceCache.set(referenceCacheKey("sense", sense, DATA_SOURCE), SPECIAL_SENSE_FALLBACKS[sense]);
   const itemIndex = new Map();
-  for (const item of Array.isArray(items?.item) ? items.item : []) if (isOfficial2024Entity(item, officialSources)) itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
+  for (const item of officialItemEntries({ item: Array.isArray(items?.item) ? items.item : [] }, officialSources)) {
+    itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
+  }
   return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, itemIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
 }
 
@@ -754,16 +773,37 @@ async function getClassDetails(className) {
   return data;
 }
 
+function hasRequired2024Equipment(items) {
+  const list = Array.isArray(items?.item) ? items.item : [];
+  const required = ["dagger", "quarterstaff", "mace", "shield", "leather armor"];
+  return required.every(name => list.some(item => String(item?.name || "").toLowerCase() === name && String(item?.source || "").toUpperCase() === "XPHB"));
+}
+
+async function refreshItemsData(version) {
+  const url = `${RAW_ROOT}/${encodeURIComponent(version)}/${PATHS.items}`;
+  const fresh = await fetchJson(url, { timeoutMs: 60000 });
+  if (!hasRequired2024Equipment(fresh)) throw new Error("The downloaded 2024 equipment catalog is missing required core items.");
+  await cacheData(version, PATHS.items, fresh);
+  state.data.items = fresh;
+  state.data.itemIndex = new Map();
+  officialItemCatalog();
+  return fresh;
+}
+
 async function getItemsData() {
-  if (state.data.items) return state.data.items;
-  state.data.items = await fetch5eData(state.version, PATHS.items);
+  if (!state.data.items) state.data.items = await fetch5eData(state.version, PATHS.items);
+  if (!hasRequired2024Equipment(state.data.items)) {
+    if (!state.online) throw new Error("The cached equipment catalog is incomplete; reconnect to repair it.");
+    await refreshItemsData(state.version);
+  }
+  officialItemCatalog();
   return state.data.items;
 }
 
 function officialItemCatalog() {
-  const entries = officialEntries(state.data.items, "item");
+  const entries = officialItemEntries(state.data.items);
   if (!state.data.itemIndex) state.data.itemIndex = new Map();
-  if (state.data.itemIndex.size !== entries.length) {
+  if (state.data.itemIndex.size !== entries.length || !state.data.itemIndex.has("dagger|xphb") || !state.data.itemIndex.has("quarterstaff|xphb")) {
     state.data.itemIndex.clear();
     for (const item of entries) state.data.itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
   }

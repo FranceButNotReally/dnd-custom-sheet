@@ -1,4 +1,4 @@
-## v0.32.0
+## v0.33.0
 
 The 5etools data layer now uses staged caching with a visible progress bar. Core catalogs, class files, and official spell sources are downloaded/cached in small groups rather than all at once. Normal character views are enabled only after the local rules library is complete, and interrupted caches are resumed automatically by the same synchronization path.
 
