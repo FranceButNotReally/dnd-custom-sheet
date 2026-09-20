@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.35.0";
+const APP_VERSION = "0.36.0";
 
 const PATHS = {
   books: "data/books.json",
@@ -70,6 +70,35 @@ const STANDARD_ARRAY_BY_CLASS = {
 };
 const STANDARD_LANGUAGE_NAMES = ["Common Sign Language", "Draconic", "Dwarvish", "Elvish", "Giant", "Gnomish", "Goblin", "Halfling", "Orc"];
 const POINT_BUY_COST = { 8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 13: 5, 14: 7, 15: 9 };
+
+const WEAPON_PROPERTY_INFO = {
+  A: { label: "Ammunition", description: "Requires the appropriate ammunition to make a ranged attack; each attack expends one piece of ammunition." },
+  F: { label: "Finesse", description: "You can choose Strength or Dexterity for the attack and damage rolls, using the same ability for both." },
+  H: { label: "Heavy", description: "You have Disadvantage on attacks with this weapon when the relevant Strength or Dexterity requirement for Heavy is not met." },
+  L: { label: "Light", description: "After attacking with a Light weapon, you can make one extra attack later on the same turn with a different Light weapon as a Bonus Action." },
+  LD: { label: "Loading", description: "You can fire only one piece of ammunition from this weapon when you use an action, Bonus Action, or Reaction to fire it." },
+  R: { label: "Reach", description: "The weapon adds 5 feet to your reach for attacks and Opportunity Attacks made with it." },
+  T: { label: "Thrown", description: "You can throw the weapon for a ranged attack and draw it as part of that attack." },
+  "2H": { label: "Two-Handed", description: "You need two hands when you attack with the weapon." },
+  V: { label: "Versatile", description: "You can use the weapon with one or two hands; its listed parenthetical damage applies when used with two hands." },
+};
+
+const WEAPON_MASTERY_INFO = {
+  cleave: "When you hit a creature with this weapon, you can make a qualifying extra attack against another creature within the weapon's reach. The extra attack uses the same ability modifier and doesn't add that modifier to its damage unless the modifier is negative.",
+  graze: "When an attack with this weapon misses, you can deal damage to the target equal to the ability modifier used for the attack. The damage is the weapon's damage type and is affected only by increasing that ability modifier.",
+  nick: "When you make the extra attack granted by the Light property, you can make that extra attack as part of the Attack action instead of as a Bonus Action. You can use this extra attack only once per turn.",
+  push: "When you hit a creature with this weapon, you can push it up to 10 feet directly away from you if it is Large or smaller.",
+  sap: "When you hit a creature with this weapon, it has Disadvantage on its next attack roll before the start of your next turn.",
+  slow: "When you hit a creature and deal damage with this weapon, its Speed can be reduced by 10 feet until the start of your next turn. Repeated hits don't increase the reduction beyond 10 feet.",
+  topple: "When you hit a creature with this weapon, you can force a Constitution saving throw against 8 + your Proficiency Bonus + the ability modifier used for the attack. On a failure, the target has the Prone condition.",
+  vex: "When you hit a creature and deal damage with this weapon, you have Advantage on your next attack roll against that creature before the end of your next turn.",
+};
+
+const SPELL_COMPONENT_INFO = {
+  V: { label: "Verbal (V)", description: "The spell requires spoken words." },
+  S: { label: "Somatic (S)", description: "The spell requires a somatic gesture." },
+  M: { label: "Material (M)", description: "The spell requires the listed material component or a suitable spellcasting focus when the rules allow one." },
+};
 
 const state = {
   view: "sheet",
@@ -2351,13 +2380,10 @@ async function getAttackRows(d) {
     }
     if (d.effects?.damageBonuses?.thrown && flags.thrown) extraDamage += Number(d.effects.damageBonuses.thrown || 0);
     const damageFormula = item.dmg1 ? `${item.dmg1}${abilityDamage || extraDamage ? ` ${formatMod(abilityDamage + extraDamage)}` : ""}` : "—";
-    const properties = (item.property || []).map(x => canonicalLabel(String(x).split("|")[0])).join(", ");
-    const selectedMastery = hasSelectedWeaponMastery(state.character, item);
-    const mastery = selectedMastery ? masteryLabel(item) : "";
-    rows.push({ nameHtml: renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`), name: item.name, attackBonus: `${formatMod(bonus)}${proficient ? "" : "*"}`, damage: damageFormula, details: [item.range ? `Range ${item.range}` : "", properties, mastery ? `Mastery: ${mastery}` : ""].filter(Boolean).join(" · ") });
+    rows.push({ nameHtml: renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`), name: item.name, attackBonus: `${formatMod(bonus)}${proficient ? "" : "*"}`, damage: damageFormula, notePayload: weaponNotePayload(item) });
   }
-  for (const custom of state.character.attacks || []) rows.push({ name: custom.name || "Attack", attackBonus: custom.attackBonus || "—", damage: custom.damage || "—", details: custom.range || custom.notes || "" });
-  for (const spell of (state.character.cantrips || []).map(spellById).filter(Boolean)) rows.push({ nameHtml: renderReferenceTag("spell", `${spell.name}|${spell.source}|${spell.name}`), name: spell.name, attackBonus: d.spellcastingAbility ? formatMod(d.pb + d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—", damage: (spell.damageInflict || []).map(damageTypeName).join(", ") || "Cantrip", details: spell.range ? formatSpellRange(spell.range) : "" });
+  for (const custom of state.character.attacks || []) rows.push({ name: custom.name || "Attack", attackBonus: custom.attackBonus || "—", damage: custom.damage || "—", notePayload: custom.range || custom.notes ? customNotePayload([custom.range, custom.notes].filter(Boolean).join(" · "), `${custom.name || "Attack"} · Notes`) : null });
+  for (const spell of (state.character.cantrips || []).map(spellById).filter(Boolean)) rows.push({ nameHtml: renderReferenceTag("spell", `${spell.name}|${spell.source}|${spell.name}`), name: spell.name, attackBonus: d.spellcastingAbility ? formatMod(d.pb + d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—", damage: (spell.damageInflict || []).map(damageTypeName).join(", ") || "Cantrip", notePayload: spellNotePayload(spell) });
   return rows.slice(0, 12);
 }
 
@@ -3089,10 +3115,85 @@ function renderSheetResources(c) {
   }).join("")}</div>`;
 }
 
-function renderAttackDetails(details, title = "Attack details") {
-  const text = String(details || "").trim();
-  if (!text) return "";
-  return `<button type="button" class="sheet-note-link" data-action="attack-details" data-note-title="${escapeHtml(title)}" data-note="${escapeHtml(text)}">${escapeHtml(text)}</button>`;
+function normalizeWeaponPropertyCode(value) {
+  const raw = String(value?.name ?? value ?? "").split("|")[0].trim();
+  const byLabel = Object.entries(WEAPON_PROPERTY_INFO).find(([code, info]) => info.label.toLowerCase() === raw.toLowerCase());
+  return byLabel ? byLabel[0] : raw.toUpperCase();
+}
+
+function weaponNotePayload(item) {
+  const properties = [];
+  const codes = [];
+  for (const value of Array.isArray(item?.property) ? item.property : []) {
+    const code = normalizeWeaponPropertyCode(value);
+    const info = WEAPON_PROPERTY_INFO[code];
+    if (!info) continue;
+    if (codes.includes(code)) continue;
+    codes.push(code);
+    properties.push({ code, label: info.label, description: info.description, raw: String(value?.name ?? value ?? "") });
+  }
+  const masteryNames = masteryObjects(item).map(x => String(x?.name || "")).filter(Boolean);
+  return {
+    kind: "weapon",
+    title: `${item?.name || "Weapon"} · Notes`,
+    range: item?.range ? String(item.range) : "",
+    properties,
+    shorthand: codes.map(code => ({ code, label: WEAPON_PROPERTY_INFO[code].label })),
+    mastery: masteryNames.map(name => ({
+      name: canonicalLabel(name),
+      description: WEAPON_MASTERY_INFO[textNorm(name)] || "This weapon has this Weapon Mastery property in the 2024 rules."
+    })),
+    mastered: Boolean(state.character && hasSelectedWeaponMastery(state.character, item)),
+  };
+}
+
+function spellNotePayload(spell) {
+  const components = [];
+  const c = spell?.components || {};
+  if (c.v) components.push(SPELL_COMPONENT_INFO.V);
+  if (c.s) components.push(SPELL_COMPONENT_INFO.S);
+  if (c.m) components.push(SPELL_COMPONENT_INFO.M);
+  return {
+    kind: "spell",
+    title: `${spell?.name || "Cantrip"} · Notes`,
+    range: formatSpellRange(spell?.range),
+    castingTime: formatSpellTime(spell?.time),
+    duration: formatDuration(spell?.duration),
+    components,
+  };
+}
+
+function customNotePayload(text, title = "Attack Notes") {
+  const note = String(text || "").trim();
+  return note ? { kind: "custom", title, text: note } : null;
+}
+
+function renderAttackDetails(notePayload) {
+  if (!notePayload) return "";
+  const payload = encodeURIComponent(JSON.stringify(notePayload));
+  const label = notePayload.kind === "weapon" ? "Notes" : notePayload.kind === "spell" ? "Notes" : "Notes";
+  const title = notePayload.title || "Notes";
+  return `<button type="button" class="sheet-note-link" data-action="attack-details" data-note-payload="${escapeHtml(payload)}" aria-label="${escapeHtml(title)}">${label}</button>`;
+}
+
+function renderAttackNoteDialog(payload) {
+  if (!payload) return;
+  if (payload.kind === "custom") {
+    return openModal(payload.title || "Attack Notes", `<div class="rules-text formatted-rules"><p>${escapeHtml(payload.text || "")}</p></div>`);
+  }
+  if (payload.kind === "weapon") {
+    const range = payload.range ? `<section class="note-section"><h3>Range</h3><p>${escapeHtml(payload.range)}</p></section>` : "";
+    const propertyRows = (payload.properties || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.label)} <small>(${escapeHtml(x.code)})</small></strong><span>${escapeHtml(x.description)}</span></div>`).join("");
+    const shorthand = (payload.shorthand || []).map(x => `<span class="note-chip"><b>${escapeHtml(x.code)}</b> = ${escapeHtml(x.label)}</span>`).join("");
+    const masteryRows = (payload.mastery || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.name)}</strong><span>${escapeHtml(x.description)}</span></div>`).join("");
+    const masteryStatus = payload.mastery?.length ? `<p class="note-status">${payload.mastered ? "You currently have this weapon mastery selected." : "You do not currently have this weapon mastery selected."}</p>` : "";
+    return openModal(payload.title || "Weapon Notes", `${range}${propertyRows ? `<section class="note-section"><h3>Weapon Properties</h3>${propertyRows}</section>` : ""}${shorthand ? `<section class="note-section"><h3>Shorthand</h3><div class="note-chip-row">${shorthand}</div></section>` : ""}${masteryRows ? `<section class="note-section"><h3>Weapon Mastery</h3>${masteryRows}${masteryStatus}</section>` : ""}`);
+  }
+  if (payload.kind === "spell") {
+    const facts = [["Casting Time", payload.castingTime], ["Range", payload.range], ["Duration", payload.duration]].filter(([,v]) => v).map(([k,v]) => `<div class="note-fact"><strong>${escapeHtml(k)}</strong><span>${escapeHtml(v)}</span></div>`).join("");
+    const components = (payload.components || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.label)}</strong><span>${escapeHtml(x.description)}</span></div>`).join("");
+    return openModal(payload.title || "Cantrip Notes", `${facts ? `<section class="note-section"><h3>Spell Basics</h3><div class="note-fact-grid">${facts}</div></section>` : ""}${components ? `<section class="note-section"><h3>Components</h3>${components}</section>` : ""}`);
+  }
 }
 
 async function renderSheet(app) {
@@ -3127,7 +3228,7 @@ async function renderSheet(app) {
   const prepared = (await Promise.all((c.preparedSpells || []).map(getSpellById))).filter(Boolean).sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
   const cantrips = (await Promise.all((c.cantrips || []).map(getSpellById))).filter(Boolean).sort((a,b)=>a.name.localeCompare(b.name));
   const languages = d.proficiencies.languages.length ? d.proficiencies.languages : ["None recorded"];
-  const attackHtml = attackRows.map(row => `<div class="weapon-row"><span>${row.nameHtml || escapeHtml(row.name)}</span><strong>${escapeHtml(row.attackBonus)}</strong><span>${escapeHtml(row.damage)}</span><small>${renderAttackDetails(row.details, `${row.name || "Attack"} · Notes`)}</small></div>`).join("") || `<div class="sheet-empty">Equip a weapon or add a custom attack.</div>`;
+  const attackHtml = attackRows.map(row => `<div class="weapon-row"><span>${row.nameHtml || escapeHtml(row.name)}</span><strong>${escapeHtml(row.attackBonus)}</strong><span>${escapeHtml(row.damage)}</span><small>${renderAttackDetails(row.notePayload)}</small></div>`).join("") || `<div class="sheet-empty">Equip a weapon or add a custom attack.</div>`;
   const featurePreview = f => renderRichEntries((Array.isArray(f.entries) ? f.entries : [f.entries]).slice(0,2));
 
   const pageOne = `<div class="sheet-page">
@@ -3618,9 +3719,13 @@ function bindEvents() {
         if (action === "condition") { if (el.dataset.suppressClick) { delete el.dataset.suppressClick; return; } const condition = el.dataset.condition; if (condition === "Exhaustion") { if (Number(state.character.exhaustion || 0) > 0) state.character.exhaustion = 0; else state.character.exhaustion = 1; } else toggleArray(state.character.conditions, condition); await saveCharacter(); return render(); }
         if (action === "clear-conditions") { state.character.conditions = []; state.character.exhaustion = 0; await saveCharacter(); return render(); }
         if (action === "attack-details") {
-          const title = el.dataset.noteTitle || "Notes";
-          const note = el.dataset.note || "";
-          return openModal(title, `<div class="rules-text formatted-rules"><p>${escapeHtml(note)}</p></div>`);
+          try {
+            const payload = JSON.parse(decodeURIComponent(el.dataset.notePayload || ""));
+            return renderAttackNoteDialog(payload);
+          } catch {
+            const note = el.dataset.note || "";
+            if (note) return openModal(el.dataset.noteTitle || "Notes", `<div class="rules-text formatted-rules"><p>${escapeHtml(note)}</p></div>`);
+          }
         }
         if (action === "feature") { const f = findFeatureByButton(el); if (f) return openFeatureModal(f); }
         if (action === "feat-detail") { const ref = splitRefId(decodeURIComponent(el.dataset.name || "")); const feat = findFeat(ref.name, ref.source || null); if (feat) return openFeatModal(feat); }

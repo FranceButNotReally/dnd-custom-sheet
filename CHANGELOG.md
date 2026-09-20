@@ -1,12 +1,19 @@
 # Changelog
 
-## v0.35.0
+## v0.36.0
+
+- Reworked weapon/cantrip Notes buttons so they no longer repeat the row text.
+- Weapon Notes now explain applicable 2024 weapon-property shorthand, the full property effects, and the weapon's Weapon Mastery property with current selection status.
+- Cantrip Notes now explain casting time, range, duration, and V/S/M component shorthand.
+
+
+## v0.36.0
 
 - Fixed the equipment-cache regression caused by 5etools splitting ordinary/base equipment into `items-base.json`.
 - Core synchronization now batches both `items.json` and `items-base.json`, then merges their `item`/`baseitem` records into the application equipment catalog.
 - Equipment validation now checks the merged catalog, so Dagger, Quarterstaff, and other ordinary 2024 equipment are resolved from the same catalogue used by 5etools.
 - Download validation no longer incorrectly rejects a structurally valid `items.json` merely because ordinary equipment lives in `items-base.json`.
-- Bumped the app-shell asset query strings and service-worker cache to v350 to prevent an older JavaScript shell from being served as `?v=0330`.
+- Bumped the app-shell asset query strings and service-worker cache to v360 to prevent an older JavaScript shell from being served as `?v=0330`.
 
 ## v0.34.0
 
@@ -37,13 +44,13 @@
 - 
 # Changelog
 
-## v0.35.0
+## v0.36.0
 
 - Fixed the equipment-cache regression caused by 5etools splitting ordinary/base equipment into `items-base.json`.
 - Core synchronization now batches both `items.json` and `items-base.json`, then merges their `item`/`baseitem` records into the application equipment catalog.
 - Equipment validation now checks the merged catalog, so Dagger, Quarterstaff, and other ordinary 2024 equipment are resolved from the same catalogue used by 5etools.
 - Download validation no longer incorrectly rejects a structurally valid `items.json` merely because ordinary equipment lives in `items-base.json`.
-- Bumped the app-shell asset query strings and service-worker cache to v350 to prevent an older JavaScript shell from being served as `?v=0330`.
+- Bumped the app-shell asset query strings and service-worker cache to v360 to prevent an older JavaScript shell from being served as `?v=0330`.
 
 ## v0.29.0
 
