@@ -1,4 +1,10 @@
-## v0.27.8
+## v0.28.0
+
+- Fixed equipped weapons not appearing in the Character Sheet Weapons & Damage Cantrips table by resolving attacks through the combined 2024 item/base-equipment catalog.
+- Fixed equipped-weapon matching when stored item names/sources differ in case.
+- Item reference/details dialogs now show readable weapon/armor/equipment statistics instead of falling back to raw JSON when a base 2024 item has no prose `entries`.
+- Weapon Mastery validation now uses the combined official weapon catalog, so selected base-equipment weapons are not discarded during character derivation.
+
 
 - Fixed XPHB base-equipment resolution so `greataxe|xphb`, `handaxe|xphb`, and other mundane 2024 equipment references resolve directly from `items-base.json`.
 - XPHB equipment indexing no longer depends on source metadata being present in `books.json`.

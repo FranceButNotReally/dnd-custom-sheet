@@ -825,3 +825,5 @@ body { min-height: 100vh; }
 .picker-toolbar input, .picker-toolbar select { background:#fffaf0 !important; color:#2b2823 !important; border-color:#b7ac98 !important; }
 .equipment-page-toolbar { grid-template-columns:minmax(0,1fr) 190px auto; align-items:center; }
 @media (max-width:720px) { .equipment-page-toolbar { grid-template-columns:1fr; } }
+
+.reference-stat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.reference-stat{display:flex;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--line,#cbbf9f);background:var(--paper-2,#f6f0df);border-radius:6px}.reference-stat span{opacity:.72}.reference-stat strong{text-align:right}.reference-json{white-space:pre-wrap}
