@@ -32,7 +32,7 @@ jobs:
         run: npm ci
 
       - name: Run 157-case regression suite
-        run: node --test tests/unit/*.test.mjs tests/rules/*.test.mjs tests/rules/157-regression.test.mjs
+        run: npm run test:unit
 
       - name: Run pinned-data contract tests
         run: npm run test:data
