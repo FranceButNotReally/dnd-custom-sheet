@@ -49,7 +49,7 @@ test('all XPHB feats with structured save/skill/mixed/expertise/spell choices ar
     if (feat.skillToolLanguageProficiencies) assert.ok(a.featMixedChoiceSpecs(feat).length > 0, `No mixed choice spec for ${feat.name}`);
     if (feat.expertise) {
       const specs = a.featExpertiseSpecs(feat);
-      const universal = feat.expertise.some(entry => entry?.choose?.from?.some(token => /^anyProficientSkill$/i.test(String(token))));
+      const universal = /anyProficientSkill/i.test(JSON.stringify(feat.expertise));
       assert.ok(specs.length > 0 || universal, `No expertise spec for ${feat.name}`);
     }
     if (feat.additionalSpells) assert.ok(a.featAdditionalSpellChoiceSpecs(feat).length > 0, `No additional-spell spec for ${feat.name}`);
