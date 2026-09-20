@@ -1,14 +1,14 @@
-## v0.30.0
+## v0.32.0
 
-The 5etools data layer now uses staged caching with a visible progress bar. Core catalogs, class files, and official spell sources are downloaded/cached in small groups rather than all at once. Normal character views are enabled only after the local rules library is complete, and interrupted caches can be resumed or repaired from Data → Complete / repair rules cache.
+The 5etools data layer now uses staged caching with a visible progress bar. Core catalogs, class files, and official spell sources are downloaded/cached in small groups rather than all at once. Normal character views are enabled only after the local rules library is complete, and interrupted caches are resumed automatically by the same synchronization path.
 
 
 
 - Reworked rules-data loading into staged batches with a visible progress overlay.
+- Startup now waits for synchronization to finish before exposing the character sheet, and individual downloads retry transient failures automatically.
 - Initial synchronization now completes the 2024 player-facing cache before normal sheet views are enabled.
 - Interrupted/incomplete caches are detected and resumed rather than leaving individual features dependent on whichever files happened to finish downloading.
-- The extended cache action now means “Complete / repair rules cache” and uses the same batching/progress system.
-
+- 
 # D&D 2024 5etools Character Sheet PWA
 
 Tablet-first D&D 2024 character builder and sheet backed by versioned 5etools data.

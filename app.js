@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.30.0";
+const APP_VERSION = "0.32.0";
 
 const PATHS = {
   books: "data/books.json",
@@ -423,9 +423,20 @@ async function fetch5eData(version, path) {
   const cached = await cachedData(version, path);
   if (cached !== null) return cached;
   const url = `${RAW_ROOT}/${encodeURIComponent(version)}/${path}`;
-  const json = await fetchJson(url, { timeoutMs: 45000 });
-  await cacheData(version, path, json);
-  return json;
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const json = await fetchJson(url, { timeoutMs: 45000 });
+      await cacheData(version, path, json);
+      return json;
+    } catch (error) {
+      lastError = error;
+      const transient = /^(408|429|5\d\d)\b/.test(String(error?.message || "")) || error?.name === "AbortError" || error instanceof TypeError;
+      if (!transient || attempt === 2) throw error;
+      await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+    }
+  }
+  throw lastError || new Error(`Unable to load ${path}`);
 }
 
 function sourceLabel(source) {
@@ -542,6 +553,7 @@ async function loadPathsInBatches(version, paths, {batchSize=3, phase="Core cata
 async function runCacheBatches(entries, worker, {batchSize=4, phase="Library cache", done=0, total=entries.length, label="Caching data"} = {}) {
   for (let i = 0; i < entries.length; i += batchSize) {
     const batch = entries.slice(i, i + batchSize);
+    setCacheProgress({ label, detail: `Preparing ${Math.min(i + batch.length, entries.length)} entries in this batch`, done, total, phase });
     await Promise.all(batch.map((entry, offset) => worker(entry, i + offset)));
     done += batch.length;
     setCacheProgress({ label, detail: `${done} of ${total}`, done, total, phase });
@@ -2770,7 +2782,7 @@ function render() {
   if (!app) return;
   document.querySelectorAll(".tab").forEach(btn => btn.classList.toggle("is-active", btn.dataset.view === state.view));
   if (!state.version || !state.data.classIndex || !state.libraryReady) {
-    app.innerHTML = !state.version ? emptyState() : `<div class="card empty-state"><div class="empty-icon">◆</div><h2>Finishing rules cache</h2><p>The app uses a complete local 2024 rules cache to avoid missing equipment, spells, proficiencies, and references. The cache is built in small batches and can be resumed safely.</p><button class="button button-primary" data-action="cache-extended" ${state.busy ? "disabled" : ""}>${state.busy ? "Caching…" : "Complete / repair cache"}</button></div>`;
+    app.innerHTML = !state.version ? emptyState() : `<div class="card empty-state"><div class="empty-icon">◆</div><h2>Rules library is not ready</h2><p>The complete 2024 player-facing rules library is synchronized in batches before the character sheet is made available. Existing cached batches are reused automatically.</p><button class="button button-primary" data-action="sync" ${state.busy ? "disabled" : ""}>${state.busy ? "Synchronizing…" : "Retry synchronization"}</button></div>`;
     bindEvents();
     return;
   }
@@ -3277,31 +3289,6 @@ async function renderEquipment(app) {
   rerender();
 }
 
-async function cacheExtendedRules(){
-  if (!state.version) { showToast("Sync the 5etools data once before completing the library cache."); return; }
-  if (!state.online) { showToast("Completing the full rules cache requires an internet connection."); return; }
-  if (state.busy) return;
-  state.busy = true;
-  state.libraryReady = false;
-  setBusy(true);
-  updateHeader();
-  try {
-    const core = state.data?.classIndex ? state.data : await loadVersion(state.version);
-    const result = await cacheAllLibraryData(state.version, core);
-    showToast(`Rules library complete: ${result.classCount} class files and ${result.spellSourceCount} spell sources cached.`);
-  } catch (e) {
-    state.libraryReady = false;
-    console.warn("Rules cache completion failed", e);
-    showToast(`Rules cache stopped: ${e.message}`);
-  } finally {
-    state.busy = false;
-    setBusy(false);
-    updateHeader();
-    if (state.libraryReady) setTimeout(hideCacheProgress, 650);
-    render();
-  }
-}
-
 async function renderDataView(app) {
   const counts = {
     classes: Object.keys(state.data.classIndex || {}).length,
@@ -3320,8 +3307,7 @@ async function renderDataView(app) {
     <section class="card compact-gap"><div class="section-title">Detected 2024-era official sources</div><div class="source-chip-grid">${(state.data.sourceMeta || []).map(x=>`<div class="source-chip"><strong>${escapeHtml(x.name)}</strong><span>${escapeHtml(x.source)}${x.published?` · ${escapeHtml(x.published)}`:""}</span></div>`).join("")}</div></section>
     <div class="grid three compact-gap">${Object.entries(counts).map(([k,v])=>metric(k, v == null ? "Not loaded" : v)).join("")}</div>
     <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Characters on this device</div><div class="mini">Character state is independent of 5etools rules data.</div></div><button class="button button-small button-primary" data-action="new-character">New character</button></div><div class="character-list">${chars.map(ch=>`<div class="character-row ${ch.id===state.character.id?"current":""}"><button class="character-select" data-action="switch-character" data-id="${ch.id}"><strong>${escapeHtml(ch.name)}</strong><span>${escapeHtml([ch.species?.name,ch.class?.name,ch.subclass?.name,`Level ${ch.level}`].filter(Boolean).join(" · "))}</span></button>${ch.id!==state.character.id?`<button class="icon-button" data-action="delete-character" data-id="${ch.id}">×</button>`:""}</div>`).join("")}</div></section>
-    <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Extended cache</div><div class="mini">The rules library is cached in small batches with visible progress. Use this to resume or repair an incomplete cache after an interrupted download or cleared browser storage.</div></div><button type="button" id="cacheExtendedBtn" class="button button-small button-primary" data-action="cache-extended" ${state.busy?"disabled":""}>Complete / repair rules cache</button></div></section>
-    <section class="card compact-gap"><div class="section-title">Storage model</div><p class="note">The app caches versioned 5etools JSON on the device, stores character state separately, and can continue running without a network connection after synchronization. A rules-data update does not replace your character.</p><p class="mini">Data source: ${escapeHtml(REPO)} · 2024 sources detected automatically</p></section>`;
+    <section class="card compact-gap"><div class="section-title">Storage model</div><p class="note">The app caches the complete versioned 5etools JSON library on the device in staged batches, stores character state separately, and can continue running without a network connection after synchronization. A rules-data update does not replace your character.</p><p class="mini">Data source: ${escapeHtml(REPO)} · 2024 sources detected automatically</p></section>`;
   bindEvents();
 }
 function csv(value){return value||"";}
@@ -3416,7 +3402,6 @@ function bindEvents() {
     el.onclick = async () => {
       const action = el.dataset.action;
       try {
-        if (action === "cache-extended") return cacheExtendedRules();
         if (action === "sync") return syncData(true);
         if (action === "builder") { state.view = "builder"; return render(); }
         if (action === "sheet") { state.view = "sheet"; return render(); }
@@ -3961,11 +3946,16 @@ document.addEventListener("visibilitychange",()=>{if(document.visibilityState===
 
 async function init(){
   await loadCharacter();
+  ensureCacheProgressRoot();
   updateHeader();
-  render();
-  // One synchronization path only: this prevents startup hydration and update checks
-  // from racing each other and leaving an apparently random subset of data cached.
-  if(state.version || state.online) syncData(false).catch(console.warn);
+  // Do not expose a partially hydrated character sheet. Complete/resume the staged
+  // rules synchronization first; every later view can then assume the library exists.
+  if(state.version || state.online){
+    setCacheProgress({label:"Preparing 2024 rules library",detail:"Checking the local cache and preparing staged synchronization…",done:0,total:1,phase:"Preparing"});
+    await syncData(false);
+  } else {
+    render();
+  }
   if("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").then(reg=>reg.update()).catch(console.warn);
   }

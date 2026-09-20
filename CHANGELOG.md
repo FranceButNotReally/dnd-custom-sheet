@@ -1,16 +1,16 @@
-## v0.30.0
+## v0.32.0
 
 - Reworked rules-data loading into staged batches with a visible progress overlay.
+- Startup now waits for synchronization to finish before exposing the character sheet, and individual downloads retry transient failures automatically.
 - Initial synchronization now completes the 2024 player-facing cache before normal sheet views are enabled.
 - Interrupted/incomplete caches are detected and resumed rather than leaving individual features dependent on whichever files happened to finish downloading.
-- The extended cache action now means “Complete / repair rules cache” and uses the same batching/progress system.
-
+- 
 # Changelog
 
 ## v0.29.0
 
 - Fixed the `bgMode is not defined` regression in the background ability editor by restoring the local mode/selection variables before rendering.
-- Extended cache now explicitly caches the 5etools item catalog (including weapons) and optional-feature catalog in addition to class files and spell sources.
+- The complete library is now synchronized through the same automatic staged process; there is no separate extended-cache operation.
 - Added visible progress to extended caching so a long cache operation no longer appears to do nothing.
 
 
@@ -19,7 +19,7 @@
 - Added Common plus two selectable non-rare Standard Languages to character creation.
 - Added class/background proficiency-overlap indicators, with overlapping background skills marked in class-skill choices.
 - Removed the redundant Rest & Recovery panel; rest controls remain in Resources.
-- Added an optional extended-cache action for all indexed class and spell-source files.
+- The complete 2024 rules library is now synchronized automatically in staged batches; there is no separate extended-cache action.
 - Added click-to-open notes for weapon/cantrip attack details.
 - Added long-press rules lookup for touch-device condition chips while preserving tap-to-toggle.
 - Added an in-app explanation of Equipped versus Wielding.
