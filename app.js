@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.27.0";
+const APP_VERSION = "0.27.1";
 
 const PATHS = {
   books: "data/books.json",
@@ -2882,8 +2882,11 @@ async function renderBuilder(app) {
       return spec.fixed || !spec.from.length ? "" : `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Skill proficiency<select data-feat-skill="${escapeHtml(key)}">${spec.from.map(sk=>`<option value="${sk}" ${c.featSkillChoices?.[key]===sk?"selected":""}>${escapeHtml(SKILLS[sk]?.[1]||sk)}</option>`).join("")}</select></label></div>`;
     })
   ]).filter(Boolean).join("");
+  const bgMode = c.backgroundAbility.mode === "three" ? "three" : "split";
   const selectedAbility2 = c.backgroundAbility.plus2;
   const selectedAbility1 = c.backgroundAbility.plus1;
+  const selectedAbility1b = c.backgroundAbility.plus1b;
+  const selectedAbility1c = c.backgroundAbility.plus1c;
   const classSkillChoices = new Set(normalizeSkillArray(c.classSkillChoices));
   const classOptionsSkills = d.skillChoiceSpec?.from || [];
   const maxClassSkills = d.skillChoiceSpec?.count || 0;

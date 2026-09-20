@@ -15,6 +15,6 @@ The app checks the latest 5etools release, loads the official 2024/revised playe
 Version 0.25.0
 
 
-## v0.27.0
+## v0.27.1
 
 This build completes the equipment/spell hydration pass, fixes Simple/Martial weapon proficiency normalization, makes legacy PHB references resolve against the current XPHB catalog, adds inventory filtering, supports three +1 background ability increases, removes redundant gaming-set placeholders, and applies the parchment character-sheet theme consistently across editor and management surfaces.
