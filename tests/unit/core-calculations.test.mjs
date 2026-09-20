@@ -77,7 +77,7 @@ test('unarmored defense is present only for classes that define it', () => {
 
 test('character migration preserves schema and creates required choice containers', () => {
   const c = a.migrateCharacter({schema: 1, name:'Old'});
-  for (const key of ['featAbilityChoices','featSaveChoices','featSkillChoices','featMixedChoices','featSpellChoices','featExpertiseChoices','speciesChoices']) {
+  for (const key of ['featAbilityChoices','featSaveChoices','featSkillChoices','featMixedChoices','featSpellChoices','featExpertiseChoices','speciesChoices','classFeatureChoices']) {
     assert.ok(c[key] && typeof c[key] === 'object', key);
   }
   assert.ok(Array.isArray(c.standardLanguages));
