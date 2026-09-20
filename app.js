@@ -1486,7 +1486,7 @@ function featAdditionalSpellChoiceSpecs(feat) {
       if (typeof value === "object") return Object.entries(value).some(([key, child]) => key === "choose" || hasStructuredSpellChoice(child));
       return false;
     };
-    const hasSpellChoice = hasStructuredSpellChoice(group?.known) || hasStructuredSpellChoice(group?.innate);
+    const hasSpellChoice = hasStructuredSpellChoice(group?.known) || hasStructuredSpellChoice(group?.innate) || hasStructuredSpellChoice(group?.prepared);
     if (names.length || abilityFrom.length || hasSpellChoice) specs.push({ index, names, abilityFrom, key: `${feat?.name || "Feat"}|${feat?.source || ""}|spells|${index}` });
   }
   return specs;
