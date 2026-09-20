@@ -37,7 +37,7 @@ export function loadAppTestContext() {
   const apiNames = [
     'state', 'ABILITIES', 'ABILITY_NAMES', 'STANDARD_ARRAY', 'STANDARD_ARRAY_BY_CLASS', 'STANDARD_LANGUAGE_NAMES',
     'SKILLS', 'SPECIAL_SENSES', 'WEAPON_PROPERTY_INFO', 'WEAPON_MASTERY_INFO', 'SPELL_COMPONENT_INFO',
-    'emptyCharacter', 'migrateCharacter', 'abilityMod', 'formatMod', 'proficiencyBonus',
+    'emptyCharacter', 'migrateCharacter', 'abilityMod', 'formatMod', 'proficiencyBonus', 'selectedFeatObjects', 'featInstanceKey', 'featSpecKey', 'isAbilityScoreImprovementFeat',
     'classSpellSlots', 'classCantrips', 'classPrepared', 'classKnownSpells', 'hitDieFaces', 'defaultMaxHp',
     'skillChoiceSpec', 'optionalFeatureProgression', 'progressionFeatSlots', 'getSubclassUnlockLevel', 'classFeatureChoiceSpecs', 'reconcileClassFeatureChoices', 'selectedClassFeatureOptionObjects', 'resolveClassFeatureRef', 'classFeatureProficiencyChoiceSpecs', 'reconcileClassProficiencyChoices', 'applyClassProficiencyChoices',
     'featAbilitySpecs', 'featSaveSpecs', 'featSkillSpecs', 'featMixedChoiceSpecs', 'featExpertiseSpecs',
