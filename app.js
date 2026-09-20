@@ -2884,7 +2884,8 @@ function inferFeatureUseMaxFromText(feature, d) {
   const modMatch = text.match(/a number of times equal to (?:your )?(Strength|Dexterity|Constitution|Intelligence|Wisdom|Charisma) modifier/i);
   if (modMatch) {
     const key = modMatch[1].slice(0,3).toLowerCase();
-    count = Math.max(count, Number(d?.mods?.[key] || 0));
+    const minimum = /minimum (?:of )?(?:once|one|1)/i.test(text) ? 1 : 0;
+    count = Math.max(count, minimum, Number(d?.mods?.[key] || 0));
   }
   const gated = /(?:starting at|when you reach|at)\s+(?:level\s+)?(\d+)[^.!?]{0,120}?(?:can|may) use (?:this feature|it)\s+(once|twice|three times|four times|five times|six times)/gi;
   for (const m of text.matchAll(gated)) {
@@ -2937,16 +2938,30 @@ function featureResourceSpecs(features, d, prefix) {
   const out = [];
   for (const f of features || []) {
     const uses = f?.uses;
-    const max = uses && typeof uses === "object"
+    const normalizedName = textNorm(f?.name);
+    let max = uses && typeof uses === "object"
       ? resourceMaxValue(uses.number ?? uses.max ?? uses.amount, d)
       : inferFeatureUseMaxFromText(f, d);
-    if (!max) continue;
-    const details = uses && typeof uses === "object" && resourceRechargeLabel(uses.recharge || uses.recovery || uses.rest)
+    let details = uses && typeof uses === "object" && resourceRechargeLabel(uses.recharge || uses.recovery || uses.rest)
       ? { recharge: resourceRechargeLabel(uses.recharge || uses.recovery || uses.rest), shortRestore: "all", longRestore: "all" }
       : featureRechargeDetails(f);
-    if (!details.recharge) continue;
+
+    // Some PHB resources are pools rather than a number of uses.
+    if (normalizedName === "layonhands") {
+      max = Math.max(0, 5 * Number(d?.level || 1));
+      details = { recharge: "long", shortRestore: "all", longRestore: "all" };
+    }
+
+    if (!max || !details.recharge) continue;
     const id = `${prefix}:${f.source || DATA_SOURCE}:${f.name}`.toLowerCase();
     out.push({ id, name: f.name, max, recharge: details.recharge, shortRestore: details.shortRestore, longRestore: details.longRestore, mode: "auto", origin: { type: prefix, name: f.name, source: f.source || DATA_SOURCE } });
+  }
+
+  // Font of Inspiration changes the recovery rule of the existing Bardic
+  // Inspiration resource rather than adding a second pool.
+  if (prefix === "classfeature" && hasNamedFeature(features, "Font of Inspiration")) {
+    const bardic = out.find(spec => textNorm(spec.name) === "bardicinspiration");
+    if (bardic) { bardic.recharge = "both"; bardic.shortRestore = "all"; bardic.longRestore = "all"; }
   }
   return out;
 }
@@ -2961,8 +2976,13 @@ function classTableResourceSpecs(classObj, features, d) {
     labels.forEach((label, idx) => {
       const normalized = textNorm(stripTags(label));
       if (!normalized || ignored.has(normalized)) return;
+      const aliases = {
+        rages: "rage",
+        focuspoints: "monksfocus",
+        sorcerypoints: "fontofmagic",
+      };
       const feature = featureMap.get(normalized) || featureMap.get(normalized.replace(/s$/, "")) ||
-        (normalized === "rages" ? featureMap.get("rage") : null);
+        (aliases[normalized] ? featureMap.get(aliases[normalized]) : null);
       if (!feature) return;
       const max = resourceMaxValue(row[idx], d);
       if (!max) return;
