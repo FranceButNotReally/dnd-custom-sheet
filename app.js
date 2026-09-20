@@ -1629,7 +1629,7 @@ function featMixedChoiceSpecs(feat) {
     if (!choose) continue;
     const from = Array.isArray(choose.from) ? choose.from.map(String) : [];
     const count = Math.max(1, Number(choose.count || 1));
-    for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, key: `${feat?.name || "Feat"}|${feat?.source || ""}|mixed|${index}|${choiceIndex}` });
+    for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, key: `${featInstanceKey(feat)}|mixed|${index}|${choiceIndex}` });
   }
   return specs;
 }
@@ -1642,7 +1642,7 @@ function featExpertiseSpecs(feat) {
     const rawFrom = Array.isArray(choose.from) ? choose.from.map(String) : [];
     const from = rawFrom.some(x => /^anyProficientSkill$/i.test(x)) ? Object.keys(SKILLS) : rawFrom.map(normalizeSkillKey).filter(Boolean);
     const count = Math.max(1, Number(choose.count || 1));
-    for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, anyProficientSkill: rawFrom.some(x => /^anyProficientSkill$/i.test(x)), key: `${feat?.name || "Feat"}|${feat?.source || ""}|expertise|${index}|${choiceIndex}` });
+    for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, anyProficientSkill: rawFrom.some(x => /^anyProficientSkill$/i.test(x)), key: `${featInstanceKey(feat)}|expertise|${index}|${choiceIndex}` });
   }
   return specs;
 }
@@ -1679,7 +1679,7 @@ function featAdditionalSpellChoiceSpecs(feat) {
       return false;
     };
     const hasSpellChoice = hasStructuredSpellChoice(group?.known) || hasStructuredSpellChoice(group?.innate) || hasStructuredSpellChoice(group?.prepared);
-    if (names.length || abilityFrom.length || hasSpellChoice) specs.push({ index, names, abilityFrom, key: `${feat?.name || "Feat"}|${feat?.source || ""}|spells|${index}` });
+    if (names.length || abilityFrom.length || hasSpellChoice) specs.push({ index, names, abilityFrom, key: `${featInstanceKey(feat)}|spells|${index}` });
   }
   return specs;
 }
@@ -3877,6 +3877,12 @@ async function renderBuilder(app) {
   const bgFeatRefs = backgroundFeatNames(bg);
   const availableOriginFeats = bgFeatRefs.length ? feats.filter(f => bgFeatRefs.some(ref => String(ref.name || ref).toLowerCase() === f.name.toLowerCase() && (!ref.source || String(ref.source).toLowerCase() === String(f.source).toLowerCase()))) : [];
   const featChoiceMarkup = d.featObjs.flatMap(feat => [
+    ...(isAbilityScoreImprovementFeat(feat) ? [(() => {
+      const modeKey = featInstanceKey(feat);
+      const selectedMode = c.featAbilityModes?.[modeKey] || "";
+      const suffix = feat._instanceLabel ? ` · ${feat._instanceLabel}` : "";
+      return `<div class="feat-choice-row"><label class="field">Ability Score Improvement${escapeHtml(suffix)} · Pattern<select data-feat-ability-mode="${escapeHtml(modeKey)}"><option value="">— Select —</option><option value="plus2" ${selectedMode==="plus2"?"selected":""}>+2 to one ability</option><option value="split" ${selectedMode==="split"?"selected":""}>+1 to two abilities</option></select></label></div>`;
+    })()] : []),
     ...featAbilitySpecs(feat).map(spec => {
       const key=featSpecKey(feat,spec);
       if (spec.fixed || !spec.from.length) return "";
@@ -4471,6 +4477,13 @@ function bindEvents() {
   });
 
   document.querySelectorAll("[data-stat]").forEach(el => el.onchange = async () => { state.character.baseStats[el.dataset.stat] = clamp(Number(el.value),1,30); await saveCharacter(); render(); });
+  document.querySelectorAll("[data-feat-ability-mode]").forEach(el => el.onchange = async () => {
+    if (!state.character.featAbilityModes) state.character.featAbilityModes = {};
+    const key = el.dataset.featAbilityMode;
+    if (el.value) state.character.featAbilityModes[key] = el.value;
+    else delete state.character.featAbilityModes[key];
+    await saveCharacter(); render();
+  });
   document.querySelectorAll("[data-feat-ability]").forEach(el => el.onchange = async () => { state.character.featAbilityChoices[el.dataset.featAbility] = el.value; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-save]").forEach(el => el.onchange = async () => { state.character.featSaveChoices[el.dataset.featSave] = el.value; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-skill]").forEach(el => el.onchange = async () => { state.character.featSkillChoices[el.dataset.featSkill] = el.value; await saveCharacter(); render(); });
