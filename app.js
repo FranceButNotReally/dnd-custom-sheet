@@ -2079,7 +2079,10 @@ function spellSchoolName(code) { return SPELL_SCHOOLS[code] || code || ""; }
 function skillChoiceSpec(classObj) {
   const groups = classObj?.startingProficiencies?.skills || [];
   const choose = groups.find(x => x?.choose)?.choose;
-  return choose ? { from: normalizeSkillArray(choose.from || []), count: Number(choose.count || 1) } : { from: [], count: 0 };
+  if (choose) return { from: normalizeSkillArray(choose.from || []), count: Number(choose.count || 1) };
+  const any = groups.find(x => x && typeof x === "object" && Number(x.any || 0) > 0);
+  if (any) return { from: Object.keys(SKILLS), count: Math.max(1, Number(any.any || 1)) };
+  return { from: [], count: 0 };
 }
 function grantedSkillsFromMap(mapList) {
   const out = new Set();
