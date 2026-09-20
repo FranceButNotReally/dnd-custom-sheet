@@ -1,16 +1,16 @@
+# Changelog
+
 ## v0.28.0
+- Added explicit 2024 PHB Standard Array by Class assignments for the Standard Array button.
+- Added Common plus two selectable non-rare Standard Languages to character creation.
+- Added class/background proficiency-overlap indicators, with overlapping background skills marked in class-skill choices.
+- Removed the redundant Rest & Recovery panel; rest controls remain in Resources.
+- Added an optional extended-cache action for all indexed class and spell-source files.
+- Added click-to-open notes for weapon/cantrip attack details.
+- Added long-press rules lookup for touch-device condition chips while preserving tap-to-toggle.
+- Added an in-app explanation of Equipped versus Wielding.
 
-- Fixed equipped weapons not appearing in the Character Sheet Weapons & Damage Cantrips table by resolving attacks through the combined 2024 item/base-equipment catalog.
-- Fixed equipped-weapon matching when stored item names/sources differ in case.
-- Item reference/details dialogs now show readable weapon/armor/equipment statistics instead of falling back to raw JSON when a base 2024 item has no prose `entries`.
-- Weapon Mastery validation now uses the combined official weapon catalog, so selected base-equipment weapons are not discarded during character derivation.
-
-
-- Fixed XPHB base-equipment resolution so `greataxe|xphb`, `handaxe|xphb`, and other mundane 2024 equipment references resolve directly from `items-base.json`.
-- XPHB equipment indexing no longer depends on source metadata being present in `books.json`.
-- Added a direct loaded-table fallback for exact XPHB item references.
-
-# v0.27.2 — equipment, spells, filters, and editor polish
+# v0.27.0 — equipment, spells, filters, and editor polish
 
 - Fixed equipment hydration and weapon equip/wield resolution.
 - Added robust Simple/Martial weapon proficiency token handling for Weapon Mastery.
@@ -70,7 +70,6 @@
 - Preserved Weapon Mastery reconciliation against proficiency and current mastery limit.
 - Discarded the legacy max-HP=1 migration artifact when upgrading older character data.
 
-# Changelog
 
 ## 0.14.0
 
@@ -90,6 +89,3 @@
 - Added item-backed tool and language selectors.
 - Added exhaustion penalties to d20 tests and speed.
 - Bumped PWA shell cache to v14.
-
-## v0.27.7
-- Added an Equipment Cache Diagnostic on Data & App showing cached item/weapon counts and exact starting-equipment reference resolution.

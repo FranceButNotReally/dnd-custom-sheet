@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.28.1";
+const APP_VERSION = "0.28.0";
 
 const PATHS = {
   books: "data/books.json",
@@ -15,7 +15,6 @@ const PATHS = {
   optionalfeatures: "data/optionalfeatures.json",
   spellIndex: "data/spells/index.json",
   items: "data/items.json",
-  itemsBase: "data/items-base.json",
   conditionsdiseases: "data/conditionsdiseases.json",
   variantrules: "data/variantrules.json",
   actions: "data/actions.json",
@@ -54,6 +53,21 @@ const SPECIAL_SENSE_FALLBACKS = {
 };
 const SPELL_SCHOOLS = { A: "Abjuration", C: "Conjuration", D: "Divination", E: "Enchantment", V: "Evocation", I: "Illusion", N: "Necromancy", T: "Transmutation" };
 const STANDARD_ARRAY = [15, 14, 13, 12, 10, 8];
+const STANDARD_ARRAY_BY_CLASS = {
+  Barbarian: { str: 15, dex: 13, con: 14, int: 10, wis: 12, cha: 8 },
+  Bard:      { str: 8,  dex: 14, con: 12, int: 13, wis: 10, cha: 15 },
+  Cleric:    { str: 14, dex: 8,  con: 13, int: 10, wis: 15, cha: 12 },
+  Druid:    { str: 8,  dex: 12, con: 14, int: 13, wis: 15, cha: 10 },
+  Fighter:  { str: 15, dex: 14, con: 13, int: 8,  wis: 10, cha: 12 },
+  Monk:     { str: 12, dex: 15, con: 13, int: 10, wis: 14, cha: 8 },
+  Paladin:  { str: 15, dex: 10, con: 13, int: 8,  wis: 12, cha: 14 },
+  Ranger:   { str: 12, dex: 15, con: 13, int: 8,  wis: 14, cha: 10 },
+  Rogue:    { str: 12, dex: 15, con: 13, int: 14, wis: 10, cha: 8 },
+  Sorcerer: { str: 10, dex: 13, con: 14, int: 8,  wis: 12, cha: 15 },
+  Warlock:  { str: 8,  dex: 14, con: 13, int: 12, wis: 10, cha: 15 },
+  Wizard:   { str: 8,  dex: 12, con: 13, int: 15, wis: 14, cha: 10 },
+};
+const STANDARD_LANGUAGE_NAMES = ["Common Sign Language", "Draconic", "Dwarvish", "Elvish", "Giant", "Gnomish", "Goblin", "Halfling", "Orc"];
 const POINT_BUY_COST = { 8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 13: 5, 14: 7, 15: 9 };
 
 const state = {
@@ -63,7 +77,7 @@ const state = {
   version: null,
   lastSync: null,
   lastReleaseCheck: null,
-  data: { books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null, optionalfeatures: null, spells: null, spellIndex: null, items: null, itemsBase: null, itemIndex: new Map(), legacyItemIndex: new Map(), weaponIndex: new Map(), conditionsdiseases: null, variantrules: null, actions: null, classFiles: new Map(), spellFiles: new Map(), referenceCache: new Map(), officialSources: new Set(), sourceMeta: [] },
+  data: { books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null, optionalfeatures: null, spells: null, spellIndex: null, items: null, conditionsdiseases: null, variantrules: null, actions: null, classFiles: new Map(), spellFiles: new Map(), referenceCache: new Map(), officialSources: new Set(), sourceMeta: [] },
   character: null,
   deferredInstallPrompt: null,
   spellPickerTab: "prepared",
@@ -103,6 +117,7 @@ function emptyCharacter() {
     manualToolProficiencies: [],
     manualLanguages: [],
     languageChoices: [],
+    standardLanguages: [null, null],
     backgroundAbility: { mode: "split", plus2: null, plus1: null, plus1b: null, plus1c: null },
     hpCurrent: null,
     hpAuto: true,
@@ -154,7 +169,7 @@ function migrateCharacter(raw) {
   const base = emptyCharacter();
   if (!raw || typeof raw !== "object") return base;
   const c = { ...base, ...raw };
-  c.schema = 12;
+  c.schema = 13;
   c.baseStats = { ...base.baseStats, ...(raw.baseStats || raw.stats || {}) };
   c.xp = Math.max(0, Number(raw.xp || 0));
   c.manualAbilityBonuses = { ...base.manualAbilityBonuses, ...(raw.manualAbilityBonuses || {}) };
@@ -176,6 +191,14 @@ function migrateCharacter(raw) {
   c.manualToolProficiencies = Array.isArray(raw.manualToolProficiencies) ? raw.manualToolProficiencies : [];
   c.manualLanguages = Array.isArray(raw.manualLanguages) ? raw.manualLanguages : [];
   c.languageChoices = Array.isArray(raw.languageChoices) ? raw.languageChoices : [];
+  c.standardLanguages = Array.isArray(raw.standardLanguages) ? raw.standardLanguages.slice(0, 2).map(x => x ? String(x) : null) : [null, null];
+  if (c.standardLanguages.length < 2) while (c.standardLanguages.length < 2) c.standardLanguages.push(null);
+  c.standardLanguages = c.standardLanguages.map((value, i, arr) => {
+    if (!value || value === "Common") return value || null;
+    if (!STANDARD_LANGUAGE_NAMES.some(name => name.toLowerCase() === String(value).toLowerCase())) return null;
+    const duplicate = arr.findIndex((other, j) => j < i && other && other.toLowerCase() === String(value).toLowerCase());
+    return duplicate >= 0 ? null : value;
+  });
   c.conditions = Array.isArray(raw.conditions) ? raw.conditions : [];
   c.spellbook = Array.isArray(raw.spellbook) ? raw.spellbook : [];
   c.knownSpells = Array.isArray(raw.knownSpells) ? raw.knownSpells : [];
@@ -205,14 +228,6 @@ function migrateCharacter(raw) {
   c.languageChoiceSlots = { ...(raw.languageChoiceSlots || {}) };
   c.toolChoiceSlots = { ...(raw.toolChoiceSlots || {}) };
   for (const key of ["appearance","age","height","weight","eyes","skin","hair","alignment","faith","allies","organization","backstory","personality","ideals","bonds","flaws"]) c[key] = raw[key] == null ? "" : String(raw[key]);
-  // This is a 2024-only sheet. Older saved characters may carry a legacy
-  // PHB source even though the class name is the same as the 2024 XPHB class.
-  // Normalize those class refs so 2024-only features such as Weapon Mastery
-  // are not silently lost when the character is reloaded.
-  if (c.class?.name) c.class = { ...c.class, source: DATA_SOURCE };
-  if (c.subclass?.name && (!c.subclass.source || String(c.subclass.source).toLowerCase() === "phb")) {
-    c.subclass = { ...c.subclass, source: DATA_SOURCE };
-  }
   c.feats = Array.isArray(raw.feats) ? raw.feats : (raw.feat ? [raw.feat] : []);
   c.feat = raw.feat ? raw.feat : (c.feats[0] || null);
   c.additionalFeats = Array.isArray(raw.additionalFeats) ? raw.additionalFeats : c.feats.slice(1);
@@ -449,7 +464,7 @@ function buildOfficialSourceMeta(books) {
 }
 
 async function loadCoreData(version) {
-  const [books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spellIndex, conditionsdiseases, variantrules, actions, items, itemsBase] = await Promise.all([
+  const [books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spellIndex, conditionsdiseases, variantrules, actions, items] = await Promise.all([
     fetch5eData(version, PATHS.books),
     fetch5eData(version, PATHS.classIndex),
     fetch5eData(version, PATHS.races),
@@ -462,23 +477,14 @@ async function loadCoreData(version) {
     fetch5eData(version, PATHS.variantrules),
     fetch5eData(version, PATHS.actions),
     fetch5eData(version, PATHS.items),
-    fetch5eData(version, PATHS.itemsBase),
   ]);
   const sourceMeta = buildOfficialSourceMeta(books);
   const officialSources = new Set(sourceMeta.map(x => x.source));
   const referenceCache = new Map();
   for (const sense of SPECIAL_SENSES) referenceCache.set(referenceCacheKey("sense", sense, DATA_SOURCE), SPECIAL_SENSE_FALLBACKS[sense]);
-  const allItems = [...(Array.isArray(items?.item) ? items.item : []), ...(Array.isArray(itemsBase?.baseitem) ? itemsBase.baseitem : [])];
   const itemIndex = new Map();
-  const legacyItemIndex = new Map();
-  for (const item of allItems) {
-    const key = `${String(item.name||'').trim().toLowerCase()}|${String(item.source||'').trim().toLowerCase()}`;
-    if (String(item?.source || "").trim().toLowerCase() === String(DATA_SOURCE).toLowerCase() || isOfficial2024Entity(item, officialSources)) itemIndex.set(key, item);
-    else if (item?.source) legacyItemIndex.set(key, item);
-  }
-  const weaponIndex = new Map();
-  for (const item of itemIndex.values()) if (item?.weaponCategory) weaponIndex.set(`${String(item.name||"").toLowerCase()}|${String(item.source||"").toLowerCase()}`, item);
-  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, itemsBase, itemIndex, legacyItemIndex, weaponIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
+  for (const item of Array.isArray(items?.item) ? items.item : []) if (isOfficial2024Entity(item, officialSources)) itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
+  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, itemIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
 }
 
 async function loadSpellSource(version, source) {
@@ -532,8 +538,6 @@ async function hydrateBackgroundData(version) {
   try {
     // Keep startup light, but warm the 2024 core spell catalog in the background so the
     // picker and hover references do not begin from an empty cache.
-    await getItemsData();
-    hydrateWeaponIndex();
     await loadSpellSource(version, DATA_SOURCE);
     mergeOfficialSpells();
     // The current character's class is the only class file needed for the initial sheet.
@@ -611,126 +615,36 @@ async function getClassDetails(className) {
 }
 
 async function getItemsData() {
-  if (!state.data.items) state.data.items = await fetch5eData(state.version, PATHS.items);
-  if (!state.data.itemsBase) state.data.itemsBase = await fetch5eData(state.version, PATHS.itemsBase);
-  officialItemCatalog();
-  hydrateWeaponIndex();
+  if (state.data.items) return state.data.items;
+  state.data.items = await fetch5eData(state.version, PATHS.items);
   return state.data.items;
 }
 
 function officialItemCatalog() {
-  // 5etools splits ordinary/base equipment (including the mundane weapons)
-  // into items-base.json, while items.json contains the broader item corpus.
-  // Both are part of the equipment catalog and must be indexed together.
-  const entries = [
-    ...officialEntries(state.data.items, "item"),
-    ...officialEntries(state.data.itemsBase, "baseitem"),
-    // XPHB is the canonical 2024 equipment source. Keep it even if source
-    // metadata is incomplete or a mirror release omits it from books.json.
-    ...(Array.isArray(state.data.items?.item) ? state.data.items.item.filter(x => String(x?.source || "").trim().toLowerCase() === String(DATA_SOURCE).toLowerCase()) : []),
-    ...(Array.isArray(state.data.itemsBase?.baseitem) ? state.data.itemsBase.baseitem.filter(x => String(x?.source || "").trim().toLowerCase() === String(DATA_SOURCE).toLowerCase()) : []),
-  ];
+  const entries = officialEntries(state.data.items, "item");
   if (!state.data.itemIndex) state.data.itemIndex = new Map();
-  state.data.itemIndex.clear();
-  for (const item of entries) {
-    const key = `${String(item.name||'').trim().toLowerCase()}|${String(item.source||'').trim().toLowerCase()}`;
-    state.data.itemIndex.set(key, item);
-  }
-  if (!state.data.legacyItemIndex) state.data.legacyItemIndex = new Map();
-  state.data.legacyItemIndex.clear();
-  const allItems = [
-    ...(Array.isArray(state.data.items?.item) ? state.data.items.item : []),
-    ...(Array.isArray(state.data.itemsBase?.baseitem) ? state.data.itemsBase.baseitem : []),
-  ];
-  for (const item of allItems) {
-    if (isOfficial2024Entity(item)) continue;
-    if (!item?.source) continue;
-    state.data.legacyItemIndex.set(`${String(item.name||'').trim().toLowerCase()}|${String(item.source||'').trim().toLowerCase()}`, item);
+  if (state.data.itemIndex.size !== entries.length) {
+    state.data.itemIndex.clear();
+    for (const item of entries) state.data.itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
   }
   return entries;
 }
 
-function hydrateWeaponIndex() {
-  const weapons = officialItemCatalog().filter(it => Boolean(it?.weaponCategory));
-  state.data.weaponIndex = new Map();
-  for (const item of weapons) state.data.weaponIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
-  return weapons;
-}
-
 function officialWeaponCatalog() {
-  const weapons = hydrateWeaponIndex();
-  return weapons.filter(it => masteryObjects(it).length > 0);
-}
-
-function normalizeItemLookupName(value) {
-  return String(value || "")
-    .replace(/\{@item\s+([^|}]+)(?:\|[^}]*)?\}/gi, "$1")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
+  return officialItemCatalog().filter(it => Boolean(it?.weaponCategory) && masteryObjects(it).length > 0);
 }
 
 function itemFromCatalog(name, source=null) {
   const raw = String(name||'').trim();
-  const lookup = normalizeItemLookupName(raw);
-  const src = source ? String(source).trim().toLowerCase() : null;
+  const src = source ? String(source).toLowerCase() : null;
   const index = state.data.itemIndex || new Map();
-  const weaponIndex = state.data.weaponIndex || new Map();
-  const all = [...new Map([...index.values(), ...weaponIndex.values()].map(x => [`${String(x.name||'').toLowerCase()}|${String(x.source||'').toLowerCase()}`, x])).values()];
-  // First use the canonical lowercase name+source key. This deliberately treats
-  // Dagger|XPHB, dagger|xphb and Dagger|xphb as the same reference.
   if (src) {
-    const exact = index.get(`${lookup}|${src}`) || weaponIndex.get(`${lookup}|${src}`);
+    const exact = index.get(`${raw.toLowerCase()}|${src}`);
     if (exact) return exact;
-    const sameSource = all.find(x => normalizeItemLookupName(x.name) === lookup && String(x.source||'').trim().toLowerCase() === src);
-    if (sameSource) return sameSource;
   }
-  const labels = [raw, canonicalLabel(raw, "item")];
-  for (const candidate of labels) {
-    const key = normalizeItemLookupName(candidate);
-    const hit = all.find(x => normalizeItemLookupName(x.name) === key && (!src || String(x.source||'').trim().toLowerCase() === src));
+  for (const candidate of [raw, canonicalLabel(raw, 'item')]) {
+    const hit = [...index.values()].find(x => String(x.name||'').toLowerCase() === String(candidate).toLowerCase() && (!src || String(x.source||'').toLowerCase() === src));
     if (hit) return hit;
-  }
-  // Last-resort direct scan of the loaded base-equipment tables. This deliberately
-  // bypasses source metadata/index filtering: a class reference such as
-  // greataxe|xphb must resolve if the XPHB base item is present in items-base.json.
-  if (lookup && src === String(DATA_SOURCE).toLowerCase()) {
-    const direct = [
-      ...(Array.isArray(state.data.itemsBase?.baseitem) ? state.data.itemsBase.baseitem : []),
-      ...(Array.isArray(state.data.items?.item) ? state.data.items.item : []),
-    ].find(x => normalizeItemLookupName(x?.name) === lookup && String(x?.source || '').trim().toLowerCase() === src);
-    if (direct) return direct;
-  }
-
-  // Legacy references sometimes point at the old source while the physical
-  // 2024 item is reprinted under XPHB. Prefer a same-name official weapon/item.
-  if (lookup) {
-    const baseHit = all.find(x => normalizeItemLookupName(x.name) === lookup);
-    if (baseHit) return baseHit;
-    const baseRef = `${lookup}|${src || ""}`;
-    const reprint = all.find(x => normalizeItemLookupName(x.baseItem) === baseRef);
-    if (reprint) return reprint;
-  }
-
-  // 2024 class files intentionally use XPHB refs, but the shared 5etools item
-  // table can retain the mundane base weapon under PHB and point forward via
-  // reprintedAs. Resolve that relationship instead of treating the weapon as missing.
-  if (lookup && src) {
-    const legacy = state.data.legacyItemIndex || new Map();
-    for (const item of legacy.values()) {
-      const reprints = Array.isArray(item?.reprintedAs) ? item.reprintedAs : [];
-      if (reprints.some(ref => {
-        const [rn, rs] = String(ref).split("|");
-        return normalizeItemLookupName(rn) === lookup && String(rs||"").trim().toLowerCase() === src;
-      })) return item;
-    }
-    // Some ordinary reprints are represented only by the same name in PHB.
-    // For an XPHB request, use the PHB mundane base item as the compatibility
-    // source when it is explicitly a weapon.
-    if (src === String(DATA_SOURCE).toLowerCase()) {
-      const phb = legacy.get(`${lookup}|phb`);
-      if (phb?.weaponCategory) return phb;
-    }
   }
   return null;
 }
@@ -778,12 +692,8 @@ function findLanguage(name, source = null) { return findOfficial(state.data.lang
 function getClassFromFile(file, name, source = null) {
   const entries = (file?.class || []).filter(x => isOfficial2024Entity(x));
   const needle = String(name || "").trim().toLowerCase();
-  // The app is 2024-only. Prefer the canonical XPHB class even when an older
-  // saved character still says PHB; otherwise 2014 class data can suppress
-  // 2024-only features such as Weapon Mastery.
-  return entries.find(x => x.name.toLowerCase() === needle && String(x.source || "").toLowerCase() === String(DATA_SOURCE).toLowerCase()) ||
+  return entries.find(x => x.name.toLowerCase() === needle && (!source || String(x.source || "").toLowerCase() === String(source).toLowerCase())) ||
     entries.find(x => x.name.toLowerCase() === needle && x.edition === "one") ||
-    entries.find(x => x.name.toLowerCase() === needle && (!source || String(x.source || "").toLowerCase() === String(source).toLowerCase())) ||
     entries.find(x => x.name.toLowerCase() === needle) || null;
 }
 
@@ -1898,6 +1808,14 @@ function allLanguageOptionsForChoice(spec) {
   return dedupeByName(expanded);
 }
 
+function standardLanguageOptions() {
+  const all = officialEntries(state.data.languages, "language");
+  return STANDARD_LANGUAGE_NAMES.map(name => {
+    const found = findByNameAndSource(all, name, DATA_SOURCE) || all.find(x => String(x.name || "").toLowerCase() === name.toLowerCase());
+    return found || { name, source: DATA_SOURCE, _displayOnly: true };
+  });
+}
+
 function findOfficialItemByName(name, source = null) {
   const raw = String(name || "").trim();
   if (!raw) return null;
@@ -2074,12 +1992,35 @@ function parseProficiencyDisplay(classObj, backgroundObj, speciesObj, featObjs =
     armor: dedupeLabels(includeManual ? [...armor, ...(state.character.manualArmorProficiencies || [])] : armor),
     weapons: dedupeLabels(includeManual ? [...weapons, ...(state.character.manualWeaponProficiencies || [])] : weapons),
     tools: dedupeLabels(cleanChoicePlaceholders(includeManual ? [...tools, ...Object.values(toolSlots), ...(state.character.toolChoices || []), ...(state.character.manualToolProficiencies || [])] : tools, toolSlots)),
-    languages: dedupeLabels(cleanChoicePlaceholders(includeManual ? [...languages, ...Object.values(languageSlots), ...(state.character.languageChoices || []), ...(state.character.manualLanguages || [])] : languages, languageSlots)),
+    languages: dedupeLabels(cleanChoicePlaceholders(includeManual ? ["Common", ...(state.character.standardLanguages || []).filter(Boolean), ...languages, ...Object.values(languageSlots), ...(state.character.languageChoices || []), ...(state.character.manualLanguages || [])] : languages, languageSlots)),
   };
 }
 
 function cSafeToolSlots(includeManual=true){ return includeManual ? (state.character.toolChoiceSlots || {}) : {}; }
 function cSafeLanguageSlots(includeManual=true){ return includeManual ? (state.character.languageChoiceSlots || {}) : {}; }
+
+function normalizedProficiencyLabel(value) {
+  return textNorm(stripTags(String(value || "")).replace(/\s+×\d+$/i, ""));
+}
+function proficiencyOverlaps(classObj, backgroundObj, c) {
+  const bgSkills = new Set(grantedSkillsFromMap(backgroundObj?.skillProficiencies));
+  const classSkills = new Set(normalizeSkillArray(c?.classSkillChoices || []));
+  for (const value of classObj?.startingProficiencies?.skills || []) {
+    if (typeof value === "string") classSkills.add(normalizeSkillKey(value));
+    else if (value && typeof value === "object" && !value.choose) for (const key of Object.keys(value)) classSkills.add(normalizeSkillKey(key));
+  }
+  const classP = classObj ? parseProficiencyDisplay(classObj, null, null, null, false) : {tools: [], languages: []};
+  const bgP = backgroundObj ? parseProficiencyDisplay(null, backgroundObj, null, null, false) : {tools: [], languages: []};
+  const overlapValues = (a, b) => {
+    const bSet = new Set((b || []).map(normalizedProficiencyLabel).filter(Boolean));
+    return dedupeLabels((a || []).filter(v => bSet.has(normalizedProficiencyLabel(v))));
+  };
+  return {
+    skills: [...classSkills].filter(Boolean).filter(skill => bgSkills.has(skill)),
+    tools: overlapValues(classP.tools, bgP.tools),
+    languages: overlapValues(classP.languages, bgP.languages),
+  };
+}
 
 function hasWeaponProficiency(item, profs) {
   const name = String(item?.name || "").toLowerCase();
@@ -2121,15 +2062,11 @@ function weaponFlags(item) {
 async function getAttackRows(d) {
   let itemsData = null;
   try { itemsData = await getItemsData(); } catch {}
-  const officialItems = itemsData ? officialItemCatalog() : [];
+  const officialItems = itemsData ? officialEntries(itemsData, "item") : [];
   const rows = [];
   for (const owned of state.character.inventory || []) {
-    // Equipped is the character-sheet source of truth. "Wielding" is only an
-    // equipment-panel convenience state and must never prevent an equipped
-    // weapon from appearing in Weapons & Damage Cantrips.
-    if (!owned?.equipped || !owned.name) continue;
-    const item = findOfficialItemByName(owned.name, owned.source) ||
-      officialItems.find(x => normalizeItemLookupName(x.name) === normalizeItemLookupName(owned.name));
+    if (!owned?.equipped || owned.wielding === false || !owned.name) continue;
+    const item = officialItems.find(x => x.name === owned.name && (!owned.source || x.source === owned.source)) || officialItems.find(x => x.name === owned.name);
     if (!item || !item.weaponCategory) continue;
     const ability = weaponAbility(item, d.mods);
     const proficient = hasWeaponProficiency(item, d.proficiencies.weapons);
@@ -2145,34 +2082,20 @@ async function getAttackRows(d) {
       if (otherWeaponCount === 0) extraDamage += Number(d.effects.damageBonuses.dueling || 0);
     }
     if (d.effects?.damageBonuses?.thrown && flags.thrown) extraDamage += Number(d.effects.damageBonuses.thrown || 0);
-    const damageFormula = item.dmg1 ? `${item.dmg1}${abilityDamage || extraDamage ? ` ${formatMod(abilityDamage + extraDamage)}` : ""}${item.dmgType ? ` ${damageTypeName(item.dmgType)}` : ""}` : "—";
+    const damageFormula = item.dmg1 ? `${item.dmg1}${abilityDamage || extraDamage ? ` ${formatMod(abilityDamage + extraDamage)}` : ""}` : "—";
     const properties = (item.property || []).map(x => canonicalLabel(String(x).split("|")[0])).join(", ");
     const selectedMastery = hasSelectedWeaponMastery(state.character, item);
     const mastery = selectedMastery ? masteryLabel(item) : "";
     rows.push({ nameHtml: renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`), name: item.name, attackBonus: `${formatMod(bonus)}${proficient ? "" : "*"}`, damage: damageFormula, details: [item.range ? `Range ${item.range}` : "", properties, mastery ? `Mastery: ${mastery}` : ""].filter(Boolean).join(" · ") });
   }
   for (const custom of state.character.attacks || []) rows.push({ name: custom.name || "Attack", attackBonus: custom.attackBonus || "—", damage: custom.damage || "—", details: custom.range || custom.notes || "" });
-  for (const spell of (state.character.cantrips || []).map(spellById).filter(Boolean)) rows.push({ nameHtml: renderReferenceTag("spell", `${spell.name}|${spell.source}|${spell.name}`), name: spell.name, attackBonus: d.spellcastingAbility ? formatMod(d.pb + d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—", damage: cantripDamageFormula(spell, state.character.level), details: spell.range ? formatSpellRange(spell.range) : "" });
+  for (const spell of (state.character.cantrips || []).map(spellById).filter(Boolean)) rows.push({ nameHtml: renderReferenceTag("spell", `${spell.name}|${spell.source}|${spell.name}`), name: spell.name, attackBonus: d.spellcastingAbility ? formatMod(d.pb + d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—", damage: (spell.damageInflict || []).map(damageTypeName).join(", ") || "Cantrip", details: spell.range ? formatSpellRange(spell.range) : "" });
   return rows.slice(0, 12);
 }
 
 function damageTypeName(value) {
   const map = { B: "Bludgeoning", P: "Piercing", S: "Slashing", A: "Acid", C: "Cold", F: "Fire", O: "Force", L: "Lightning", N: "Necrotic", I: "Poison", Y: "Psychic", R: "Radiant", T: "Thunder" };
   return map[String(value || "").split("|")[0]] || canonicalLabel(value);
-}
-
-function cantripDamageFormula(spell, characterLevel = 1) {
-  const scaling = spell?.scalingLevelDice?.scaling;
-  if (scaling && typeof scaling === "object") {
-    const levels = Object.keys(scaling).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);
-    let chosen = null;
-    for (const level of levels) if (Number(characterLevel) >= level) chosen = scaling[String(level)];
-    if (chosen) return `${chosen} ${(spell.damageInflict || []).map(damageTypeName).join("/")}`.trim();
-  }
-  const raw = JSON.stringify(spell?.entries || []);
-  const m = raw.match(/\{@damage\s+([^}|]+)[^}]*\}/i);
-  if (m) return `${m[1]} ${(spell.damageInflict || []).map(damageTypeName).join("/")}`.trim();
-  return (spell.damageInflict || []).map(damageTypeName).join("/") || "—";
 }
 
 function hasArmorTraining(proficiencies, itemType) {
@@ -2571,7 +2494,7 @@ async function deriveCharacter() {
     if (d.weaponMasteryCount <= 0) c.weaponMasteries = [];
     else {
       try {
-        const masteryItems = officialWeaponCatalog().filter(it => String(it.source || "").toLowerCase() === String(DATA_SOURCE).toLowerCase() && (it.rarity == null || String(it.rarity).toLowerCase() === "none") && hasWeaponProficiency(it, parseProficiencyDisplay(d.classObj, backgroundObj, d.speciesObj, featObjs).weapons));
+        const masteryItems = officialEntries(await getItemsData(), "item").filter(it => String(it.source || "") === DATA_SOURCE && it.weaponCategory && masteryLabel(it) && (it.rarity == null || String(it.rarity).toLowerCase() === "none") && hasWeaponProficiency(it, parseProficiencyDisplay(d.classObj, backgroundObj, d.speciesObj, featObjs).weapons));
         const validKeys = new Set(masteryItems.map(it => normalizeRefId(it.name, it.source).toLowerCase()));
         c.weaponMasteries = (c.weaponMasteries || []).filter(x => validKeys.has(String(x).toLowerCase())).slice(0, d.weaponMasteryCount);
       } catch {}
@@ -2898,6 +2821,12 @@ function renderSheetResources(c) {
   }).join("")}</div>`;
 }
 
+function renderAttackDetails(details, title = "Attack details") {
+  const text = String(details || "").trim();
+  if (!text) return "";
+  return `<button type="button" class="sheet-note-link" data-action="attack-details" data-note-title="${escapeHtml(title)}" data-note="${escapeHtml(text)}">${escapeHtml(text)}</button>`;
+}
+
 async function renderSheet(app) {
   const c = state.character;
   const d = await deriveCharacter();
@@ -2930,7 +2859,7 @@ async function renderSheet(app) {
   const prepared = (await Promise.all((c.preparedSpells || []).map(getSpellById))).filter(Boolean).sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
   const cantrips = (await Promise.all((c.cantrips || []).map(getSpellById))).filter(Boolean).sort((a,b)=>a.name.localeCompare(b.name));
   const languages = d.proficiencies.languages.length ? d.proficiencies.languages : ["None recorded"];
-  const attackHtml = attackRows.map(row => `<div class="weapon-row"><span>${row.nameHtml || escapeHtml(row.name)}</span><strong>${escapeHtml(row.attackBonus)}</strong><span>${escapeHtml(row.damage)}</span><small>${escapeHtml(row.details || "")}</small></div>`).join("") || `<div class="sheet-empty">Equip a weapon or add a custom attack.</div>`;
+  const attackHtml = attackRows.map(row => `<div class="weapon-row"><span>${row.nameHtml || escapeHtml(row.name)}</span><strong>${escapeHtml(row.attackBonus)}</strong><span>${escapeHtml(row.damage)}</span><small>${renderAttackDetails(row.details, `${row.name || "Attack"} · Notes`)}</small></div>`).join("") || `<div class="sheet-empty">Equip a weapon or add a custom attack.</div>`;
   const featurePreview = f => renderRichEntries((Array.isArray(f.entries) ? f.entries : [f.entries]).slice(0,2));
 
   const pageOne = `<div class="sheet-page">
@@ -2952,7 +2881,7 @@ async function renderSheet(app) {
       <section class="sheet-panel"><div class="sheet-panel-title">Feats</div>${featRow}</section>
       <section class="sheet-panel inspiration-panel"><div><div class="sheet-panel-title">Heroic Inspiration</div><p>${c.heroicInspiration ? "Available" : "Not available"}</p></div><button data-action="heroic" class="inspiration-button">${inspiration}</button></section>
       <section class="sheet-panel"><div class="sheet-panel-title">Conditions</div><div class="sheet-chips">${conditionChips}</div></section>
-      <section class="sheet-panel"><div class="sheet-panel-title">Resources</div>${renderSheetResources(c)}<div class="resource-actions sheet-resource-actions"><button class="sheet-nav" data-action="rest-short">Short Rest</button><button class="sheet-nav" data-action="rest-long">Long Rest</button><button class="sheet-nav" data-action="manage-resources">Manage</button><button class="sheet-nav" data-action="temp-hp">Temporary HP</button></div></section>
+      <section class="sheet-panel"><div class="sheet-panel-title">Resources</div>${renderSheetResources(c)}<div class="resource-actions sheet-resource-actions"><button class="sheet-nav" data-action="rest-short">Short Rest</button><button class="sheet-nav" data-action="rest-long">Long Rest</button><button class="sheet-nav" data-action="manage-resources">Manage</button><button class="sheet-nav" data-action="temp-hp">Temporary HP</button><span>Exhaustion ${c.exhaustion}/6</span></div></section>
     </div></div>
   </div>`;
 
@@ -2963,7 +2892,6 @@ async function renderSheet(app) {
     <div class="sheet-grid-two"><section class="sheet-panel"><div class="sheet-panel-title">Cantrips <button class="sheet-mini-btn" data-action="spells">Manage</button></div>${cantrips.length ? cantrips.map(s => `<div class="sheet-list-item static"><span>${renderReferenceTag("spell", `${s.name}|${s.source}|${s.name}`)}</span><small>${escapeHtml(spellSchoolName(s.school))}</small></div>`).join("") : `<div class="sheet-empty">No cantrips selected.</div>`}</section><section class="sheet-panel"><div class="sheet-panel-title">Prepared Spells <button class="sheet-mini-btn" data-action="spells">Manage</button></div>${prepared.length ? prepared.map(s => `<div class="sheet-list-item static"><span>${renderReferenceTag("spell", `${s.name}|${s.source}|${s.name}`)}</span><small>Level ${s.level}</small></div>`).join("") : `<div class="sheet-empty">No prepared spells selected.</div>`}</section></div>
     <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Proficiencies & Languages</div><div class="proficiency-groups"><div><b>Armor</b><p>${renderProficiencyGroup(d.proficiencies.armor, "armor") || "None"}</p></div><div><b>Weapons</b><p>${renderProficiencyGroup(d.proficiencies.weapons, "weapon") || "None"}</p></div><div><b>Tools</b><p>${renderProficiencyGroup(d.proficiencies.tools, "tool") || "None"}</p></div><div><b>Languages</b><p>${renderProficiencyGroup(languages, "language") || "None"}</p></div></div>${d.resistances.length ? `<div class="derived-subgroup"><b>Damage Resistances</b><p>${escapeHtml(d.resistances.join(", "))}</p></div>` : ""}<div class="derived-subgroup"><b>Senses</b><p class="sense-list">${d.senseRefs.length ? d.senseRefs.map(renderSenseRef).join(", ") : "No special senses"}${d.senses.length ? `${d.senseRefs.length ? ", " : ""}${escapeHtml(d.senses.join(", "))}` : ""}</p></div><button class="sheet-mini-btn" data-action="builder">Edit proficiencies</button></section><section class="sheet-panel"><div class="sheet-panel-title">Personality & Backstory</div><textarea class="sheet-notes" data-field="notes" rows="12" placeholder="Character notes, personality, ideals, bonds, flaws, backstory…">${escapeHtml(c.notes)}</textarea></section></div>
     <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Equipment</div>${(c.inventory || []).length ? c.inventory.slice(0,12).map((it,i) => `<div class="sheet-list-item static"><span>${renderInventoryItemLink(it)}${it.quantity>1?` ×${it.quantity}`:""}</span><small>${it.equipped ? "Equipped" : ""}</small></div>`).join("") : `<div class="sheet-empty">No equipment.</div>`}<button class="sheet-mini-btn" data-action="equipment">Open equipment</button></section><section class="sheet-panel"><div class="sheet-panel-title">Coins & Attunement</div><div class="coin-grid">${["cp","sp","ep","gp","pp"].map(k => `<label><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" value="${Number(c.currency?.[k] || 0)}" min="0"></label>`).join("")}</div><div class="attunement"><b>Magic Item Attunement</b><p>Track attuned items in Equipment.</p></div></section></div>
-    <section class="sheet-panel compact-sheet-gap"><div class="sheet-panel-title">Rest & Recovery</div><div class="resource-actions sheet-resource-actions"><button class="sheet-nav" data-action="rest-short">Short Rest</button><button class="sheet-nav" data-action="rest-long">Long Rest</button><button class="sheet-nav" data-action="manage-resources">Manage Resources</button><button class="sheet-nav" data-action="temp-hp">Temporary HP</button><span>Exhaustion ${c.exhaustion}/6</span></div></section>
   </div>`;
 
   app.innerHTML = `<div class="sheet-stage">${page === 1 ? pageOne : pageTwo}</div>`;
@@ -3014,17 +2942,19 @@ async function renderBuilder(app) {
       return spec.fixed || !spec.from.length ? "" : `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Skill proficiency<select data-feat-skill="${escapeHtml(key)}">${spec.from.map(sk=>`<option value="${sk}" ${c.featSkillChoices?.[key]===sk?"selected":""}>${escapeHtml(SKILLS[sk]?.[1]||sk)}</option>`).join("")}</select></label></div>`;
     })
   ]).filter(Boolean).join("");
-  const bgMode = c.backgroundAbility.mode === "three" ? "three" : "split";
   const selectedAbility2 = c.backgroundAbility.plus2;
   const selectedAbility1 = c.backgroundAbility.plus1;
-  const selectedAbility1b = c.backgroundAbility.plus1b;
-  const selectedAbility1c = c.backgroundAbility.plus1c;
   const classSkillChoices = new Set(normalizeSkillArray(c.classSkillChoices));
   const classOptionsSkills = d.skillChoiceSpec?.from || [];
   const maxClassSkills = d.skillChoiceSpec?.count || 0;
   const pointBuyTotal = ABILITIES.reduce((sum,a)=>sum+(POINT_BUY_COST[Math.max(8, Math.min(15, Number(c.baseStats[a] || 10)))] ?? 0),0);
   const sourceOptions = state.data.sourceMeta || [];
   const backgroundProficiencies = bg ? parseProficiencyDisplay(null, bg, null, null, false) : {armor:[],weapons:[],tools:[],languages:[]};
+  const classProficiencies = d.classObj ? parseProficiencyDisplay(d.classObj, null, null, null, false) : {armor:[],weapons:[],tools:[],languages:[]};
+  const proficiencyOverlap = proficiencyOverlaps(d.classObj, bg, c);
+  const bgSkills = new Set(grantedSkillsFromMap(bg?.skillProficiencies));
+  const standardLanguageChoices = Array.isArray(c.standardLanguages) ? c.standardLanguages : [null, null];
+  const standardLanguageValues = standardLanguageOptions();
   const refValue = (obj) => normalizeRefId(obj.name, obj.source);
   const selectRefOptions = (list, current) => list.map(x => `<option value="${escapeHtml(refValue(x))}" ${current?.name===x.name && current?.source===x.source?"selected":""}>${escapeHtml(x.name)}${x.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(x.source))}`:""}</option>`).join("");
   const manualList = (key) => (c[key] || []).map((x,i)=>`<span class="editable-chip">${escapeHtml(x)}<button data-action="remove-manual" data-list="${key}" data-index="${i}">×</button></span>`).join("") || `<span class="mini">None added manually.</span>`;
@@ -3066,12 +2996,12 @@ async function renderBuilder(app) {
     <div class="grid two compact-gap"><section class="card"><div class="section-head"><div><div class="section-title">Class feature choices</div><div class="mini">Choices such as Fighting Styles and Eldritch Invocations are stored as 5etools references and can contribute derived effects.</div></div></div>${optionalChoiceMarkup}<div class="subhead"><div class="section-title">General feats</div></div>${generalFeatMarkup}</section><section class="card"><div class="section-head"><div><div class="section-title">Weapon Mastery</div><div class="mini">Select the weapons you have mastered. Only currently proficient weapons with 5etools mastery data are shown.</div></div></div>${masteryMarkup}</section></div>
     <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Background ability increases</div><div class="mini">2024 backgrounds can use either +2/+1 or +1/+1/+1 when the background offers that choice.</div></div></div>${bg ? `<div class="mini" style="margin-bottom:10px">${escapeHtml(bg.name)}: choose from ${escapeHtml((bgAbility.plus1From || []).map(x=>ABILITY_LABELS[x]).join(", ") || "the listed abilities")}.</div>${bgAbility.supportsThree ? `<label class="field">Increase pattern<select data-builder="bgMode"><option value="split" ${bgMode==="split"?"selected":""}>+2 / +1</option><option value="three" ${bgMode==="three"?"selected":""}>+1 / +1 / +1</option></select></label>` : ""}${bgMode === "three" && bgAbility.supportsThree ? `<div class="form-grid three"><label class="field">+1 ability<select data-builder="bgPlus1"><option value="">— Select —</option>${bgAbility.threeFrom.map(x=>`<option value="${x}" ${selectedAbility1===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1b"><option value="">— Select —</option>${bgAbility.threeFrom.filter(x=>x!==selectedAbility1).map(x=>`<option value="${x}" ${selectedAbility1b===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1c"><option value="">— Select —</option>${bgAbility.threeFrom.filter(x=>x!==selectedAbility1&&x!==selectedAbility1b).map(x=>`<option value="${x}" ${selectedAbility1c===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label></div>` : `<div class="form-grid two"><label class="field">+2 ability<select data-builder="bgPlus2"><option value="">— Select —</option>${(bgAbility.plus2From || []).map(x=>`<option value="${x}" ${selectedAbility2===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1"><option value="">— Select —</option>${(bgAbility.plus1From || []).filter(x=>x!==selectedAbility2).map(x=>`<option value="${x}" ${selectedAbility1===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label></div>`}${autoBonusLines}` : `<div class="empty">Choose a 2024 background to see its ability-score options.</div>`}</section>
 
-    <div class="grid two compact-gap"><section class="card"><div class="section-head"><div class="section-title">Class skill choices</div><span class="status-pill">${classSkillChoices.size} / ${maxClassSkills || 0}</span></div>${classOptionsSkills.length ? `<div class="skill-grid">${classOptionsSkills.map(key=>`<label class="skill-check"><input type="checkbox" data-class-skill="${key}" ${classSkillChoices.has(key)?"checked":""}>${escapeHtml(SKILLS[key]?.[1] || canonicalLabel(key))}</label>`).join("")}</div>` : `<div class="empty">Choose a class to load its skill choices from 5etools.</div>`}<div class="section-title subhead">Skill expertise</div><div class="skill-grid">${Object.entries(SKILLS).map(([key,[,name]])=>`<label class="skill-check"><input type="checkbox" data-expertise="${key}" ${c.expertise.includes(key)?"checked":""}>${escapeHtml(name)}</label>`).join("")}</div></section><section class="card"><div class="section-title">Background</div>${bg ? `<div class="detail-list"><div><strong>Skills</strong><span>${escapeHtml(grantedSkillsFromMap(bg.skillProficiencies).map(k=>SKILLS[k]?.[1]||canonicalLabel(k)).join(", ")||"None")}</span></div><div><strong>Origin feat</strong><span>${escapeHtml(bgFeatRefs.map(x=>x.name || x).join(", ")||"Choice")}</span></div><div><strong>Tools</strong><span>${escapeHtml(backgroundProficiencies.tools.join(", ")||"None")}</span></div><div><strong>Languages</strong><span>${escapeHtml(backgroundProficiencies.languages.join(", ")||"None")}</span></div></div>` : `<div class="empty">Choose a background.</div>`}</section></div>
+    <div class="grid two compact-gap"><section class="card"><div class="section-head"><div><div class="section-title">Languages</div><div class="mini">Every character starts with Common and chooses two additional languages from the 2024 PHB Standard Languages table. Rare languages are excluded here; class, species, background, and feats can add more separately.</div></div><span class="status-pill">${standardLanguageChoices.filter(Boolean).length} / 2 selected</span></div><div class="language-choice-grid"><div class="language-fixed"><strong>Common</strong><span>Always known</span></div><label class="field">Standard language 1<select data-builder="standardLanguage1" data-standard-language="0"><option value="">— Select —</option>${standardLanguageValues.map(v=>`<option value="${escapeHtml(v.name)}" ${standardLanguageChoices[0]===v.name?"selected":""}>${escapeHtml(v.name)}</option>`).join("")}</select></label><label class="field">Standard language 2<select data-builder="standardLanguage2" data-standard-language="1"><option value="">— Select —</option>${standardLanguageValues.filter(v=>v.name!==standardLanguageChoices[0]).map(v=>`<option value="${escapeHtml(v.name)}" ${standardLanguageChoices[1]===v.name?"selected":""}>${escapeHtml(v.name)}</option>`).join("")}</select></label></div></section><section class="card"><div class="section-head"><div class="section-title">Class skill choices</div><span class="status-pill">${classSkillChoices.size} / ${maxClassSkills || 0}</span></div>${classOptionsSkills.length ? `<div class="skill-grid">${classOptionsSkills.map(key=>{ const overlap=bgSkills.has(key); const checked=classSkillChoices.has(key); return `<label class="skill-check ${overlap?"skill-overlap":""}"><input type="checkbox" data-class-skill="${key}" ${checked?"checked":""} ${overlap&&!checked?"disabled":""}><span>${escapeHtml(SKILLS[key]?.[1] || canonicalLabel(key))}</span>${overlap?`<small class="choice-warning">${checked?"Also from background · choose another":"Already from background"}</small>`:""}</label>`; }).join("")}</div>` : `<div class="empty">Choose a class to load its skill choices from 5etools.</div>`}<div class="section-title subhead">Skill expertise</div><div class="skill-grid">${Object.entries(SKILLS).map(([key,[,name]])=>`<label class="skill-check"><input type="checkbox" data-expertise="${key}" ${c.expertise.includes(key)?"checked":""}>${escapeHtml(name)}</label>`).join("")}</div></section><section class="card"><div class="section-title">Background</div>${bg ? `<div class="detail-list"><div><strong>Skills</strong><span>${escapeHtml(grantedSkillsFromMap(bg.skillProficiencies).map(k=>SKILLS[k]?.[1]||canonicalLabel(k)).join(", ")||"None")} ${proficiencyOverlap.skills.length ? `<small class="choice-warning">Class overlap: ${escapeHtml(proficiencyOverlap.skills.map(k=>SKILLS[k]?.[1]||k).join(", "))}</small>` : ""}</span></div><div><strong>Origin feat</strong><span>${escapeHtml(bgFeatRefs.map(x=>x.name || x).join(", ")||"Choice")}</span></div><div><strong>Tools</strong><span>${escapeHtml(backgroundProficiencies.tools.join(", ")||"None")}</span></div><div><strong>Languages</strong><span>${escapeHtml(backgroundProficiencies.languages.join(", ")||"None")}</span></div></div>` : `<div class="empty">Choose a background.</div>`}</section></div>
 ${startingEquipmentMarkup}
     <section class="card compact-gap"><div class="section-title">Origin feat</div><div class="form-grid two"><label class="field">Feat<select data-builder="feat"><option value="">— Choose —</option>${availableOriginFeats.map(x=>`<option value="${escapeHtml(refValue(x))}" ${c.feat?.name===x.name&&c.feat?.source===x.source?"selected":""}>${escapeHtml(x.name)} · ${escapeHtml(x.source)}</option>`).join("")}</select></label><div>${d.featObj ? `<button class="feature feature-block" data-action="feat-detail" data-name="${encodeURIComponent(`${d.featObj.name}|${d.featObj.source}`)}"><strong>${escapeHtml(d.featObj.name)}</strong>${renderRichEntries((d.featObj.entries||[]).slice(0,2))}</button>` : `<div class="empty">Choose a feat to keep a rules reference on the character.</div>`}</div></div>${featChoiceMarkup}
     <div class="subhead" style="margin-top:12px">Additional feats</div><div class="mini" style="margin-bottom:6px">Additional feats are stored separately from the background's Origin Feat. Their structured choices and supported mechanical effects are included in the sheet.</div><div class="chips">${(c.additionalFeats||[]).map((feat,i)=>`<span class="editable-chip">${escapeHtml(feat.name)}<button data-action="remove-additional-feat" data-index="${i}" title="Remove feat">×</button></span>`).join("") || `<span class="mini">None added.</span>`}</div><div class="manual-add" style="margin-top:8px"><select id="additionalFeatPicker"><option value="">Choose a feat…</option>${feats.filter(f=>Number(f.prerequisite?.[0]?.level || 0) <= Number(c.level || 1)).map(f=>`<option value="${escapeHtml(refValue(f))}">${escapeHtml(f.name)} · ${escapeHtml(f.source)}</option>`).join("")}</select><button class="button button-small" data-action="add-additional-feat">Add feat</button></div></section>
 
-    <div class="grid two compact-gap"><section class="card"><div class="section-title">Proficiencies & languages</div><div class="proficiency-summary"><div><strong>Armor</strong><span>${escapeHtml(d.proficiencies.armor.join(", ")||"None")}</span></div><div><strong>Weapons</strong><span>${escapeHtml(d.proficiencies.weapons.join(", ")||"None")}</span></div><div><strong>Tools</strong><span>${escapeHtml(d.proficiencies.tools.join(", ")||"None")}</span></div><div><strong>Languages</strong><span>${escapeHtml(d.proficiencies.languages.join(", ")||"None")}</span></div></div></section><section class="card"><div class="section-title">Automatic proficiency choices</div><div class="mini">These selections fill 5etools choices such as any standard language or any artisan tool. They remain part of character state and are reflected on the sheet.</div>${proficiencyChoicesMarkup}</section></div>
+    <div class="grid two compact-gap"><section class="card"><div class="section-title">Proficiencies & languages</div><div class="proficiency-summary"><div><strong>Armor</strong><span>${escapeHtml(d.proficiencies.armor.join(", ")||"None")}</span></div><div><strong>Weapons</strong><span>${escapeHtml(d.proficiencies.weapons.join(", ")||"None")}</span></div><div><strong>Tools</strong><span>${escapeHtml(d.proficiencies.tools.join(", ")||"None")}</span></div><div><strong>Languages</strong><span>${escapeHtml(d.proficiencies.languages.join(", ")||"None")}</span></div></div>${(proficiencyOverlap.skills.length||proficiencyOverlap.tools.length||proficiencyOverlap.languages.length) ? `<div class="proficiency-overlap"><strong>Duplicate proficiencies</strong><span>${proficiencyOverlap.skills.length?`Skills: ${escapeHtml(proficiencyOverlap.skills.map(k=>SKILLS[k]?.[1]||k).join(", "))}. `:""}${proficiencyOverlap.tools.length?`Tools: ${escapeHtml(proficiencyOverlap.tools.join(", "))}. `:""}${proficiencyOverlap.languages.length?`Languages: ${escapeHtml(proficiencyOverlap.languages.join(", "))}. `:""}These are granted by both class and background.</span></div>` : ""}</section><section class="card"><div class="section-title">Automatic proficiency choices</div><div class="mini">These selections fill 5etools choices such as any standard language or any artisan tool. They remain part of character state and are reflected on the sheet.</div>${proficiencyChoicesMarkup}</section></div>
 
     <div class="grid two compact-gap"><section class="card"><div class="section-title">Add manual proficiencies</div><div class="manual-add-grid"><div><div class="chips">${manualList("manualArmorProficiencies")}</div><div class="manual-add"><input data-manual-input="manualArmorProficiencies" placeholder="Armor proficiency"><button class="button button-small" data-action="add-manual" data-list="manualArmorProficiencies">Add</button></div></div><div><div class="chips">${manualList("manualWeaponProficiencies")}</div><div class="manual-add"><input data-manual-input="manualWeaponProficiencies" placeholder="Weapon proficiency"><button class="button button-small" data-action="add-manual" data-list="manualWeaponProficiencies">Add</button></div></div><div><div class="chips">${manualList("manualToolProficiencies")}</div><div class="manual-add"><input data-manual-input="manualToolProficiencies" placeholder="Tool proficiency"><button class="button button-small" data-action="add-manual" data-list="manualToolProficiencies">Add</button></div></div><div><div class="chips">${manualList("manualLanguages")}</div><div class="manual-add"><select id="languagePicker"><option value="">Choose a language</option>${officialEntries(state.data.languages, "language").sort((a,b)=>a.name.localeCompare(b.name)).map(x=>`<option value="${escapeHtml(refValue(x))}">${escapeHtml(x.name)}${x.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(x.source))}`:""}</option>`).join("")}</select><button class="button button-small" data-action="add-language-choice">Add</button></div><div class="manual-add"><input data-manual-input="manualLanguages" placeholder="Other language"><button class="button button-small" data-action="add-manual" data-list="manualLanguages">Add</button></div></div></div></section></div>
 
@@ -3177,10 +3107,10 @@ function spellById(id) {
 }
 
 async function renderEquipment(app) {
-  try { await getItemsData(); hydrateWeaponIndex(); } catch (e) { console.warn("Equipment catalog hydration failed", e); }
+  try { await getItemsData(); officialItemCatalog(); } catch (e) { console.warn("Equipment catalog hydration failed", e); }
   const items = state.character.inventory || [];
   app.innerHTML = `${pageHeader("EQUIPMENT", `${escapeHtml(state.character.name || "Character")} · Equipment`, "Items are resolved against the cached 2024 5etools equipment catalog.", `<button class="button" data-action="sheet">Character</button><button class="button button-primary" data-action="item-picker">Add item</button>`)}
-  <section class="card"><div class="equipment-total-value">Total currency value: <strong>${formatCurrencyValue(currencyToCp(state.character.currency))}</strong></div><div class="currency-grid">${["pp","gp","ep","sp","cp"].map(k=>`<label class="field"><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" min="0" step="1" value="${Number(state.character.currency?.[k] || 0)}"></label>`).join("")}</div>
+  <section class="card"><div class="equipment-total-value">Total currency value: <strong>${formatCurrencyValue(currencyToCp(state.character.currency))}</strong></div><div class="equipment-state-legend"><strong>Equipped</strong> = worn or otherwise active for equipment effects and Armor Class. <strong>Wielding</strong> = a weapon is currently held and counts for attacks and weapon-dependent effects. Wielding a weapon automatically equips it; a weapon can stay equipped without being wielded.</div><div class="currency-grid">${["pp","gp","ep","sp","cp"].map(k=>`<label class="field"><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" min="0" step="1" value="${Number(state.character.currency?.[k] || 0)}"></label>`).join("")}</div>
   <div class="picker-toolbar equipment-page-toolbar"><input id="equipmentSearch" type="search" placeholder="Filter inventory…"><select id="equipmentCategory"><option value="all">All equipment</option><option value="weapon">Weapons</option><option value="armor">Armor</option><option value="shield">Shields</option><option value="tool">Tools</option><option value="gear">Adventuring gear</option><option value="magic">Magic items</option></select><label class="picker-check"><input id="equipmentEquipped" type="checkbox"> Equipped only</label></div>
   <div id="equipmentRows" class="equipment-list"></div></section>`;
   const categoryOf = it => {
@@ -3216,30 +3146,40 @@ async function renderEquipment(app) {
   rerender();
 }
 
-async function startingEquipmentDiagnostics() {
-  const result = { groups: [], references: [], resolved: [], unresolved: [], itemCount: 0, weaponCount: 0 };
+async function cacheExtendedRules(){
+  if (!state.version) { showToast("Sync the 5etools data once before building the extended cache."); return; }
+  if (!state.online) { showToast("Extended caching requires an internet connection."); return; }
+  if (state.busy) return;
+  state.busy = true;
+  setBusy(true);
+  updateHeader();
   try {
-    await getItemsData();
-    const items = officialItemCatalog();
-    result.itemCount = items.length;
-    result.weaponCount = items.filter(it => Boolean(it?.weaponCategory)).length;
-  } catch (e) { result.itemError = String(e?.message || e); }
-  try {
-    const clsName = state.character?.class?.name || state.character?.className || "";
-    const cls = clsName ? await getClassDetails(clsName) : null;
-    const obj = cls?.class?.find(x => isOfficial2024Entity(x) && String(x.name).toLowerCase() === clsName.toLowerCase()) || cls?.class?.find(isOfficial2024Entity);
-    const groups = normalizeStartingEquipmentGroups(obj || {});
-    result.groups = groups.map(g => ({ group: g.group, options: g.options.map(o => ({ key:o.key, label:o.label, items:o.items })) }));
-    for (const g of groups) for (const o of g.options) for (const term of o.items) {
-      if (term.type !== "item") continue;
-      const {name, source} = splitRefId(term.ref);
-      const found = findOfficialItemByName(name, source) || findOfficialItemByName(name);
-      const row = { group:g.group, option:o.key, ref:term.ref, name, source:source||"", resolved:!!found, canonical:found ? `${found.name}|${found.source}` : null, weapon:!!found?.weaponCategory };
-      result.references.push(row);
-      if (found) result.resolved.push(row); else result.unresolved.push(row);
-    }
-  } catch (e) { result.classError = String(e?.message || e); }
-  return result;
+    const classEntries = Object.entries(state.data.classIndex || {});
+    const spellSources = Object.keys(state.data.spellIndex || {});
+    let classDone = 0, spellDone = 0;
+    const runBatch = async (entries, worker, chunk = 4) => {
+      for (let i = 0; i < entries.length; i += chunk) await Promise.all(entries.slice(i, i + chunk).map(worker));
+    };
+    await runBatch(classEntries, async ([name, file]) => {
+      try {
+        const data = await fetch5eData(state.version, `data/class/${file}`);
+        state.data.classFiles.set(String(name).toLowerCase(), data);
+      } finally { classDone++; }
+    });
+    await runBatch(spellSources, async source => {
+      try { await loadSpellSource(state.version, source); } finally { spellDone++; }
+    });
+    mergeOfficialSpells();
+    showToast(`Extended cache complete: ${classDone} class files and ${spellDone} spell sources cached.`);
+  } catch (e) {
+    console.warn("Extended cache failed", e);
+    showToast(`Extended cache stopped: ${e.message}`);
+  } finally {
+    state.busy = false;
+    setBusy(false);
+    updateHeader();
+    await render();
+  }
 }
 
 async function renderDataView(app) {
@@ -3255,16 +3195,12 @@ async function renderDataView(app) {
     rules: officialEntries(state.data.variantrules, "variantrule").length,
   };
   const chars = await getCharacters();
-  const equipDiag = await startingEquipmentDiagnostics();
-  const diagRows = equipDiag.references.length
-    ? equipDiag.references.map(x => `<tr><td>${escapeHtml(String(x.group))}/${escapeHtml(x.option)}</td><td><code>${escapeHtml(x.ref)}</code></td><td>${x.resolved ? `<strong>Resolved</strong><br><span class="mini">${escapeHtml(x.canonical || "")}${x.weapon ? " · weapon" : ""}</span>` : `<strong class="danger-text">UNRESOLVED</strong>`}</td></tr>`).join("")
-    : `<tr><td colspan="3" class="empty">No item references were found for the selected class.</td></tr>`;
   app.innerHTML = `${pageHeader("DATA & APP", "5etools synchronization", `App ${APP_VERSION} · all detected 2024 official player-facing sources are included.`, `<button class="button button-primary" data-action="sync">Check for updates</button>`)}
     <section class="card"><div class="data-row"><div><strong>Rules data</strong><span>Versioned 5etools release cached locally on this tablet</span></div><strong>${escapeHtml(state.version || "Not synced")}</strong></div><div class="data-row"><div><strong>Detected official 2024-era sources</strong><span>Discovered from 5etools source metadata and 2024 entity markers</span></div><strong>${state.data.sourceMeta?.length || 0}</strong></div><div class="data-row"><div><strong>Last successful sync</strong><span>Stored locally</span></div><strong>${state.lastSync ? escapeHtml(new Date(state.lastSync).toLocaleString()) : "—"}</strong></div><div class="data-row"><div><strong>Connectivity</strong><span>Internet is only needed to check/download newer rules data</span></div><strong>${state.online ? "Online" : "Offline"}</strong></div></section>
-    <section class="card compact-gap"><div class="section-title">Equipment cache diagnostic</div><div class="grid three compact-gap"><div class="data-row"><div><strong>Cached items</strong><span>Official item entries currently indexed</span></div><strong>${equipDiag.itemCount || 0}</strong></div><div class="data-row"><div><strong>Cached weapons</strong><span>Items with weapon data</span></div><strong>${equipDiag.weaponCount || 0}</strong></div><div class="data-row"><div><strong>Starting refs</strong><span>References found in the selected class</span></div><strong>${equipDiag.references.length}</strong></div></div><p class="mini">Selected class: ${escapeHtml(state.character?.class?.name || "None")}. Resolved ${equipDiag.resolved.length}; unresolved ${equipDiag.unresolved.length}.</p>${equipDiag.itemError || equipDiag.classError ? `<p class="danger-text">${escapeHtml(equipDiag.itemError || equipDiag.classError)}</p>` : ""}<div class="table-wrap"><table class="data-table"><thead><tr><th>Group</th><th>5etools reference</th><th>Resolution</th></tr></thead><tbody>${diagRows}</tbody></table></div></section>
     <section class="card compact-gap"><div class="section-title">Detected 2024-era official sources</div><div class="source-chip-grid">${(state.data.sourceMeta || []).map(x=>`<div class="source-chip"><strong>${escapeHtml(x.name)}</strong><span>${escapeHtml(x.source)}${x.published?` · ${escapeHtml(x.published)}`:""}</span></div>`).join("")}</div></section>
     <div class="grid three compact-gap">${Object.entries(counts).map(([k,v])=>metric(k, v == null ? "Not loaded" : v)).join("")}</div>
     <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Characters on this device</div><div class="mini">Character state is independent of 5etools rules data.</div></div><button class="button button-small button-primary" data-action="new-character">New character</button></div><div class="character-list">${chars.map(ch=>`<div class="character-row ${ch.id===state.character.id?"current":""}"><button class="character-select" data-action="switch-character" data-id="${ch.id}"><strong>${escapeHtml(ch.name)}</strong><span>${escapeHtml([ch.species?.name,ch.class?.name,ch.subclass?.name,`Level ${ch.level}`].filter(Boolean).join(" · "))}</span></button>${ch.id!==state.character.id?`<button class="icon-button" data-action="delete-character" data-id="${ch.id}">×</button>`:""}</div>`).join("")}</div></section>
+    <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Extended cache</div><div class="mini">Initial load stays light. This optional action downloads and stores all indexed class files and all spell-source files for the selected 5etools release, so later browsing and reference lookups can work without fetching additional files.</div></div><button class="button button-small button-primary" data-action="cache-extended" ${state.busy?"disabled":""}>Cache extended library</button></div></section>
     <section class="card compact-gap"><div class="section-title">Storage model</div><p class="note">The app caches versioned 5etools JSON on the device, stores character state separately, and can continue running without a network connection after synchronization. A rules-data update does not replace your character.</p><p class="mini">Data source: ${escapeHtml(REPO)} · 2024 sources detected automatically</p></section>`;
   bindEvents();
 }
@@ -3289,14 +3225,7 @@ async function openRuleReference(ref) {
   let body = `<div class="modal-kicker">${escapeHtml(kicker || info.tag || "Reference")}</div>`;
   if (entity.entries) body += `<div class="rules-text formatted-rules">${renderRichEntries(entity.entries)}</div>`;
   else if (entity.entry) body += `<div class="rules-text formatted-rules">${renderRichEntries(entity.entry)}</div>`;
-  else if (String(info.tag || "").toLowerCase() === "item") {
-    // Base equipment frequently stores its useful data as structured fields
-    // rather than prose `entries`. Never expose the raw 5etools JSON to the
-    // player for an item reference.
-    body += renderItemFacts(entity);
-    if (!entity.weaponCategory && entity.type) body += `<p>${escapeHtml(canonicalLabel(entity.type))}</p>`;
-    if (!entity.weaponCategory && !entity.type) body += `<div class="empty">No further description is available for this item.</div>`;
-  } else body += `<pre class="reference-json">${escapeHtml(JSON.stringify(entity, null, 2))}</pre>`;
+  else body += `<pre class="reference-json">${escapeHtml(JSON.stringify(entity, null, 2))}</pre>`;
   openModal(title, body);
 }
 
@@ -3336,10 +3265,26 @@ function bindConditionTooltips(root = document) {
   root.querySelectorAll?.(".rules-condition-hover")?.forEach(el => {
     if (el.dataset.conditionRefBound) return;
     el.dataset.conditionRefBound = "1";
-    el.addEventListener("pointerenter", () => showRuleReferenceTooltip(el));
-    el.addEventListener("pointerleave", hideRuleReferenceTooltip);
-    el.addEventListener("focus", () => showRuleReferenceTooltip(el));
-    el.addEventListener("blur", hideRuleReferenceTooltip);
+    if (!window.matchMedia?.("(pointer: coarse)").matches) {
+      el.addEventListener("pointerenter", () => showRuleReferenceTooltip(el));
+      el.addEventListener("pointerleave", hideRuleReferenceTooltip);
+      el.addEventListener("focus", () => showRuleReferenceTooltip(el));
+      el.addEventListener("blur", hideRuleReferenceTooltip);
+    }
+    let timer = null;
+    const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+    el.addEventListener("pointerdown", () => {
+      if (!window.matchMedia?.("(pointer: coarse)").matches) return;
+      cancel();
+      timer = setTimeout(async () => {
+        timer = null;
+        el.dataset.suppressClick = "1";
+        await openRuleReference(el.dataset.ref || "");
+      }, 650);
+    });
+    el.addEventListener("pointerup", cancel);
+    el.addEventListener("pointercancel", cancel);
+    el.addEventListener("pointerleave", cancel);
   });
 }
 
@@ -3351,6 +3296,7 @@ function bindEvents() {
     el.onclick = async () => {
       const action = el.dataset.action;
       try {
+        if (action === "cache-extended") return cacheExtendedRules();
         if (action === "sync") return syncData(true);
         if (action === "builder") { state.view = "builder"; return render(); }
         if (action === "sheet") { state.view = "sheet"; return render(); }
@@ -3397,8 +3343,13 @@ function bindEvents() {
           const type = el.dataset.type; state.character.deathSaves[type] = Math.min(3, Number(state.character.deathSaves[type] || 0) + 1); await saveCharacter(); return render();
         }
         if (action === "death-reset") { state.character.deathSaves = { success: 0, failure: 0 }; await saveCharacter(); return render(); }
-        if (action === "condition") { const condition = el.dataset.condition; if (condition === "Exhaustion") { if (Number(state.character.exhaustion || 0) > 0) state.character.exhaustion = 0; else state.character.exhaustion = 1; } else toggleArray(state.character.conditions, condition); await saveCharacter(); return render(); }
+        if (action === "condition") { if (el.dataset.suppressClick) { delete el.dataset.suppressClick; return; } const condition = el.dataset.condition; if (condition === "Exhaustion") { if (Number(state.character.exhaustion || 0) > 0) state.character.exhaustion = 0; else state.character.exhaustion = 1; } else toggleArray(state.character.conditions, condition); await saveCharacter(); return render(); }
         if (action === "clear-conditions") { state.character.conditions = []; state.character.exhaustion = 0; await saveCharacter(); return render(); }
+        if (action === "attack-details") {
+          const title = el.dataset.noteTitle || "Notes";
+          const note = el.dataset.note || "";
+          return openModal(title, `<div class="rules-text formatted-rules"><p>${escapeHtml(note)}</p></div>`);
+        }
         if (action === "feature") { const f = findFeatureByButton(el); if (f) return openFeatureModal(f); }
         if (action === "feat-detail") { const ref = splitRefId(decodeURIComponent(el.dataset.name || "")); const feat = findFeat(ref.name, ref.source || null); if (feat) return openFeatModal(feat); }
         if (action === "species-detail") { if (state.lastDerived?.speciesObj) return openModal(state.lastDerived.speciesObj.name, `<div class="modal-kicker">${escapeHtml(sourceLabel(state.lastDerived.speciesObj.source))}</div><div class="rules-text formatted-rules">${renderRichEntries(state.lastDerived.speciesObj.entries)}</div>`); }
@@ -3477,19 +3428,12 @@ function bindEvents() {
     await saveCharacter(); render();
   });
   document.querySelectorAll("[data-weapon-mastery-select]").forEach(el => el.onchange = async () => {
-    const key = el.value;
+    const key = el.value; const max = state.lastDerived?.weaponMasteryCount || 0;
     if (!key) return;
-    // Do not rely on a possibly stale state.lastDerived value. Re-derive the
-    // current class/level first so the actual Weapon Mastery allowance is used.
-    const derived = await deriveCharacter();
-    const max = Number(derived.weaponMasteryCount || 0);
-    if (!max) { showToast("This character does not currently have Weapon Mastery."); return; }
     if (!Array.isArray(state.character.weaponMasteries)) state.character.weaponMasteries = [];
-    if (state.character.weaponMasteries.length >= max) { showToast(`Choose only ${max} weapon master${max === 1 ? "y" : "ies"}.`); return; }
+    if (state.character.weaponMasteries.length >= max) { showToast(`Choose only ${max} weapon masteries.`); return; }
     if (!state.character.weaponMasteries.some(x=>String(x).toLowerCase()===key.toLowerCase())) state.character.weaponMasteries.push(key);
-    await saveCharacter();
-    state.lastDerived = await deriveCharacter();
-    render();
+    await saveCharacter(); render();
   });
   document.querySelectorAll("[data-remove-weapon-mastery]").forEach(el => el.onclick = async () => {
     const key=String(el.dataset.removeWeaponMastery||"").toLowerCase();
@@ -3501,7 +3445,15 @@ function bindEvents() {
     const store = kind === "language" ? state.character.languageChoiceSlots : state.character.toolChoiceSlots;
     if (!el.value) delete store[el.dataset.proficiencyChoiceSlot]; else store[el.dataset.proficiencyChoiceSlot] = el.value;
     await saveCharacter(); render();
+  });  document.querySelectorAll("[data-standard-language]").forEach(el => el.onchange = async () => {
+    const idx = Number(el.dataset.standardLanguage);
+    const value = el.value || null;
+    if (idx === 0) state.character.standardLanguages[0] = value;
+    if (idx === 1) state.character.standardLanguages[1] = value;
+    if (state.character.standardLanguages[0] && state.character.standardLanguages[0] === state.character.standardLanguages[1]) state.character.standardLanguages[1] = null;
+    await saveCharacter(); render();
   });
+
   document.querySelectorAll("[data-stat]").forEach(el => el.onchange = async () => { state.character.baseStats[el.dataset.stat] = clamp(Number(el.value),1,30); await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-ability]").forEach(el => el.onchange = async () => { state.character.featAbilityChoices[el.dataset.featAbility] = el.value; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-save]").forEach(el => el.onchange = async () => { state.character.featSaveChoices[el.dataset.featSave] = el.value; await saveCharacter(); render(); });
@@ -3579,6 +3531,9 @@ async function readBuilder() {
   if (get("bgPlus1")) c.backgroundAbility.plus1 = get("bgPlus1").value || null;
   if (get("bgPlus1b")) c.backgroundAbility.plus1b = get("bgPlus1b").value || null;
   if (get("bgPlus1c")) c.backgroundAbility.plus1c = get("bgPlus1c").value || null;
+  if (get("standardLanguage1")) c.standardLanguages[0] = get("standardLanguage1").value || null;
+  if (get("standardLanguage2")) c.standardLanguages[1] = get("standardLanguage2").value || null;
+  { const vals = (c.standardLanguages || []).filter(Boolean); c.standardLanguages = [vals[0] || null, vals[1] || null]; if (c.standardLanguages[0] && c.standardLanguages[1] && c.standardLanguages[0] === c.standardLanguages[1]) c.standardLanguages[1] = null; }
   if (c.backgroundAbility.mode === "three") { c.backgroundAbility.plus2 = null; const vals=[c.backgroundAbility.plus1,c.backgroundAbility.plus1b,c.backgroundAbility.plus1c].filter(Boolean); const uniq=[]; for (const v of vals) if (!uniq.includes(v)) uniq.push(v); c.backgroundAbility.plus1=uniq[0]||null; c.backgroundAbility.plus1b=uniq[1]||null; c.backgroundAbility.plus1c=uniq[2]||null; }
   else if (c.backgroundAbility.plus2 && c.backgroundAbility.plus2 === c.backgroundAbility.plus1) c.backgroundAbility.plus1 = null;
   c.classSkillChoices = normalizeSkillArray(c.classSkillChoices);
@@ -3747,35 +3702,7 @@ async function openItemPicker() {
 }
 async function addInventoryItem(it){const existing=state.character.inventory.find(x=>x.name===it.name&&x.source===it.source);if(existing)existing.quantity=Number(existing.quantity||1)+1;else state.character.inventory.push({name:it.name,source:it.source,quantity:1,equipped:false,wielding:false}); await saveCharacter();}
 function adjustItemQty(i,delta){const item=state.character.inventory[i];if(!item)return;item.quantity=Number(item.quantity||1)+delta;if(item.quantity<=0)state.character.inventory.splice(i,1);saveCharacter().then(render);}
-function renderItemFacts(item) {
-  if (!item) return "";
-  const facts = [];
-  if (item.weaponCategory) {
-    facts.push(`${canonicalLabel(item.weaponCategory)} weapon`);
-    if (item.dmg1) facts.push(`${item.dmg1} ${damageTypeName(item.dmgType)}`);
-    if (item.range) facts.push(`Range ${item.range}`);
-    const props = (item.property || []).map(x => canonicalLabel(String(x).split("|")[0])).filter(Boolean);
-    if (props.length) facts.push(props.join(", "));
-    const mastery = masteryLabel(item);
-    if (mastery) facts.push(`Mastery: ${mastery}`);
-  }
-  if (item.weight != null) facts.push(`${item.weight} lb.`);
-  if (item.value != null && !item.weaponCategory) facts.push(`Value: ${item.value}`);
-  return facts.length ? `<div class="spell-facts">${facts.map(x=>`<span>${escapeHtml(x)}</span>`).join("")}</div>` : "";
-}
-
-async function openInventoryItemInfo(i){
-  const item=state.character.inventory[i]; if(!item)return;
-  await getItemsData();
-  const found=findOfficialItemByName(item.name,item.source)||findOfficialItemByName(item.name);
-  if(found){
-    cacheReferenceEntity("item",found);
-    const entries = found.entries || found.entry;
-    const renderedEntries = Array.isArray(entries) || typeof entries === "string" ? `<div class="rules-text formatted-rules">${renderRichEntries(entries)}</div>` : "";
-    const body = `${renderItemFacts(found)}${renderedEntries}`;
-    openModal(found.name,`<div class="modal-kicker">${escapeHtml(sourceLabel(found.source))} · ${escapeHtml(found.type||"")}</div>${body || `<div class="empty">No further description is available for this item.</div>`}`);
-  }
-}
+async function openInventoryItemInfo(i){const item=state.character.inventory[i];if(!item)return;await getItemsData();const found=findOfficialItemByName(item.name,item.source)||findOfficialItemByName(item.name);if(found){cacheReferenceEntity("item",found);openModal(found.name,`<div class="modal-kicker">${escapeHtml(sourceLabel(found.source))} · ${escapeHtml(found.type||"")}</div><div class="rules-text formatted-rules">${renderRichEntries(found.entries||found.entry||[])}</div>`);}}
 
 function maxCastableSpellLevel(d = state.lastDerived) {
   const slots = d?.spellSlots || [];
@@ -3829,7 +3756,17 @@ function safeFileName(s){return String(s).replace(/[^a-z0-9-_]+/gi,"-").replace(
 function openImport(){const input=document.createElement("input");input.type="file";input.accept="application/json";input.onchange=async()=>{const file=input.files?.[0];if(!file)return;try{const parsed=migrateCharacter(JSON.parse(await file.text()));await idbPut("characters",parsed.id,parsed);state.character=parsed;await idbPut("kv","currentCharacterId",parsed.id);state.view="sheet";render();showToast("Character imported.");}catch(e){showToast(`Import failed: ${e.message}`);}};input.click();}
 
 function applyStandardArray(){
-  ABILITIES.forEach((a,i)=>state.character.baseStats[a]=STANDARD_ARRAY[i]);saveCharacter().then(render);
+  const className = state.character.class?.name || "";
+  const mapping = Object.entries(STANDARD_ARRAY_BY_CLASS).find(([name]) => name.toLowerCase() === className.toLowerCase())?.[1] || null;
+  if (mapping) {
+    for (const ability of ABILITIES) state.character.baseStats[ability] = mapping[ability];
+    saveCharacter().then(render);
+    showToast(`Applied the 2024 PHB Standard Array for ${className}.`);
+    return;
+  }
+  ABILITIES.forEach((a,i)=>state.character.baseStats[a]=STANDARD_ARRAY[i]);
+  saveCharacter().then(render);
+  showToast(className ? `No 2024 PHB class row exists for ${className}; used the neutral 15/14/13/12/10/8 order.` : "Choose a class to use its 2024 PHB Standard Array arrangement.");
 }
 function applyPointBuyDefault(){
   const values=[15,14,13,12,10,8];ABILITIES.forEach((a,i)=>state.character.baseStats[a]=values[i]);saveCharacter().then(render);showToast("Loaded the 27-point-buy baseline (15, 14, 13, 12, 10, 8). Adjust individual scores as needed.");

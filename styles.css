@@ -826,4 +826,19 @@ body { min-height: 100vh; }
 .equipment-page-toolbar { grid-template-columns:minmax(0,1fr) 190px auto; align-items:center; }
 @media (max-width:720px) { .equipment-page-toolbar { grid-template-columns:1fr; } }
 
-.reference-stat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.reference-stat{display:flex;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--line,#cbbf9f);background:var(--paper-2,#f6f0df);border-radius:6px}.reference-stat span{opacity:.72}.reference-stat strong{text-align:right}.reference-json{white-space:pre-wrap}
+
+/* v0.28 character-creation and touch interaction refinements */
+.skill-check { position:relative; flex-wrap:wrap; }
+.skill-check.skill-overlap { border-color:#b7ac98; background:#f3ecdf; }
+.skill-check .choice-warning { width:100%; margin-left:29px; color:#7a5d38; font-size:.61rem; line-height:1.25; }
+.language-choice-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; align-items:stretch; }
+.language-fixed { display:grid; align-content:center; gap:2px; min-height:40px; padding:9px; border:1px solid #b7ac98; background:#eee6d7; border-radius:4px; }
+.language-fixed strong { font-family:Georgia,"Times New Roman",serif; font-size:.78rem; }
+.language-fixed span { color:#746b60; font-size:.61rem; }
+.proficiency-overlap { margin-top:9px; padding:8px 9px; border:1px solid #cdbb9e; border-radius:6px; background:#f4ead9; color:#665746; font-size:.68rem; line-height:1.4; }
+.proficiency-overlap strong { display:block; margin-bottom:2px; font-family:Georgia,"Times New Roman",serif; }
+.equipment-state-legend { margin:8px 0 10px; padding:8px 10px; border:1px solid #c9bfad; border-radius:6px; background:#f4ecdf; color:#675f55; font-size:.67rem; line-height:1.45; }
+.sheet-note-link { appearance:none; border:0; border-bottom:1px dotted currentColor; background:transparent; color:inherit; padding:0; margin:0; font:inherit; text-align:left; cursor:pointer; border-radius:2px; }
+.sheet-note-link:hover, .sheet-note-link:focus-visible { background:#eee4d3; outline:none; }
+.rules-condition-hover { touch-action:manipulation; -webkit-user-select:none; user-select:none; }
+@media (max-width: 720px) { .language-choice-grid { grid-template-columns:1fr; } }

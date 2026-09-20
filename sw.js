@@ -1,4 +1,4 @@
-const CACHE = "dnd-sheet-shell-v281";
+const CACHE = "dnd-sheet-shell-v280";
 const SHELL = [
   "./",
   "./index.html",
