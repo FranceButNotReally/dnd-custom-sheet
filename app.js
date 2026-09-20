@@ -177,6 +177,7 @@ function emptyCharacter() {
     notes: "",
     optionalFeatureChoices: {},
     classFeatureChoices: {},
+    classProficiencyChoices: {},
     weaponMasteries: [],
     startingEquipment: { class: null, background: null },
     progressionFeats: {},
@@ -247,6 +248,7 @@ function migrateCharacter(raw) {
   c.attacks = Array.isArray(raw.attacks) ? raw.attacks : [];
   c.optionalFeatureChoices = { ...(raw.optionalFeatureChoices || {}) };
   c.classFeatureChoices = { ...(raw.classFeatureChoices || {}) };
+  c.classProficiencyChoices = { ...(raw.classProficiencyChoices || {}) };
   c.weaponMasteries = Array.isArray(raw.weaponMasteries) ? raw.weaponMasteries : [];
   c.startingEquipment = { ...base.startingEquipment, ...(raw.startingEquipment || {}) };
   if (Number(raw.schema || 0) < 11) {
@@ -1107,6 +1109,68 @@ function selectedClassFeatureOptionObjects(c, specs) {
     if (option?.feature) out.push({ ...option.feature, _choiceKey: spec.key, _choiceParent: spec.name });
   }
   return out;
+}
+
+function classFeatureProficiencyChoiceSpecs(classObj, features) {
+  const specs = [];
+  const className = textNorm(classObj?.name);
+  const add = (feature, kind, count, from = [], label = null, anyLanguage = false) => {
+    for (let i = 0; i < count; i++) {
+      specs.push({
+        key: `${classObj?.name || "Class"}|${classObj?.source || DATA_SOURCE}|proficiency|${feature.name}|${feature.level}|${kind}|${i + 1}`,
+        featureName: feature.name,
+        level: Number(feature.level || 0),
+        kind,
+        index: i + 1,
+        from: [...from],
+        anyLanguage,
+        label: label || (kind === "expertise" ? "Expertise" : kind === "language" ? "Language" : "Skill proficiency"),
+      });
+    }
+  };
+
+  for (const feature of features || []) {
+    const n = textNorm(feature?.name);
+    const level = Number(feature?.level || 0);
+    if (className === "barbarian" && n === "primalknowledge") {
+      add(feature, "skill", 1, skillChoiceSpec(classObj).from, "Primal Knowledge skill");
+    }
+    if (["bard","rogue","ranger"].includes(className) && n === "expertise") {
+      add(feature, "expertise", 2, Object.keys(SKILLS), `Expertise (level ${level})`);
+    }
+    if (className === "ranger" && n === "deftexplorer") {
+      add(feature, "expertise", 1, Object.keys(SKILLS), "Deft Explorer expertise");
+      add(feature, "language", 2, [], "Deft Explorer language", true);
+    }
+    if (className === "rogue" && n === "thievescant") {
+      add(feature, "language", 1, [], "Thieves' Cant additional language", true);
+    }
+    if (className === "wizard" && n === "scholar") {
+      add(feature, "expertise", 1, ["arcana","history","investigation","medicine","nature","religion"], "Scholar expertise");
+    }
+  }
+  return specs;
+}
+
+function reconcileClassProficiencyChoices(c, specs) {
+  c.classProficiencyChoices = { ...(c.classProficiencyChoices || {}) };
+  const valid = new Map((specs || []).map(spec => [spec.key, spec]));
+  for (const key of Object.keys(c.classProficiencyChoices)) if (!valid.has(key)) delete c.classProficiencyChoices[key];
+  for (const spec of specs || []) {
+    const selected = c.classProficiencyChoices[spec.key];
+    if (!selected) continue;
+    if ((spec.kind === "skill" || spec.kind === "expertise") && !spec.from.includes(selected)) delete c.classProficiencyChoices[spec.key];
+  }
+}
+
+function applyClassProficiencyChoices(c, d, effects) {
+  for (const spec of d.classProficiencyChoiceSpecs || []) {
+    const selected = c.classProficiencyChoices?.[spec.key];
+    if (!selected) continue;
+    if (spec.kind === "skill" && SKILLS[selected]) effects.skills.add(selected);
+    if (spec.kind === "expertise" && SKILLS[selected] && d.skillProficiencies?.has?.(selected)) effects.expertise.add(selected);
+    if (spec.kind === "language") effects.languages.push(String(selected));
+  }
 }
 
 
@@ -2893,6 +2957,10 @@ function buildDerivedEffects(c, d, featObjs) {
       effects.skillBonuses.nature = Math.max(Number(effects.skillBonuses.nature || 0), bonus);
       effects.active.push(`Magician: +1 Druid cantrip; +${bonus} Arcana and Nature`);
     }
+    if (n === "thievescant" && !effects.languages.includes("Thieves' Cant")) {
+      effects.languages.push("Thieves' Cant");
+      effects.active.push("Thieves' Cant: language known");
+    }
     if (["divinestrike","potentspellcasting","primalstrike"].includes(n)) {
       effects.flags.add(n);
       effects.active.push(`${feature.name}: selected class feature option`);
@@ -2929,6 +2997,7 @@ function buildDerivedEffects(c, d, featObjs) {
     }
   }
   applySelectedSpeciesOptionEffects(c, d.speciesObj, effects);
+  applyClassProficiencyChoices(c, d, effects);
 
   for (const feat of featObjs || []) {
     const n = textNorm(feat.name);
@@ -3167,6 +3236,8 @@ async function deriveCharacter() {
     d.classFeatureChoiceSpecs = classFeatureChoiceSpecs(d.classFile, d.classObj, c.level);
     reconcileClassFeatureChoices(c, d.classFeatureChoiceSpecs);
     d.classFeatureOptionObjects = selectedClassFeatureOptionObjects(c, d.classFeatureChoiceSpecs);
+    d.classProficiencyChoiceSpecs = classFeatureProficiencyChoiceSpecs(d.classObj, d.classFeatures);
+    reconcileClassProficiencyChoices(c, d.classProficiencyChoiceSpecs);
     d.optionalFeatureSpecs = optionalFeatureProgression(d.classObj, c.level);
     d.progressionFeatSlots = progressionFeatSlots(d.classObj, c.level);
     d.optionalFeatureObjects = selectedOptionalFeatureObjects(c, d.classObj, c.level);
@@ -3255,6 +3326,8 @@ async function deriveCharacter() {
   d.proficiencies = parseProficiencyDisplay(d.classObj, d.backgroundObj, d.speciesObj, featObjs);
   d.proficiencies.armor = dedupeLabels([...(d.proficiencies.armor || []), ...(d.effects.armorProficiencies || [])]);
   d.proficiencies.weapons = dedupeLabels([...(d.proficiencies.weapons || []), ...(d.effects.weaponProficiencies || [])]);
+  d.proficiencies.tools = dedupeLabels([...(d.proficiencies.tools || []), ...(d.effects.tools || [])]);
+  d.proficiencies.languages = dedupeLabels([...(d.proficiencies.languages || []), ...(d.effects.languages || [])]);
   try {
     const acResult = calcAutoAc(c, mods, await getItemsData(), d.effects, d.proficiencies, d.stats);
     d.heavyArmorWorn = Boolean(acResult.wearingHeavyArmor);
