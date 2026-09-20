@@ -1480,7 +1480,14 @@ function featAdditionalSpellChoiceSpecs(feat) {
     };
     collectChooseClasses(group?.known);
     collectChooseClasses(group?.innate);
-    if (names.length || abilityFrom.length) specs.push({ index, names, abilityFrom, key: `${feat?.name || "Feat"}|${feat?.source || ""}|spells|${index}` });
+    const hasStructuredSpellChoice = value => {
+      if (value == null) return false;
+      if (Array.isArray(value)) return value.some(hasStructuredSpellChoice);
+      if (typeof value === "object") return Object.entries(value).some(([key, child]) => key === "choose" || hasStructuredSpellChoice(child));
+      return false;
+    };
+    const hasSpellChoice = hasStructuredSpellChoice(group?.known) || hasStructuredSpellChoice(group?.innate);
+    if (names.length || abilityFrom.length || hasSpellChoice) specs.push({ index, names, abilityFrom, key: `${feat?.name || "Feat"}|${feat?.source || ""}|spells|${index}` });
   }
   return specs;
 }
