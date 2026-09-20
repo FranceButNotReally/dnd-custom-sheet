@@ -1517,21 +1517,23 @@ function speciesChoiceSpecs(species) {
   const specs = [];
   const root = species?.entries;
   if (!root) return specs;
-  const choicePattern = /\b(?:choose|select)\b[^.]{0,160}\b(?:one|an option|option|following)\b/i;
+  const choicePattern = /\b(?:choose|select)\b[^.]{0,160}\b(?:one|an option|option|following|choice)\b/i;
   const lineagePattern = /\b(?:lineage|lineages|ancestry|ancestries|legacy|legacies|heritage|heritages)\b/i;
+  const transientChoicePattern = /\b(?:each time|every time|whenever|when you (?:transform|use|activate)|each use)\b/i;
   const abilityChoicesFromText = text => /\bspellcasting ability\b/i.test(text) ? ABILITIES.filter(k => new RegExp(`\\b${ABILITY_NAMES[k]}\\b`, "i").test(text)) : [];
   const cleanOption = item => {
     if (typeof item === "string") return { name: stripTags(item), entries: [] };
     if (!item || typeof item !== "object") return null;
     return { name: stripTags(item.name || item.title || ""), entries: item.entries || item.entry || item.items || [], raw: item };
   };
-  const register = (names, context) => {
+  const register = (names, context, kind = "species") => {
     const unique=[]; for (const opt of names) if (opt && opt.name && !unique.some(x => textNorm(x.name)===textNorm(opt.name))) unique.push(opt);
-    if (unique.length < 2 || unique.length > 12) return;
+    if (unique.length < 2 || unique.length > 30) return;
     if (!(choicePattern.test(context) || lineagePattern.test(context))) return;
+    if (transientChoicePattern.test(context)) return;
     const key = `${species?.name || "Species"}|${species?.source || ""}|choice|${specs.length}`;
     const abilityFrom = abilityChoicesFromText(context);
-    specs.push({ key, index: specs.length, options: unique, abilityFrom, label: lineagePattern.test(context) ? "Lineage / ancestry choice" : "Species choice" });
+    specs.push({ key, index: specs.length, options: unique, abilityFrom, kind, label: lineagePattern.test(context) ? "Lineage / ancestry choice" : kind === "skill" ? "Skill choice" : kind === "feat" ? "Origin feat choice" : "Species choice" });
   };
   const walk = (node, context = "") => {
     if (Array.isArray(node)) {
@@ -1549,16 +1551,48 @@ function speciesChoiceSpecs(species) {
       register(items.map(cleanOption), own);
     } else if (type === "table") {
       const rows = Array.isArray(node.rows) ? node.rows : [];
-      register(rows.map(r => cleanOption(Array.isArray(r) ? r[0] : r)), own);
+      const options = rows.map(row => {
+        const cells = Array.isArray(row) ? row : [row];
+        const first = cleanOption(cells[0]);
+        if (!first) return null;
+        return { ...first, entries: [...(Array.isArray(first.entries) ? first.entries : [first.entries]).filter(Boolean), ...cells.slice(1)] };
+      });
+      register(options, own);
     }
     for (const [k,v] of Object.entries(node)) if (!["name","title","type"].includes(k)) walk(v, own);
   };
   walk(root, species?.name || "Species");
-  const out=[]; for (const spec of specs) if (!out.some(x => x.options.length===spec.options.length && x.options.every((o,i)=>textNorm(o.name)===textNorm(spec.options[i].name)))) out.push(spec);
+
+  // A few PHB species express creation-time choices as prose rather than a
+  // structured list/table in 5etools. Normalize those into the same choice
+  // model so the builder can present them and the derived sheet can consume them.
+  const speciesName = textNorm(species?.name);
+  const entryByName = name => (Array.isArray(root) ? root : []).find(entry => textNorm(entry?.name) === textNorm(name));
+  const addSynthetic = (id, label, kind, options, abilityFrom = []) => {
+    if (!options?.length) return;
+    const key = `${species?.name || "Species"}|${species?.source || ""}|choice|${id}`;
+    specs.push({ key, index: specs.length, options, abilityFrom, kind, label });
+  };
+  if (speciesName === "elf" && entryByName("Keen Senses")) {
+    addSynthetic("keen-senses", "Keen Senses skill", "skill", ["insight","perception","survival"].map(value => ({ name: SKILLS[value][1], value, entries: [] })));
+  }
+  if (speciesName === "human") {
+    if (entryByName("Skillful")) addSynthetic("skillful", "Skillful skill", "skill", Object.entries(SKILLS).map(([value, [,name]]) => ({ name, value, entries: [] })));
+    if (entryByName("Versatile")) {
+      const originFeats = officialEntries(state.data.feats, "feat")
+        .filter(feat => String(feat.category || "").toUpperCase() === "O")
+        .sort((a,b) => a.name.localeCompare(b.name));
+      addSynthetic("versatile", "Versatile origin feat", "feat", originFeats.map(feat => ({ name: feat.name, value: feat.name, ref: { name: feat.name, source: feat.source }, entries: [] })));
+    }
+  }
+
+  const out=[]; for (const spec of specs) if (!out.some(x => x.key === spec.key || (x.kind === spec.kind && x.options.length===spec.options.length && x.options.every((o,i)=>textNorm(o.name)===textNorm(spec.options[i].name))))) out.push(spec);
   const fullText = stripTags(plainTextFromEntries(root));
   const fullAbilityFrom = /\bspellcasting ability\b/i.test(fullText) ? ABILITIES.filter(k => new RegExp(`\\b${ABILITY_NAMES[k]}\\b`, "i").test(fullText)) : [];
-  if (fullAbilityFrom.length && out.length) for (const spec of out) if (!spec.abilityFrom.length) spec.abilityFrom = fullAbilityFrom.slice();
-  return out.slice(0,8);
+  if (fullAbilityFrom.length && out.length) for (const spec of out) {
+    if (!spec.abilityFrom.length && spec.kind === "species" && /lineage|ancestry|legacy|heritage/i.test(spec.label || "")) spec.abilityFrom = fullAbilityFrom.slice();
+  }
+  return out.slice(0,12);
 }
 function reconcileSpeciesChoices(c, species) {
   c.speciesChoices = { ...(c.speciesChoices || {}) };
