@@ -3771,6 +3771,7 @@ async function renderBuilder(app) {
   const d = await deriveCharacter();
   const classChoiceSpecs = d.classObj ? optionalFeatureProgression(d.classObj, c.level) : [];
   const persistentClassChoiceSpecs = d.classFeatureChoiceSpecs || [];
+  const persistentClassProficiencySpecs = d.classProficiencyChoiceSpecs || [];
   const generalFeatSlots = d.progressionFeatSlots || [];
   const masteryCount = d.weaponMasteryCount || 0;
   const masteryItemsData = masteryCount ? await getItemsData().catch(() => null) : null;
@@ -3860,6 +3861,17 @@ async function renderBuilder(app) {
     const selected = c.classFeatureChoices?.[spec.key];
     return `<div class="feat-choice-row"><label class="field">${escapeHtml(spec.name)} (level ${spec.level})<select data-class-feature-choice="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.options.map(option=>`<option value="${escapeHtml(normalizeRefId(option.name,option.source))}" ${selected?.name===option.name&&selected?.source===option.source?"selected":""}>${escapeHtml(option.name)}</option>`).join("")}</select></label></div>`;
   }).join("") : "";
+  const persistentClassProficiencyMarkup = persistentClassProficiencySpecs.length ? persistentClassProficiencySpecs.map(spec => {
+    const selected = c.classProficiencyChoices?.[spec.key] || "";
+    let options = [];
+    if (spec.kind === "language") {
+      options = officialEntries(state.data.languages, "language").sort((a,b)=>a.name.localeCompare(b.name)).map(lang => ({ value: lang.name, label: lang.name }));
+    } else {
+      const keys = spec.kind === "expertise" ? spec.from.filter(key => d.skillProficiencies.has(key)) : spec.from;
+      options = keys.map(key => ({ value: key, label: SKILLS[key]?.[1] || canonicalLabel(key) }));
+    }
+    return `<div class="feat-choice-row"><label class="field">${escapeHtml(spec.label)}${persistentClassProficiencySpecs.filter(x=>x.featureName===spec.featureName&&x.kind===spec.kind).length>1 ? ` · Choice ${spec.index}` : ""}<select data-class-proficiency-choice="${escapeHtml(spec.key)}"><option value="">— Select —</option>${options.map(option=>`<option value="${escapeHtml(option.value)}" ${String(selected).toLowerCase()===String(option.value).toLowerCase()?"selected":""}>${escapeHtml(option.label)}</option>`).join("")}</select></label></div>`;
+  }).join("") : "";
   const optionalChoiceMarkup = classChoiceSpecs.length ? classChoiceSpecs.map(spec => {
     const selected = c.optionalFeatureChoices?.[spec.key];
     const options = availableOptionalFeatures(spec);
@@ -3888,7 +3900,7 @@ async function renderBuilder(app) {
 
     <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Ability scores</div><div class="mini">Base scores are stored separately. The final values include background increases and any manual bonuses.</div></div><div class="quick-actions"><button class="button button-small" data-action="apply-standard-array">Standard array</button><button class="button button-small" data-action="apply-point-buy">27-point reset</button><span class="status-pill">Point buy: ${pointBuyTotal} / 27</span></div></div><div class="ability-editor">${ABILITIES.map(a=>`<label class="ability-editor-cell"><span>${ABILITY_LABELS[a]}</span><input type="number" min="1" max="30" data-stat="${a}" value="${c.baseStats[a]}"><small>Final ${d.stats[a]}</small></label>`).join("")}</div></section>
 
-    <div class="grid two compact-gap"><section class="card"><div class="section-head"><div><div class="section-title">Class feature choices</div><div class="mini">Persistent class-feature options, Fighting Styles, Metamagic, Eldritch Invocations, and similar selections are stored as rules references and feed derived sheet effects.</div></div></div>${persistentClassChoiceMarkup ? `<div class="subhead">Feature options</div>${persistentClassChoiceMarkup}` : ""}<div class="subhead">Optional features</div>${optionalChoiceMarkup}<div class="subhead"><div class="section-title">General feats</div></div>${generalFeatMarkup}</section><section class="card"><div class="section-head"><div><div class="section-title">Weapon Mastery</div><div class="mini">Select the weapons you have mastered. Only currently proficient weapons with 5etools mastery data are shown.</div></div></div>${masteryMarkup}</section></div>
+    <div class="grid two compact-gap"><section class="card"><div class="section-head"><div><div class="section-title">Class feature choices</div><div class="mini">Persistent class-feature options, Fighting Styles, Metamagic, Eldritch Invocations, and similar selections are stored as rules references and feed derived sheet effects.</div></div></div>${persistentClassChoiceMarkup ? `<div class="subhead">Feature options</div>${persistentClassChoiceMarkup}` : ""}${persistentClassProficiencyMarkup ? `<div class="subhead">Skill, Expertise & Language choices</div>${persistentClassProficiencyMarkup}` : ""}<div class="subhead">Optional features</div>${optionalChoiceMarkup}<div class="subhead"><div class="section-title">General feats</div></div>${generalFeatMarkup}</section><section class="card"><div class="section-head"><div><div class="section-title">Weapon Mastery</div><div class="mini">Select the weapons you have mastered. Only currently proficient weapons with 5etools mastery data are shown.</div></div></div>${masteryMarkup}</section></div>
     <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Background ability increases</div><div class="mini">2024 backgrounds can use either +2/+1 or +1/+1/+1 when the background offers that choice.</div></div></div>${bg ? `<div class="mini" style="margin-bottom:10px">${escapeHtml(bg.name)}: choose from ${escapeHtml((bgAbility.plus1From || []).map(x=>ABILITY_LABELS[x]).join(", ") || "the listed abilities")}.</div>${bgAbility.supportsThree ? `<label class="field">Increase pattern<select data-builder="bgMode"><option value="split" ${bgMode==="split"?"selected":""}>+2 / +1</option><option value="three" ${bgMode==="three"?"selected":""}>+1 / +1 / +1</option></select></label>` : ""}${bgMode === "three" && bgAbility.supportsThree ? `<div class="form-grid three"><label class="field">+1 ability<select data-builder="bgPlus1"><option value="">— Select —</option>${bgAbility.threeFrom.map(x=>`<option value="${x}" ${selectedAbility1===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1b"><option value="">— Select —</option>${bgAbility.threeFrom.filter(x=>x!==selectedAbility1).map(x=>`<option value="${x}" ${selectedAbility1b===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1c"><option value="">— Select —</option>${bgAbility.threeFrom.filter(x=>x!==selectedAbility1&&x!==selectedAbility1b).map(x=>`<option value="${x}" ${selectedAbility1c===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label></div>` : `<div class="form-grid two"><label class="field">+2 ability<select data-builder="bgPlus2"><option value="">— Select —</option>${(bgAbility.plus2From || []).map(x=>`<option value="${x}" ${selectedAbility2===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1"><option value="">— Select —</option>${(bgAbility.plus1From || []).filter(x=>x!==selectedAbility2).map(x=>`<option value="${x}" ${selectedAbility1===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label></div>`}${autoBonusLines}` : `<div class="empty">Choose a 2024 background to see its ability-score options.</div>`}</section>
 
     <div class="grid two compact-gap"><section class="card"><div class="section-head"><div><div class="section-title">Languages</div><div class="mini">Every character starts with Common and chooses two additional languages from the 2024 PHB Standard Languages table. Rare languages are excluded here; class, species, background, and feats can add more separately.</div></div><span class="status-pill">${standardLanguageChoices.filter(Boolean).length} / 2 selected</span></div><div class="language-choice-grid"><div class="language-fixed"><strong>Common</strong><span>Always known</span></div><label class="field">Standard language 1<select data-builder="standardLanguage1" data-standard-language="0"><option value="">— Select —</option>${standardLanguageValues.map(v=>`<option value="${escapeHtml(v.name)}" ${standardLanguageChoices[0]===v.name?"selected":""}>${escapeHtml(v.name)}</option>`).join("")}</select></label><label class="field">Standard language 2<select data-builder="standardLanguage2" data-standard-language="1"><option value="">— Select —</option>${standardLanguageValues.filter(v=>v.name!==standardLanguageChoices[0]).map(v=>`<option value="${escapeHtml(v.name)}" ${standardLanguageChoices[1]===v.name?"selected":""}>${escapeHtml(v.name)}</option>`).join("")}</select></label></div></section><section class="card"><div class="section-head"><div class="section-title">Class skill choices</div><span class="status-pill">${classSkillChoices.size} / ${maxClassSkills || 0}</span></div>${classOptionsSkills.length ? `<div class="skill-grid">${classOptionsSkills.map(key=>{ const overlap=bgSkills.has(key); const checked=classSkillChoices.has(key); return `<label class="skill-check ${overlap?"skill-overlap":""}"><input type="checkbox" data-class-skill="${key}" ${checked?"checked":""} ${overlap&&!checked?"disabled":""}><span>${escapeHtml(SKILLS[key]?.[1] || canonicalLabel(key))}</span>${overlap?`<small class="choice-warning">${checked?"Also from background · choose another":"Already from background"}</small>`:""}</label>`; }).join("")}</div>` : `<div class="empty">Choose a class to load its skill choices from 5etools.</div>`}<div class="section-title subhead">Skill expertise</div><div class="skill-grid">${Object.entries(SKILLS).map(([key,[,name]])=>`<label class="skill-check"><input type="checkbox" data-expertise="${key}" ${c.expertise.includes(key)?"checked":""}>${escapeHtml(name)}</label>`).join("")}</div></section><section class="card"><div class="section-title">Background</div>${bg ? `<div class="detail-list"><div><strong>Skills</strong><span>${escapeHtml(grantedSkillsFromMap(bg.skillProficiencies).map(k=>SKILLS[k]?.[1]||canonicalLabel(k)).join(", ")||"None")} ${proficiencyOverlap.skills.length ? `<small class="choice-warning">Class overlap: ${escapeHtml(proficiencyOverlap.skills.map(k=>SKILLS[k]?.[1]||k).join(", "))}</small>` : ""}</span></div><div><strong>Origin feat</strong><span>${escapeHtml(bgFeatRefs.map(x=>x.name || x).join(", ")||"Choice")}</span></div><div><strong>Tools</strong><span>${escapeHtml(backgroundProficiencies.tools.join(", ")||"None")}</span></div><div><strong>Languages</strong><span>${escapeHtml(backgroundProficiencies.languages.join(", ")||"None")}</span></div></div>` : `<div class="empty">Choose a background.</div>`}</section></div>
@@ -4313,6 +4325,13 @@ function bindEvents() {
       if (["background","bgMode","bgPlus2","bgPlus1","bgPlus1b","bgPlus1c","species","class","subclass","feat","level","xp"].includes(key)) render();
     };
   });
+  document.querySelectorAll("[data-class-proficiency-choice]").forEach(el => el.onchange = async () => {
+    if (!state.character.classProficiencyChoices) state.character.classProficiencyChoices = {};
+    const key = el.dataset.classProficiencyChoice;
+    if (!el.value) delete state.character.classProficiencyChoices[key];
+    else state.character.classProficiencyChoices[key] = el.value;
+    await saveCharacter(); render();
+  });
   document.querySelectorAll("[data-class-feature-choice]").forEach(el => el.onchange = async () => {
     if (!state.character.classFeatureChoices) state.character.classFeatureChoices = {};
     const key = el.dataset.classFeatureChoice;
@@ -4488,11 +4507,14 @@ async function readBuilder() {
 
     const currentClassFeatureSpecs = classFeatureChoiceSpecs(file, obj, c.level);
     reconcileClassFeatureChoices(c, currentClassFeatureSpecs);
+    const currentClassProficiencySpecs = classFeatureProficiencyChoiceSpecs(obj, getClassFeatures(file, obj, c.level));
+    reconcileClassProficiencyChoices(c, currentClassProficiencySpecs);
 
     if (c.class.name !== previousClass) {
       c.weaponMasteries = [];
       c.optionalFeatureChoices = {};
       c.classFeatureChoices = {};
+      c.classProficiencyChoices = {};
       c.progressionFeats = {};
       c.startingEquipment.class = null;
     }
@@ -4502,6 +4524,7 @@ async function readBuilder() {
     c.weaponMasteries = [];
     c.optionalFeatureChoices = {};
     c.classFeatureChoices = {};
+    c.classProficiencyChoices = {};
     c.progressionFeats = {};
     if (c.class !== null) c.startingEquipment.class = null;
   }
