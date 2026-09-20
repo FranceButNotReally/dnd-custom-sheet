@@ -12,4 +12,4 @@ The app checks the latest 5etools release, loads the official 2024/revised playe
 
 ## Current build
 
-Version 0.14.0
+Version 0.21.0

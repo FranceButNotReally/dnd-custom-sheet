@@ -1,3 +1,16 @@
+## 0.21.0
+
+- Initial character render no longer waits for the complete class and spell datasets.
+- Class files are loaded on demand; spell files are loaded by source/reference and the full spell index is only hydrated when the spell browser is opened.
+- Added reference caching for rules entities and removed the `spellById()` / `canonicalLabel()` recursion path.
+- Added robust targeted spell resolution for tooltips and selected spells.
+- HP controls now support direct setting plus damage/healing, with Temporary HP absorbed before normal HP.
+- Death saves are only editable at 0 HP and reset when HP becomes positive; Short Rest no longer resets them.
+- Added explicit Senses display, including species Darkvision/special senses and manual additional senses.
+- Added automatic/manual resource state with automatic resources linked to their originating feature when structured `uses` data is available.
+- Preserved Weapon Mastery reconciliation against proficiency and current mastery limit.
+- Discarded the legacy max-HP=1 migration artifact when upgrading older character data.
+
 # Changelog
 
 ## 0.14.0

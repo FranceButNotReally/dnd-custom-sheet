@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.14.0";
+const APP_VERSION = "0.21.0";
 
 const PATHS = {
   books: "data/books.json",
@@ -55,7 +55,7 @@ const state = {
   version: null,
   lastSync: null,
   lastReleaseCheck: null,
-  data: { books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null, optionalfeatures: null, spells: null, items: null, conditionsdiseases: null, variantrules: null, actions: null, classFiles: new Map(), officialSources: new Set(), sourceMeta: [] },
+  data: { books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null, optionalfeatures: null, spells: null, spellIndex: null, items: null, conditionsdiseases: null, variantrules: null, actions: null, classFiles: new Map(), spellFiles: new Map(), referenceCache: new Map(), officialSources: new Set(), sourceMeta: [] },
   character: null,
   deferredInstallPrompt: null,
   spellPickerTab: "prepared",
@@ -64,7 +64,7 @@ const state = {
 };
 
 const DB_NAME = "dnd-2024-5etools-sheet";
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 let dbPromise;
 
 function emptyCharacter() {
@@ -113,6 +113,7 @@ function emptyCharacter() {
     inventory: [],
     currency: { pp: 0, gp: 0, ep: 0, sp: 0, cp: 0 },
     resources: [],
+    senses: [],
     attacks: [],
     notes: "",
     optionalFeatureChoices: {},
@@ -145,7 +146,7 @@ function migrateCharacter(raw) {
   const base = emptyCharacter();
   if (!raw || typeof raw !== "object") return base;
   const c = { ...base, ...raw };
-  c.schema = 11;
+  c.schema = 12;
   c.baseStats = { ...base.baseStats, ...(raw.baseStats || raw.stats || {}) };
   c.xp = Math.max(0, Number(raw.xp || 0));
   c.manualAbilityBonuses = { ...base.manualAbilityBonuses, ...(raw.manualAbilityBonuses || {}) };
@@ -168,7 +169,8 @@ function migrateCharacter(raw) {
   c.preparedSpells = Array.isArray(raw.preparedSpells) ? raw.preparedSpells : [];
   c.cantrips = Array.isArray(raw.cantrips) ? raw.cantrips : [];
   c.inventory = Array.isArray(raw.inventory) ? raw.inventory : [];
-  c.resources = Array.isArray(raw.resources) ? raw.resources : [];
+  c.resources = Array.isArray(raw.resources) ? raw.resources.map(r => ({ ...r, mode: r?.mode === "auto" ? "auto" : "manual" })) : [];
+  c.senses = Array.isArray(raw.senses) ? raw.senses : [];
   c.attacks = Array.isArray(raw.attacks) ? raw.attacks : [];
   c.optionalFeatureChoices = { ...(raw.optionalFeatureChoices || {}) };
   c.weaponMasteries = Array.isArray(raw.weaponMasteries) ? raw.weaponMasteries : [];
@@ -206,11 +208,14 @@ function migrateCharacter(raw) {
   // Older prototypes could also persist `acOverride` while it was only a calculated value.
   if (raw.acOverride != null) c.acOverride = Number(raw.acOverride);
   if (Number(raw.schema || 0) < 10 && raw.acOverride != null && raw.acManual !== true) c.acOverride = null;
-  if (Number(raw.schema || 0) < 11 && raw.hpMaxOverride != null && Number(raw.hpMaxOverride) <= 1) c.hpMaxOverride = null;
+  // v0.20 and earlier could persist a calculated level-1 HP value of 1 as a manual override.
+  // That value is specifically a migration artifact, not a user choice. Discard it on upgrade.
+  if (Number(raw.schema || 0) < 12 && Number(raw.hpMaxOverride) === 1) c.hpMaxOverride = null;
   if (Number(raw.schema || 0) < 10 && (!Number.isFinite(Number(raw.hpMaxOverride)) || Number(raw.hpMaxOverride) <= 0)) c.hpMaxOverride = null;
   if (raw.speedOverride == null && raw.speed != null) c.speedOverride = raw.speed;
   if (c.hpMaxOverride === undefined) c.hpMaxOverride = null;
   if (c.tempHp == null) c.tempHp = 0;
+  if (Number(c.hpCurrent) > 0) c.deathSaves = { success: 0, failure: 0 };
   if (c.hpAuto === undefined) c.hpAuto = raw.hpAuto ?? (raw.hpCurrent == null && raw.hp == null);
   return c;
 }
@@ -422,26 +427,6 @@ function buildOfficialSourceMeta(books) {
   return [...seen.values()].sort((a,b) => (a.published || "9999").localeCompare(b.published || "9999") || a.name.localeCompare(b.name));
 }
 
-async function loadAll2024SpellData(version, spellIndex, officialSources) {
-  // Load every indexed spell file and let the entity-level 2024 markers/source set decide
-  // what belongs in the player rules dataset. This keeps future official 2024 books from
-  // being missed merely because a source is absent from books.json metadata.
-  const sources = Object.entries(spellIndex || {});
-  const files = await Promise.all(sources.map(async ([source, file]) => {
-    try { return await fetch5eData(version, `data/spells/${file}`); }
-    catch (e) { console.warn(`Unable to load spell source ${source}:`, e); return null; }
-  }));
-  const merged = { spell: [] };
-  for (const data of files) for (const spell of data?.spell || []) if (isOfficial2024Entity(spell, officialSources)) merged.spell.push(spell);
-  const seen = new Set();
-  merged.spell = merged.spell.filter(spell => {
-    const key = `${spell.name.toLowerCase()}|${spell.source}`;
-    if (seen.has(key)) return false;
-    seen.add(key); return true;
-  });
-  return merged;
-}
-
 async function loadCoreData(version) {
   const [books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spellIndex, conditionsdiseases, variantrules, actions, items] = await Promise.all([
     fetch5eData(version, PATHS.books),
@@ -459,30 +444,64 @@ async function loadCoreData(version) {
   ]);
   const sourceMeta = buildOfficialSourceMeta(books);
   const officialSources = new Set(sourceMeta.map(x => x.source));
-  const [spells, classFileEntries] = await Promise.all([
-    loadAll2024SpellData(version, spellIndex, officialSources),
-    loadAll2024ClassData(version, classIndex, officialSources),
-  ]);
-  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells, items, conditionsdiseases, variantrules, actions, classFiles: new Map(classFileEntries), officialSources, sourceMeta };
+  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache: new Map(), officialSources, sourceMeta };
 }
 
-async function loadAll2024ClassData(version, classIndex, officialSources) {
-  const entries = Object.entries(classIndex || {});
-  const loaded = await Promise.all(entries.map(async ([className, file]) => {
-    try {
-      const data = await fetch5eData(version, `data/class/${file}`);
-      return [String(className).toLowerCase(), data];
-    } catch (e) {
-      console.warn("Class preload failed", className, e);
-      return [String(className).toLowerCase(), null];
-    }
-  }));
-  return loaded.filter(([, data]) => data);
+async function loadSpellSource(version, source) {
+  if (!source || !state.data.spellIndex) return null;
+  const key = String(source).toLowerCase();
+  if (state.data.spellFiles.has(key)) return state.data.spellFiles.get(key);
+  const file = state.data.spellIndex[source] || state.data.spellIndex[Object.keys(state.data.spellIndex).find(k => k.toLowerCase() === key)];
+  if (!file) return null;
+  try {
+    const data = await fetch5eData(version, `data/spells/${file}`);
+    state.data.spellFiles.set(key, data);
+    return data;
+  } catch (e) {
+    console.warn(`Unable to load spell source ${source}:`, e);
+    return null;
+  }
+}
+
+function mergeOfficialSpells() {
+  const merged = { spell: [] };
+  for (const data of state.data.spellFiles.values()) {
+    for (const spell of data?.spell || []) if (isOfficial2024Entity(spell, state.data.officialSources)) merged.spell.push(spell);
+  }
+  const seen = new Set();
+  merged.spell = merged.spell.filter(spell => {
+    const key = `${String(spell.name || '').toLowerCase()}|${spell.source}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  state.data.spells = merged;
+  return merged;
+}
+
+async function hydrateSpellData(version, all = false) {
+  if (!state.data.spellIndex) return null;
+  const sources = Object.keys(state.data.spellIndex);
+  if (all) {
+    await Promise.all(sources.map(source => loadSpellSource(version, source)));
+  }
+  return mergeOfficialSpells();
 }
 
 async function loadVersion(version) {
   const core = await loadCoreData(version);
   state.data = core;
+}
+
+async function hydrateBackgroundData(version) {
+  try {
+    await hydrateSpellData(version, false);
+    // The current character's class is the only class file needed for the initial sheet.
+    // Other class files remain lazy and are loaded only when selected/referenced.
+    if (state.character?.class?.name) await getClassDetails(state.character.class.name);
+  } catch (e) {
+    console.warn("Background rules hydration failed", e);
+  }
 }
 
 async function syncData(force = false) {
@@ -494,6 +513,8 @@ async function syncData(force = false) {
     if (!state.online) {
       if (!state.version) throw new Error("Connect to the internet for the first data sync.");
       await loadVersion(state.version);
+      render();
+      hydrateBackgroundData(state.version).then(() => render()).catch(console.warn);
       showToast(`Offline: using cached 5etools ${state.version}.`);
       return;
     }
@@ -501,6 +522,8 @@ async function syncData(force = false) {
     const needsUpdate = force || !state.version || latest !== state.version;
     if (!needsUpdate) {
       await loadVersion(state.version);
+      render();
+      hydrateBackgroundData(state.version).then(() => render()).catch(console.warn);
       showToast(`5etools ${state.version} is current.`);
       return;
     }
@@ -508,6 +531,8 @@ async function syncData(force = false) {
     const oldVersion = state.version;
     await loadVersion(latest);
     state.version = latest;
+    render();
+    hydrateBackgroundData(latest).then(() => render()).catch(console.warn);
     state.lastSync = new Date().toISOString();
     await persistMeta();
     if (oldVersion && oldVersion !== latest) await idbDeletePrefix("data", `${oldVersion}::`);
@@ -517,6 +542,8 @@ async function syncData(force = false) {
     if (state.version) {
       try {
         await loadVersion(state.version);
+        render();
+        hydrateBackgroundData(state.version).then(() => render()).catch(console.warn);
         showToast(`Using cached 5etools ${state.version}. ${state.online ? "Update check failed." : "Offline mode."}`);
       } catch (cacheError) {
         showToast(`5etools data could not be loaded: ${cacheError.message}`);
@@ -547,6 +574,33 @@ async function getItemsData() {
   if (state.data.items) return state.data.items;
   state.data.items = await fetch5eData(state.version, PATHS.items);
   return state.data.items;
+}
+
+function getLoadedSpells() {
+  if (!state.data.spells) mergeOfficialSpells();
+  return state.data.spells?.spell || [];
+}
+
+async function getSpellById(id) {
+  const [nameRaw, sourceRaw] = String(id || "").split("|");
+  const name = String(nameRaw || "").trim();
+  const source = String(sourceRaw || DATA_SOURCE).trim();
+  if (!name) return null;
+  let found = getLoadedSpells().find(s => s.name?.toLowerCase() === name.toLowerCase() && (!sourceRaw || s.source?.toLowerCase() === source.toLowerCase()));
+  if (found) return found;
+  await loadSpellSource(state.version, source);
+  mergeOfficialSpells();
+  found = getLoadedSpells().find(s => s.name?.toLowerCase() === name.toLowerCase() && (!sourceRaw || s.source?.toLowerCase() === source.toLowerCase()));
+  if (found) { cacheReferenceEntity("spell", found); return found; }
+  // A source-less reference may belong to another official 2024 source. Search loaded files first.
+  if (!sourceRaw) {
+    for (const src of Object.keys(state.data.spellIndex || {})) {
+      if (!state.data.spellFiles.has(src.toLowerCase())) await loadSpellSource(state.version, src);
+      found = getLoadedSpells().find(s => s.name?.toLowerCase() === name.toLowerCase());
+      if (found) { cacheReferenceEntity("spell", found); return found; }
+    }
+  }
+  return null;
 }
 
 function findOfficial(json, prop, name, source = null) {
@@ -998,7 +1052,8 @@ function canonicalLabel(value, kind = "") {
     if (found) return found.name;
   }
   if (kind === "spell") {
-    const found = spellById(raw);
+    const [refName, refSource] = raw.split("|");
+    const found = getLoadedSpells().find(x => x.name?.toLowerCase() === String(refName || "").trim().toLowerCase() && (!refSource || x.source?.toLowerCase() === refSource.toLowerCase()));
     if (found) return found.name;
   }
   if (kind === "item") {
@@ -1058,7 +1113,10 @@ function parseInlineTag(tag, body) {
   }
   // Variant-rule tags commonly have prose in their third field. That field is metadata,
   // not the visible name, so always keep the canonical rule name when a source is present.
-  if (kind === "variantrule" && parts[1] && isLikelySourceToken(parts[1])) label = name;
+  if (kind === "variantrule") {
+    if (source && looksLikeSentenceLabel(label)) label = name;
+    else if (!source && parts.length > 2 && isLikelySourceToken(parts[2])) { source = parts[2]; label = name; }
+  }
   return { tag: kind, name, source, label };
 }
 
@@ -1107,11 +1165,26 @@ function findClassFeatureByName(name, source = null, subclass = false) {
   return findByNameAndSource(list, name, source);
 }
 
+function referenceCacheKey(tag, name, source = null) {
+  return `${String(tag || "").toLowerCase()}|${String(name || "").trim().toLowerCase()}|${String(source || "").trim().toLowerCase()}`;
+}
+function cacheReferenceEntity(tag, entity) {
+  if (!entity?.name) return entity;
+  if (!state.data.referenceCache) state.data.referenceCache = new Map();
+  state.data.referenceCache.set(referenceCacheKey(tag, entity.name, entity.source), entity);
+  return entity;
+}
+
 function findReferenceEntitySync(tag, name, source = null) {
   const kind = String(tag || "").toLowerCase();
   const needle = String(name || "").trim().toLowerCase();
   if (!needle) return null;
-  if (kind === "spell") return spellById(`${name}|${source || DATA_SOURCE}`) || spellById(name);
+  const cached = state.data.referenceCache?.get(referenceCacheKey(kind, name, source));
+  if (cached) return cached;
+  if (kind === "spell") {
+    const found = getLoadedSpells().find(x => x.name?.toLowerCase() === needle && (!source || x.source?.toLowerCase() === String(source).toLowerCase()));
+    return found ? cacheReferenceEntity(kind, found) : null;
+  }
   if (kind === "item") {
     const entries = state.data.items ? officialEntries(state.data.items, "item") : [];
     return findByNameAndSource(entries, name, source) || findByNameAndSource(entries, canonicalLabel(name, "item"), source);
@@ -1167,6 +1240,10 @@ async function findReferenceEntity(tag, name, source = null) {
   }
   let found = findReferenceEntitySync(kind, name, source);
   if (found) return found;
+  if (kind === "spell") {
+    found = await getSpellById(`${name}${source ? `|${source}` : ""}`);
+    if (found) return found;
+  }
   if (kind === "class" && name) {
     try {
       const file = await getClassDetails(name);
@@ -1980,6 +2057,44 @@ function buildDerivedEffects(c, d, featObjs) {
   return effects;
 }
 
+function resourceRechargeLabel(value) {
+  const raw = String(value || "").toLowerCase();
+  if (raw.includes("short")) return "short";
+  if (raw.includes("long")) return "long";
+  return "";
+}
+function resourceMaxValue(number, d) {
+  if (typeof number === "number" && Number.isFinite(number)) return Math.max(0, Math.floor(number));
+  const raw = String(number ?? "").trim().toLowerCase();
+  if (raw === "pb" || raw === "proficiency bonus") return Number(d.pb || 0);
+  if (/^\d+$/.test(raw)) return Number(raw);
+  return 0;
+}
+function featureResourceSpecs(features, d, prefix) {
+  const out = [];
+  for (const f of features || []) {
+    const uses = f?.uses;
+    if (!uses || typeof uses !== "object") continue;
+    const max = resourceMaxValue(uses.number ?? uses.max ?? uses.amount, d);
+    if (!max) continue;
+    const recharge = resourceRechargeLabel(uses.recharge || uses.recovery || uses.rest);
+    if (!recharge) continue;
+    const id = `${prefix}:${f.source || DATA_SOURCE}:${f.name}`.toLowerCase();
+    out.push({ id, name: f.name, max, recharge, origin: { type: prefix, name: f.name, source: f.source || DATA_SOURCE } });
+  }
+  return out;
+}
+function reconcileResources(c, specs) {
+  const existing = Array.isArray(c.resources) ? c.resources : [];
+  const byId = new Map(existing.filter(r => r?.mode === "auto" && r.id).map(r => [r.id, r]));
+  const manual = existing.filter(r => r?.mode !== "auto");
+  const auto = specs.map(spec => {
+    const prior = byId.get(spec.id);
+    return { ...spec, mode: "auto", current: prior ? clamp(Number(prior.current ?? spec.max), 0, spec.max) : spec.max };
+  });
+  c.resources = [...manual, ...auto];
+}
+
 async function deriveCharacter() {
   const c = state.character;
   const backgroundObj = findBackground(c.background?.name, c.background?.source || null);
@@ -2015,6 +2130,13 @@ async function deriveCharacter() {
     d.optionalFeatureSpecs = optionalFeatureProgression(d.classObj, c.level);
     d.progressionFeatSlots = progressionFeatSlots(d.classObj, c.level);
     d.optionalFeatureObjects = selectedOptionalFeatureObjects(c, d.classObj, c.level);
+    d.autoResourceSpecs = [
+      ...featureResourceSpecs(d.classFeatures, d, "classfeature"),
+      ...featureResourceSpecs(d.subclassFeatures, d, "subclassfeature"),
+      ...featureResourceSpecs(d.featObjs, d, "feat"),
+      ...featureResourceSpecs(d.optionalFeatureObjects, d, "optionalfeature")
+    ];
+    reconcileResources(c, d.autoResourceSpecs);
     d.weaponMasteryCount = weaponMasteryCount(d.classObj, c.level);
     if (d.weaponMasteryCount <= 0) c.weaponMasteries = [];
     else {
@@ -2034,6 +2156,8 @@ async function deriveCharacter() {
     if (Number.isFinite(Number(d.maxPrepared)) && c.preparedSpells.length > d.maxPrepared) c.preparedSpells = c.preparedSpells.slice(0, d.maxPrepared);
     if (Number.isFinite(Number(d.knownSpells)) && c.knownSpells.length > d.knownSpells) c.knownSpells = c.knownSpells.slice(0, d.knownSpells);
     for (const save of d.classObj?.proficiency || []) { const key = normalizeAbilityKey(save); if (key) d.savingThrowProficiencies.add(key); }
+  } else {
+    reconcileResources(c, []);
   }
   // Build base proficiencies before feature effects so choice-based effects (e.g. 2024 Observant)
   // can distinguish a new proficiency from expertise on an already-proficient skill.
@@ -2051,6 +2175,7 @@ async function deriveCharacter() {
   for (const value of speciesResists) { const label = canonicalLabel(stripTags(String(value))); if (label && !d.resistances.includes(label)) d.resistances.push(label); }
   if (d.speciesObj?.darkvision) d.senses.push(`Darkvision ${d.speciesObj.darkvision} ft.`);
   for (const [sense, value] of Object.entries(d.speciesObj?.senses || {})) if (value) d.senses.push(`${canonicalLabel(sense)} ${value} ft.`);
+  for (const sense of c.senses || []) if (sense && !d.senses.includes(sense)) d.senses.push(sense);
   if (c.acOverride == null) {
     try { const acResult = calcAutoAc(c, mods, await getItemsData(), d.effects); d.ac = acResult.value; d.acReason = acResult.reason; d.acBreakdown = acResult.breakdown || []; d.unarmoredDefense = d.effects.acFormulas?.[0] || getUnarmoredDefenseFormula(d.classObj || c.class, c.level); }
     catch (error) { console.warn("Equipment AC calculation unavailable", error); }
@@ -2083,6 +2208,7 @@ async function deriveCharacter() {
   if (c.hpAuto || c.hpCurrent == null) { c.hpCurrent = d.maxHp; d.currentHp = d.maxHp; c.hpAuto = true; }
   else { d.currentHp = clamp(Number(c.hpCurrent || 0), 0, d.maxHp); }
   if (d.currentHp > d.maxHp && c.hpMaxOverride == null) { d.currentHp = d.maxHp; c.hpCurrent = d.maxHp; }
+  if (d.currentHp > 0 && (Number(c.deathSaves?.success || 0) || Number(c.deathSaves?.failure || 0))) c.deathSaves = { success: 0, failure: 0 };
   if (!c.baseStats) c.baseStats = { ...c.stats };
   if (c.backgroundAbility?.plus2 === c.backgroundAbility?.plus1) c.backgroundAbility.plus1 = null;
   state.lastDerived = d;
@@ -2227,6 +2353,8 @@ function effectiveD20Penalty(c) { return -2 * clamp(Number(c?.exhaustion || 0), 
 async function renderSheet(app) {
   const c = state.character;
   const d = await deriveCharacter();
+  const selectedSpellRefs = [...(c.cantrips || []), ...(c.preparedSpells || []), ...(c.spellbook || []), ...(c.knownSpells || [])];
+  if (selectedSpellRefs.length) await Promise.all(selectedSpellRefs.map(getSpellById));
   const attackRows = await getAttackRows(d);
   const page = state.sheetPage || 1;
   const classLine = [c.class?.name, c.subclass?.name].filter(Boolean).join(" · ");
@@ -2263,9 +2391,9 @@ async function renderSheet(app) {
       <div class="identity-fields"><div class="field-line"><span>Character Name</span><strong>${escapeHtml(c.name || "—")}</strong></div><div class="field-line"><span>Background</span><strong>${escapeHtml(c.background?.name || "—")}</strong></div><div class="field-line"><span>Species</span><strong>${escapeHtml(c.species?.name || "—")}</strong></div><div class="field-line"><span>Player</span><strong>${escapeHtml(c.player || "—")}</strong></div></div>
       <div class="identity-fields"><div class="field-line"><span>Class & Subclass</span><strong>${escapeHtml(classLine || "—")}</strong></div><div class="field-line"><span>Level</span><strong>${c.level}</strong></div><div class="field-line"><span>Experience</span><strong>${Number(c.xp || 0).toLocaleString()}</strong></div><div class="field-line"><span>Proficiency Bonus</span><strong>${formatMod(d.pb)}</strong></div></div>
       <div class="identity-stat-box"><span>Armor Class</span><strong>${d.ac}</strong><small>${escapeHtml(d.acReason || "Automatic")}</small>${!d.acAutomatic ? `<div class="stat-actions"><button class="sheet-mini-btn" data-action="clear-ac-override">Use automatic AC</button></div>` : ""}</div>
-      <div class="identity-stat-box hp"><span>Hit Points</span><strong>${d.currentHp} / ${d.maxHp}</strong><small>Current / Maximum</small><div class="hp-max-label">MAX HP: ${d.maxHp}${c.hpMaxOverride == null ? " · Automatic" : " · Manual"}</div><div class="hp-formula">${escapeHtml(d.hpFormula || "Automatic maximum")}</div>${c.hpMaxOverride != null ? `<div class="stat-actions"><button class="sheet-mini-btn" data-action="clear-hp-override">Use automatic Max HP</button></div>` : ""}<div class="hp-actions"><button data-action="hp" data-delta="-1">−</button><button data-action="hp" data-delta="1">+</button></div></div>
+      <div class="identity-stat-box hp"><span>Hit Points</span><strong>${d.currentHp} / ${d.maxHp}</strong><small>Current / Maximum</small><div class="hp-max-label">MAX HP: ${d.maxHp}${c.hpMaxOverride == null ? " · Automatic" : " · Manual"}</div><div class="hp-formula">${escapeHtml(d.hpFormula || "Automatic maximum")}</div>${c.hpMaxOverride != null ? `<div class="stat-actions"><button class="sheet-mini-btn" data-action="clear-hp-override">Use automatic Max HP</button></div>` : ""}<div class="hp-actions"><button data-action="damage">Damage</button><button data-action="heal">Heal</button><button data-action="hp">Set HP</button></div><div class="hp-temp-row"><span>Temporary HP</span><strong>${Number(c.tempHp || 0)}</strong><button data-action="temp-hp">Set</button></div></div>
       <div class="identity-stat-box"><span>Hit Dice</span><strong>d${hitDieFaces(d.classObj)}</strong><small>${c.hitDiceUsed} used</small></div>
-      <div class="identity-stat-box"><span>Death Saves</span><strong>${c.deathSaves.success} ✓ · ${c.deathSaves.failure} ✕</strong><small><button data-action="death" data-type="success">Success</button> <button data-action="death" data-type="failure">Failure</button></small></div>
+      <div class="identity-stat-box"><span>Death Saves</span><strong>${c.deathSaves.success} ✓ · ${c.deathSaves.failure} ✕</strong><small>${d.currentHp === 0 ? `<button data-action="death" data-type="success">Success</button> <button data-action="death" data-type="failure">Failure</button>` : `Only tracked at 0 HP.`}</small></div>
     </div>
     <div class="sheet-metrics"><div><span>Initiative</span><strong>${formatMod(d.mods.dex + Number(d.effects?.initiativeBonus || 0) + Number(d.d20Penalty || 0))}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong></div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—"}</strong></div></div>${d.activeEffects?.length || d.optionalFeatureObjects?.length || d.weaponMasteryCount ? `<section class="sheet-panel derived-effects-panel"><div class="sheet-panel-title">Active Rules Effects</div><div class="active-effect-list">${d.activeEffects.map(x=>`<span class="active-effect-chip">${escapeHtml(x)}</span>`).join("")}${d.optionalFeatureObjects.map(x=>`<button class="active-effect-chip effect-link" data-action="optional-feature-detail" data-name="${encodeURIComponent(`${x.name}|${x.source}`)}">${escapeHtml(x.name)}</button>`).join("")}${d.weaponMasteryCount ? `<span class="active-effect-chip">Weapon Mastery ${Math.min(selectedWeaponMasteryRefs(c).length,d.weaponMasteryCount)}/${d.weaponMasteryCount}</span>` : ""}</div></section>` : ""}
     <div class="sheet-grid-main"><div class="ability-column">${abilityBoxes}</div><div class="sheet-right-column">
@@ -2284,7 +2412,7 @@ async function renderSheet(app) {
     <div class="spellcasting-head"><div><span>Spellcasting Ability</span><strong>${d.spellcastingAbility ? ABILITY_LABELS[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8+d.pb+d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack Bonus</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—"}</strong></div><div><span>Prepared</span><strong>${d.maxPrepared ?? "—"}</strong></div><div><span>Concentration</span><strong>${c.concentration ? escapeHtml(c.concentration) : "—"}</strong></div></div>
     <section class="sheet-panel spell-slots-panel"><div class="sheet-panel-title">Spell Slots</div><div class="spell-slot-grid">${slots || `<div class="sheet-empty">No spell slots.</div>`}</div></section>
     <div class="sheet-grid-two"><section class="sheet-panel"><div class="sheet-panel-title">Cantrips</div>${cantrips.length ? cantrips.map(s => `<button class="sheet-list-item" data-action="spell" data-spell="${encodeURIComponent(`${s.name}|${s.source}`)}"><span>${escapeHtml(s.name)}</span><small>${escapeHtml(spellSchoolName(s.school))}</small></button>`).join("") : `<div class="sheet-empty">No cantrips selected.</div>`}</section><section class="sheet-panel"><div class="sheet-panel-title">Prepared Spells</div>${prepared.length ? prepared.map(s => `<button class="sheet-list-item" data-action="spell" data-spell="${encodeURIComponent(`${s.name}|${s.source}`)}"><span>${escapeHtml(s.name)}</span><small>Level ${s.level}</small></button>`).join("") : `<div class="sheet-empty">No prepared spells selected.</div>`}</section></div>
-    <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Proficiencies & Languages</div><div class="proficiency-groups"><div><b>Armor</b><p>${renderProficiencyGroup(d.proficiencies.armor, "armor") || "None"}</p></div><div><b>Weapons</b><p>${renderProficiencyGroup(d.proficiencies.weapons, "weapon") || "None"}</p></div><div><b>Tools</b><p>${renderProficiencyGroup(d.proficiencies.tools, "tool") || "None"}</p></div><div><b>Languages</b><p>${renderProficiencyGroup(languages, "language") || "None"}</p></div></div>${d.resistances.length ? `<div class="derived-subgroup"><b>Damage Resistances</b><p>${escapeHtml(d.resistances.join(", "))}</p></div>` : ""}${d.senses.length ? `<div class="derived-subgroup"><b>Senses</b><p>${escapeHtml(d.senses.join(", "))}</p></div>` : ""}<button class="sheet-mini-btn" data-action="builder">Edit proficiencies</button></section><section class="sheet-panel"><div class="sheet-panel-title">Personality & Backstory</div><textarea class="sheet-notes" data-field="notes" rows="12" placeholder="Character notes, personality, ideals, bonds, flaws, backstory…">${escapeHtml(c.notes)}</textarea></section></div>
+    <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Proficiencies & Languages</div><div class="proficiency-groups"><div><b>Armor</b><p>${renderProficiencyGroup(d.proficiencies.armor, "armor") || "None"}</p></div><div><b>Weapons</b><p>${renderProficiencyGroup(d.proficiencies.weapons, "weapon") || "None"}</p></div><div><b>Tools</b><p>${renderProficiencyGroup(d.proficiencies.tools, "tool") || "None"}</p></div><div><b>Languages</b><p>${renderProficiencyGroup(languages, "language") || "None"}</p></div></div>${d.resistances.length ? `<div class="derived-subgroup"><b>Damage Resistances</b><p>${escapeHtml(d.resistances.join(", "))}</p></div>` : ""}<div class="derived-subgroup"><b>Senses</b><p>${escapeHtml(d.senses.length ? d.senses.join(", ") : "No special senses")}</p></div><button class="sheet-mini-btn" data-action="builder">Edit proficiencies</button></section><section class="sheet-panel"><div class="sheet-panel-title">Personality & Backstory</div><textarea class="sheet-notes" data-field="notes" rows="12" placeholder="Character notes, personality, ideals, bonds, flaws, backstory…">${escapeHtml(c.notes)}</textarea></section></div>
     <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Equipment</div>${(c.inventory || []).length ? c.inventory.slice(0,12).map((it,i) => `<div class="sheet-list-item static"><span>${renderInventoryItemLink(it)}${it.quantity>1?` ×${it.quantity}`:""}</span><small>${it.equipped ? "Equipped" : ""}</small></div>`).join("") : `<div class="sheet-empty">No equipment.</div>`}<button class="sheet-mini-btn" data-action="equipment">Open equipment</button></section><section class="sheet-panel"><div class="sheet-panel-title">Coins & Attunement</div><div class="coin-grid">${["cp","sp","ep","gp","pp"].map(k => `<label><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" value="${Number(c.currency?.[k] || 0)}" min="0"></label>`).join("")}</div><div class="attunement"><b>Magic Item Attunement</b><p>Track attuned items in Equipment.</p></div></section></div>
     <section class="sheet-panel compact-sheet-gap"><div class="sheet-panel-title">Rest & Resources</div><div class="resource-actions"><button class="sheet-nav" data-action="rest-short">Short Rest</button><button class="sheet-nav" data-action="rest-long">Long Rest</button><button class="sheet-nav" data-action="manage-resources">Manage Resources</button><button class="sheet-nav" data-action="temp-hp">Temporary HP</button><span>Exhaustion ${c.exhaustion}/6</span></div></section>
   </div>`;
@@ -2384,7 +2512,7 @@ ${startingEquipmentMarkup}
 
     <div class="grid two compact-gap"><section class="card"><div class="section-title">Add manual proficiencies</div><div class="manual-add-grid"><div><div class="chips">${manualList("manualArmorProficiencies")}</div><div class="manual-add"><input data-manual-input="manualArmorProficiencies" placeholder="Armor proficiency"><button class="button button-small" data-action="add-manual" data-list="manualArmorProficiencies">Add</button></div></div><div><div class="chips">${manualList("manualWeaponProficiencies")}</div><div class="manual-add"><input data-manual-input="manualWeaponProficiencies" placeholder="Weapon proficiency"><button class="button button-small" data-action="add-manual" data-list="manualWeaponProficiencies">Add</button></div></div><div><div class="chips">${manualList("manualToolProficiencies")}</div><div class="manual-add"><input data-manual-input="manualToolProficiencies" placeholder="Tool proficiency"><button class="button button-small" data-action="add-manual" data-list="manualToolProficiencies">Add</button></div></div><div><div class="chips">${manualList("manualLanguages")}</div><div class="manual-add"><select id="languagePicker"><option value="">Choose a language</option>${officialEntries(state.data.languages, "language").sort((a,b)=>a.name.localeCompare(b.name)).map(x=>`<option value="${escapeHtml(refValue(x))}">${escapeHtml(x.name)}${x.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(x.source))}`:""}</option>`).join("")}</select><button class="button button-small" data-action="add-language-choice">Add</button></div><div class="manual-add"><input data-manual-input="manualLanguages" placeholder="Other language"><button class="button button-small" data-action="add-manual" data-list="manualLanguages">Add</button></div></div></div></section></div>
 
-    <div class="grid two compact-gap"><section class="card"><div class="section-head"><div><div class="section-title">Combat overrides</div><div class="mini">Leave these blank to use automatic 2024 calculations.</div></div><button class="button button-small" data-action="clear-combat-overrides">Clear overrides</button></div><div class="form-grid two"><label class="field">AC override<input type="number" min="0" max="60" data-builder="acOverride" value="${c.acOverride ?? ""}" placeholder="Automatic: ${d.ac}"></label><label class="field">Speed override<input type="number" min="0" max="200" data-builder="speedOverride" value="${c.speedOverride ?? ""}" placeholder="Automatic"></label><label class="field">Max HP override<input type="number" min="1" max="1000" data-builder="hpMaxOverride" value="${c.hpMaxOverride ?? ""}" placeholder="Automatic: ${d.maxHp}"><small class="field-help">Automatic maximum: ${d.maxHp}</small></label><label class="field">Current HP<input type="number" min="0" max="1000" data-builder="hpCurrent" value="${c.hpAuto ? "" : (c.hpCurrent ?? "")}" placeholder="${c.hpAuto ? `Automatic (${c.hpCurrent ?? 0})` : "Manual"}"></label><label class="field">Temporary HP<input type="number" min="0" max="1000" data-builder="tempHp" value="${c.tempHp}"></label></div></section><section class="card"><div class="section-title">Notes</div><p class="mini">The full character sheet follows the official 2024 two-page organization; this builder is for setup and corrections.</p><textarea data-builder="notes" rows="7">${escapeHtml(c.notes)}</textarea></section></div>
+    <div class="grid two compact-gap"><section class="card"><div class="section-head"><div><div class="section-title">Combat overrides</div><div class="mini">Leave these blank to use automatic 2024 calculations.</div></div><button class="button button-small" data-action="clear-combat-overrides">Clear overrides</button></div><div class="form-grid two"><label class="field">AC override<input type="number" min="0" max="60" data-builder="acOverride" value="${c.acOverride ?? ""}" placeholder="Automatic: ${d.ac}"></label><label class="field">Speed override<input type="number" min="0" max="200" data-builder="speedOverride" value="${c.speedOverride ?? ""}" placeholder="Automatic"></label><label class="field">Max HP override<input type="number" min="1" max="1000" data-builder="hpMaxOverride" value="${c.hpMaxOverride ?? ""}" placeholder="Automatic: ${d.maxHp}"><small class="field-help">Automatic maximum: ${d.maxHp}</small></label><label class="field">Current HP<input type="number" min="0" max="1000" data-builder="hpCurrent" value="${c.hpAuto ? "" : (c.hpCurrent ?? "")}" placeholder="${c.hpAuto ? `Automatic (${c.hpCurrent ?? 0})` : "Manual"}"></label><label class="field">Temporary HP<input type="number" min="0" max="1000" data-builder="tempHp" value="${c.tempHp}"></label><label class="field full">Additional senses<input type="text" data-builder="senses" value="${escapeHtml((c.senses || []).join(", "))}" placeholder="e.g. Tremorsense 10 ft."></label></div></section><section class="card"><div class="section-title">Notes</div><p class="mini">The full character sheet follows the official 2024 two-page organization; this builder is for setup and corrections.</p><textarea data-builder="notes" rows="7">${escapeHtml(c.notes)}</textarea></section></div>
   `;
   bindEvents();
   populateSubclasses(c.class?.name, c.subclass?.name);
@@ -2440,6 +2568,7 @@ function spellAvailableToCharacter(spell, d = state.lastDerived) {
 }
 
 async function renderSpellbook(app) {
+  if (!state.data.spells || !state.data.spells.spell?.length) await hydrateSpellData(state.version, true);
   const c = state.character;
   await deriveCharacter();
   const spells = Array.isArray(state.data.spells?.spell) ? officialEntries(state.data.spells, "spell").sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name)) : [];
@@ -2479,7 +2608,7 @@ function renderSpellResults(allSpells) {
 
 function spellById(id) {
   const [name, source] = String(id || "").split("|");
-  return state.data.spells?.spell?.find(s => s.name.toLowerCase() === String(name || "").toLowerCase() && (!source || s.source.toLowerCase() === source.toLowerCase())) || null;
+  return getLoadedSpells().find(s => s.name?.toLowerCase() === String(name || "").toLowerCase() && (!source || s.source?.toLowerCase() === source.toLowerCase())) || null;
 }
 
 function renderEquipment(app) {
@@ -2601,21 +2730,43 @@ function bindEvents() {
         if (action === "import") return openImport();
         if (action === "clear-ac-override") { state.character.acOverride = null; await saveCharacter(); return render(); }
         if (action === "clear-hp-override") { state.character.hpMaxOverride = null; state.character.hpAuto = true; state.character.hpCurrent = null; await saveCharacter(); return render(); }
-        if (action === "hp") { const delta = Number(el.dataset.delta || 0); const d = await deriveCharacter(); const before = Number(state.character.hpCurrent || 0); const next = Math.max(0, Math.min(d.maxHp, before + delta)); state.character.hpCurrent = next; state.character.hpAuto = false; if (next > 0 && before === 0) state.character.deathSaves = { success: 0, failure: 0 }; await saveCharacter(); return render(); }
+        if (action === "hp") {
+          const d = await deriveCharacter();
+          const mode = el.dataset.mode || "set";
+          const before = Number(state.character.hpCurrent || 0);
+          if (mode === "damage") {
+            applyDamage(Number(el.dataset.amount || 0), d.maxHp);
+          } else if (mode === "heal") {
+            applyHealing(Number(el.dataset.amount || 0), d.maxHp);
+          } else {
+            const raw = prompt("Current hit points", String(before));
+            if (raw === null) return;
+            const next = clamp(Number(raw || 0), 0, d.maxHp);
+            state.character.hpCurrent = next;
+            state.character.hpAuto = false;
+            if (next > 0) resetDeathSaves();
+          }
+          await saveCharacter(); return render();
+        }
+        if (action === "damage") { const d = await deriveCharacter(); const amount = Number(prompt("Damage taken", "1") || 0); if (amount > 0) { applyDamage(amount, d.maxHp); await saveCharacter(); return render(); } return; }
+        if (action === "heal") { const d = await deriveCharacter(); const amount = Number(prompt("Hit Points regained", "1") || 0); if (amount > 0) { applyHealing(amount, d.maxHp); await saveCharacter(); return render(); } return; }
         if (action === "temp-hp") { const value = prompt("Temporary hit points", String(state.character.tempHp || 0)); if (value !== null) { state.character.tempHp = Math.max(0, Number(value || 0)); await saveCharacter(); return render(); } return; }
         if (action === "heroic") { state.character.heroicInspiration = !state.character.heroicInspiration; await saveCharacter(); return render(); }
         if (action === "concentration") { const value = prompt("Concentration spell (leave blank to clear)", state.character.concentration || ""); if (value !== null) { state.character.concentration = value.trim() || null; await saveCharacter(); return render(); } return; }
         if (action === "exhaustion") { state.character.exhaustion = clamp(Number(state.character.exhaustion || 0) + Number(el.dataset.delta || 0), 0, 6); await saveCharacter(); return render(); }
         if (action === "hitdie") { const idx = Number(el.dataset.index); state.character.hitDiceUsed = idx < state.character.hitDiceUsed ? idx : Math.min(state.character.level, idx + 1); await saveCharacter(); return render(); }
         if (action === "slot") { const level = Number(el.dataset.level); const cap = Number(state.lastDerived?.spellSlots?.[level - 1] || 0); const current = countSlotUsed(state.character, level); const idx = Number(el.dataset.index); setSlotUsed(state.character, level, idx < current ? idx : Math.min(cap, idx + 1)); await saveCharacter(); return render(); }
-        if (action === "death") { const type = el.dataset.type; state.character.deathSaves[type] = Math.min(3, Number(state.character.deathSaves[type] || 0) + 1); await saveCharacter(); return render(); }
+        if (action === "death") {
+          if (Number(state.lastDerived?.currentHp ?? state.character.hpCurrent ?? 0) > 0) { showToast("Death saves can only be tracked at 0 HP."); return; }
+          const type = el.dataset.type; state.character.deathSaves[type] = Math.min(3, Number(state.character.deathSaves[type] || 0) + 1); await saveCharacter(); return render();
+        }
         if (action === "death-reset") { state.character.deathSaves = { success: 0, failure: 0 }; await saveCharacter(); return render(); }
         if (action === "condition") { const condition = el.dataset.condition; if (condition === "Exhaustion") { if (Number(state.character.exhaustion || 0) > 0) state.character.exhaustion = 0; else state.character.exhaustion = 1; } else toggleArray(state.character.conditions, condition); await saveCharacter(); return render(); }
         if (action === "clear-conditions") { state.character.conditions = []; state.character.exhaustion = 0; await saveCharacter(); return render(); }
         if (action === "feature") { const f = findFeatureByButton(el); if (f) return openFeatureModal(f); }
         if (action === "feat-detail") { const ref = splitRefId(decodeURIComponent(el.dataset.name || "")); const feat = findFeat(ref.name, ref.source || null); if (feat) return openFeatModal(feat); }
         if (action === "species-detail") { if (state.lastDerived?.speciesObj) return openModal(state.lastDerived.speciesObj.name, `<div class="modal-kicker">${escapeHtml(sourceLabel(state.lastDerived.speciesObj.source))}</div><div class="rules-text formatted-rules">${renderRichEntries(state.lastDerived.speciesObj.entries)}</div>`); }
-        if (action === "spell" || action === "spell-info") { const ref = splitRefId(decodeURIComponent(el.dataset.spell || "")); const s = spellById(normalizeRefId(ref.name, ref.source || DATA_SOURCE)); if (s) return openSpellModal(s); }
+        if (action === "spell" || action === "spell-info") { const ref = splitRefId(decodeURIComponent(el.dataset.spell || "")); const s = await getSpellById(normalizeRefId(ref.name, ref.source || DATA_SOURCE)); if (s) return openSpellModal(s); showToast("Spell data is not available yet."); }
         if (action === "item-picker") return openItemPicker();
         if (action === "item-info") return openInventoryItemInfo(Number(el.dataset.index));
         if (action === "toggle-equipped") { const i = Number(el.dataset.index); const item = state.character.inventory[i]; if (!item) return; item.equipped = !item.equipped; if (!item.equipped) item.wielding = false; else if (findOfficialItemByName(item.name, item.source)?.weaponCategory && item.wielding == null) item.wielding = true; await saveCharacter(); return render(); }
@@ -2623,7 +2774,7 @@ function bindEvents() {
         if (action === "remove-item") { state.character.inventory.splice(Number(el.dataset.index),1); await saveCharacter(); return render(); }
         if (action === "qty-minus") { adjustItemQty(Number(el.dataset.index), -1); return; }
         if (action === "qty-plus") { adjustItemQty(Number(el.dataset.index), 1); return; }
-        if (action === "add-resource") { state.character.resources.push({ name: "Resource", current: 0, max: 1, recharge: "long" }); await saveCharacter(); return render(); }
+        if (action === "add-resource") { state.character.resources.push({ name: "Resource", current: 0, max: 1, recharge: "", mode: "manual" }); await saveCharacter(); return render(); }
         if (action === "remove-resource") { state.character.resources.splice(Number(el.dataset.index),1); await saveCharacter(); return render(); }
         if (action === "manage-resources") return openResourceManager();
         if (action === "manage-attacks") return openAttackManager();
@@ -2811,6 +2962,7 @@ async function readBuilder() {
   if (get("hpMaxOverride")) c.hpMaxOverride = get("hpMaxOverride").value === "" ? null : Number(get("hpMaxOverride").value);
   if (get("hpCurrent")) { c.hpCurrent = get("hpCurrent").value === "" ? null : Number(get("hpCurrent").value); c.hpAuto = get("hpCurrent").value === ""; }
   if (get("tempHp")) c.tempHp = Math.max(0, Number(get("tempHp").value || 0));
+  if (get("senses")) c.senses = get("senses").value.split(",").map(x=>x.trim()).filter(Boolean);
   if (get("notes")) c.notes = get("notes").value;
   await saveCharacter();
 }
@@ -2838,13 +2990,13 @@ function formatDuration(d){const x=d?.[0]; if(!x)return ""; if(x.type==="instant
 function openResourceManager() {
   const resources = state.character.resources;
   const renderRows = () => resources.map((r,i) => `<div class="editor-row resource-editor-row">
-    <input class="editor-name" data-resource-name="${i}" value="${escapeHtml(r.name || "Resource")}" aria-label="Resource name">
-    <input type="number" min="0" max="99" data-resource-max="${i}" value="${Number(r.max || 0)}" aria-label="Resource maximum">
+    <input class="editor-name" data-resource-name="${i}" value="${escapeHtml(r.name || "Resource")}" aria-label="Resource name" ${r.mode==="auto"?"readonly":""}>
+    <input type="number" min="0" max="99" data-resource-max="${i}" value="${Number(r.max || 0)}" aria-label="Resource maximum" ${r.mode==="auto"?"readonly":""}>
     <input type="number" min="0" max="99" data-resource-current="${i}" value="${Number(r.current || 0)}" aria-label="Current resource">
-    <select data-resource-recharge="${i}" aria-label="Recharge"><option value="" ${!r.recharge?"selected":""}>Manual</option><option value="short" ${r.recharge==="short"?"selected":""}>Short rest</option><option value="long" ${r.recharge==="long"?"selected":""}>Long rest</option></select>
-    <button class="icon-button" data-resource-delete="${i}" title="Remove">×</button>
+    <select data-resource-recharge="${i}" aria-label="Recharge" ${r.mode==="auto"?"disabled":""}><option value="" ${!r.recharge?"selected":""}>Manual</option><option value="short" ${r.recharge==="short"?"selected":""}>Short rest</option><option value="long" ${r.recharge==="long"?"selected":""}>Long rest</option></select>
+    <span class="resource-mode">${r.mode==="auto" ? `Auto · ${escapeHtml(r.origin?.name || "Feature")}` : "Manual"}</span><button class="icon-button" data-resource-delete="${i}" title="Remove">×</button>
   </div>`).join("") || `<div class="empty">No resources. Add one below.</div>`;
-  openModal("Manage resources", `<div class="editor-head"><span>Name</span><span>Max</span><span>Current</span><span>Recharge</span><span></span></div><div id="resourceEditor" class="editor-list">${renderRows()}</div><button class="button button-primary" data-resource-add style="margin-top:12px">Add resource</button>`);
+  openModal("Manage resources", `<div class="editor-head"><span>Name</span><span>Max</span><span>Current</span><span>Recharge</span><span>Mode / Origin</span><span></span></div><div id="resourceEditor" class="editor-list">${renderRows()}</div><button class="button button-primary" data-resource-add style="margin-top:12px">Add manual resource</button>`);
   const wire = () => {
     const root = document.querySelector("#resourceEditor");
     if (!root) return;
@@ -2853,7 +3005,7 @@ function openResourceManager() {
     root.querySelectorAll("[data-resource-current]").forEach(el => el.onchange = () => { const r=resources[Number(el.dataset.resourceCurrent)]; r.current=Math.max(0,Math.min(r.max,Number(el.value||0))); saveCharacter(); renderResourceManager(); });
     root.querySelectorAll("[data-resource-recharge]").forEach(el => el.onchange = () => { resources[Number(el.dataset.resourceRecharge)].recharge = el.value || ""; saveCharacter(); });
     root.querySelectorAll("[data-resource-delete]").forEach(el => el.onclick = () => { resources.splice(Number(el.dataset.resourceDelete),1); saveCharacter(); renderResourceManager(); });
-    document.querySelector("[data-resource-add]")?.addEventListener("click", () => { resources.push({name:"Resource",max:1,current:0,recharge:"long"}); saveCharacter(); renderResourceManager(); });
+    document.querySelector("[data-resource-add]")?.addEventListener("click", () => { resources.push({name:"Resource",max:1,current:0,recharge:"",mode:"manual"}); saveCharacter(); renderResourceManager(); });
   };
   wire();
 }
@@ -2910,7 +3062,7 @@ function maxCastableSpellLevel(d = state.lastDerived) {
   return d?.classObj?.spellcastingAbility ? Math.min(9, Math.max(1, Number(state.character?.level || 1))) : 0;
 }
 function updateSpellResultFilter(){
-  const spells = officialEntries(state.data.spells,"spell").sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
+  const spells = getLoadedSpells().filter(s => isOfficial2024Entity(s)).sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
   const maxSpellLevel = maxCastableSpellLevel();
   const available = spells.filter(s => (s.level === 0 || s.level <= maxSpellLevel) && spellAvailableToCharacter(s, state.lastDerived)).slice(0,1000);
   renderSpellResults(available);
@@ -2959,8 +3111,33 @@ function applyStandardArray(){
 function applyPointBuyDefault(){
   const values=[15,14,13,12,10,8];ABILITIES.forEach((a,i)=>state.character.baseStats[a]=values[i]);saveCharacter().then(render);showToast("Loaded the 27-point-buy baseline (15, 14, 13, 12, 10, 8). Adjust individual scores as needed.");
 }
+function resetDeathSaves(){ state.character.deathSaves = { success: 0, failure: 0 }; }
+function applyDamage(amount, maxHp){
+  const n = Math.max(0, Number(amount || 0));
+  if (!n) return;
+  const c = state.character;
+  let remaining = n;
+  const temp = Math.max(0, Number(c.tempHp || 0));
+  const absorbed = Math.min(temp, remaining);
+  c.tempHp = temp - absorbed;
+  remaining -= absorbed;
+  const hp = clamp(Number(c.hpCurrent ?? maxHp ?? 0), 0, maxHp);
+  c.hpCurrent = clamp(hp - remaining, 0, maxHp);
+  c.hpAuto = false;
+}
+function applyHealing(amount, maxHp){
+  const n = Math.max(0, Number(amount || 0));
+  if (!n) return;
+  const c = state.character;
+  const before = clamp(Number(c.hpCurrent ?? 0), 0, maxHp);
+  c.hpCurrent = clamp(before + n, 0, maxHp);
+  c.hpAuto = false;
+  if (c.hpCurrent > 0) resetDeathSaves();
+}
 function shortRest(){
-  const c=state.character;c.deathSaves={success:0,failure:0};for(const r of c.resources){if(r.recharge==="short")r.current=r.max;}saveCharacter().then(()=>{showToast("Short rest recorded.");render();});
+  const c=state.character;
+  for(const r of c.resources){ if(r.recharge==="short") r.current=r.max; }
+  saveCharacter().then(()=>{showToast("Short rest recorded.");render();});
 }
 function longRest(){
   const c=state.character;
@@ -2988,12 +3165,16 @@ document.addEventListener("visibilitychange",()=>{if(document.visibilityState===
 
 async function init(){
   await loadCharacter();
-  if(state.version){
-    try { await loadVersion(state.version); } catch(e){console.warn("Cached data load failed",e);}
-  }
   updateHeader();
   render();
-  if(state.online) await syncData(false);
+  if(state.version){
+    try {
+      await loadVersion(state.version);
+      render();
+      hydrateBackgroundData(state.version).then(() => render()).catch(console.warn);
+    } catch(e){console.warn("Cached data load failed",e);}
+  }
+  if(state.online) syncData(false).catch(console.warn);
   if("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").then(reg=>reg.update()).catch(console.warn);
   }

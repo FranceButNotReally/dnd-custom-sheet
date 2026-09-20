@@ -519,3 +519,9 @@ button, select, input[type="checkbox"] { cursor: pointer; }
 
 .equipment-total-value { margin-bottom:8px; padding:7px 9px; border:1px solid #c9bfad; border-radius:8px; background:#eee6d7; font-size:.72rem; color:#5d554b; }
 .equipment-total-value strong { font-family:Georgia,"Times New Roman",serif; color:#2d2923; }
+
+/* v0.21 combat/resource controls */
+.hp-temp-row{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--line,#ddd);font-size:.82rem}
+.hp-temp-row strong{font-size:1rem}
+.hp-temp-row button{padding:4px 8px}
+.resource-mode{font-size:.72rem;opacity:.75;min-width:90px}
