@@ -407,7 +407,7 @@ add('background parser recognizes three +1 choices', () => {
 });
 add('feat parser recognizes fixed ability bonuses', () => {
   const feat={name:'Fixed',source:'XPHB',ability:[{wisdom:1}]};
-  assert.deepEqual(JSON.parse(JSON.stringify(a.featAbilitySpecs(feat)[0])),{index:0,choiceIndex:0,from:['wis'],amount:1,fixed:true});
+  assert.deepEqual(JSON.parse(JSON.stringify(a.featAbilitySpecs(feat)[0])),{index:0,choiceIndex:0,from:['wis'],amount:1,max:20,fixed:true});
 });
 add('feat parser creates one choice spec per requested ability slot', () => {
   const feat={name:'Choose',source:'XPHB',ability:[{choose:{from:['str','dex'],count:2,amount:1}}]};
