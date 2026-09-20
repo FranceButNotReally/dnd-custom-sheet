@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.27.5";
+const APP_VERSION = "0.27.6";
 
 const PATHS = {
   books: "data/books.json",
@@ -62,7 +62,7 @@ const state = {
   version: null,
   lastSync: null,
   lastReleaseCheck: null,
-  data: { books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null, optionalfeatures: null, spells: null, spellIndex: null, items: null, itemIndex: new Map(), weaponIndex: new Map(), conditionsdiseases: null, variantrules: null, actions: null, classFiles: new Map(), spellFiles: new Map(), referenceCache: new Map(), officialSources: new Set(), sourceMeta: [] },
+  data: { books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null, optionalfeatures: null, spells: null, spellIndex: null, items: null, itemIndex: new Map(), legacyItemIndex: new Map(), weaponIndex: new Map(), conditionsdiseases: null, variantrules: null, actions: null, classFiles: new Map(), spellFiles: new Map(), referenceCache: new Map(), officialSources: new Set(), sourceMeta: [] },
   character: null,
   deferredInstallPrompt: null,
   spellPickerTab: "prepared",
@@ -458,11 +458,17 @@ async function loadCoreData(version) {
   const officialSources = new Set(sourceMeta.map(x => x.source));
   const referenceCache = new Map();
   for (const sense of SPECIAL_SENSES) referenceCache.set(referenceCacheKey("sense", sense, DATA_SOURCE), SPECIAL_SENSE_FALLBACKS[sense]);
+  const allItems = Array.isArray(items?.item) ? items.item : [];
   const itemIndex = new Map();
-  for (const item of Array.isArray(items?.item) ? items.item : []) if (isOfficial2024Entity(item, officialSources)) itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
+  const legacyItemIndex = new Map();
+  for (const item of allItems) {
+    const key = `${String(item.name||'').trim().toLowerCase()}|${String(item.source||'').trim().toLowerCase()}`;
+    if (isOfficial2024Entity(item, officialSources)) itemIndex.set(key, item);
+    else if (item?.source) legacyItemIndex.set(key, item);
+  }
   const weaponIndex = new Map();
   for (const item of itemIndex.values()) if (item?.weaponCategory) weaponIndex.set(`${String(item.name||"").toLowerCase()}|${String(item.source||"").toLowerCase()}`, item);
-  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, itemIndex, weaponIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
+  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, itemIndex, legacyItemIndex, weaponIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
 }
 
 async function loadSpellSource(version, source) {
@@ -606,7 +612,16 @@ function officialItemCatalog() {
   if (!state.data.itemIndex) state.data.itemIndex = new Map();
   if (state.data.itemIndex.size !== entries.length) {
     state.data.itemIndex.clear();
-    for (const item of entries) state.data.itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
+    for (const item of entries) state.data.itemIndex.set(`${String(item.name||'').trim().toLowerCase()}|${String(item.source||'').trim().toLowerCase()}`, item);
+  }
+  if (!state.data.legacyItemIndex) state.data.legacyItemIndex = new Map();
+  const allItems = Array.isArray(state.data.items?.item) ? state.data.items.item : [];
+  if (!state.data.legacyItemIndex.size) {
+    for (const item of allItems) {
+      if (isOfficial2024Entity(item)) continue;
+      if (!item?.source) continue;
+      state.data.legacyItemIndex.set(`${String(item.name||'').trim().toLowerCase()}|${String(item.source||'').trim().toLowerCase()}`, item);
+    }
   }
   return entries;
 }
@@ -660,6 +675,27 @@ function itemFromCatalog(name, source=null) {
     const baseRef = `${lookup}|${src || ""}`;
     const reprint = all.find(x => normalizeItemLookupName(x.baseItem) === baseRef);
     if (reprint) return reprint;
+  }
+
+  // 2024 class files intentionally use XPHB refs, but the shared 5etools item
+  // table can retain the mundane base weapon under PHB and point forward via
+  // reprintedAs. Resolve that relationship instead of treating the weapon as missing.
+  if (lookup && src) {
+    const legacy = state.data.legacyItemIndex || new Map();
+    for (const item of legacy.values()) {
+      const reprints = Array.isArray(item?.reprintedAs) ? item.reprintedAs : [];
+      if (reprints.some(ref => {
+        const [rn, rs] = String(ref).split("|");
+        return normalizeItemLookupName(rn) === lookup && String(rs||"").trim().toLowerCase() === src;
+      })) return item;
+    }
+    // Some ordinary reprints are represented only by the same name in PHB.
+    // For an XPHB request, use the PHB mundane base item as the compatibility
+    // source when it is explicitly a weapon.
+    if (src === String(DATA_SOURCE).toLowerCase()) {
+      const phb = legacy.get(`${lookup}|phb`);
+      if (phb?.weaponCategory) return phb;
+    }
   }
   return null;
 }
