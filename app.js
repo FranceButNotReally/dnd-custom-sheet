@@ -2711,13 +2711,30 @@ function getUnarmoredDefenseFormula(classObj, level) {
 }
 
 function applyTextualRulesEffects(text, effects, sourceName = "Feature") {
-  const raw = stripTags(String(text || ""));
+  const raw = stripTags(plainTextFromEntries(text));
   if (!raw) return;
   for (const match of raw.matchAll(/\bAdvantage\s+on\s+([^.!?;:]+?)\s+saving throws\b/gi)) {
     const phrase = String(match[1] || "");
     const abilities = ABILITIES.filter(key => new RegExp(`\\b${ABILITY_NAMES[key]}\\b`, "i").test(phrase));
     for (const ability of abilities) effects.savingThrowAdvantages.add(ability);
     if (abilities.length) effects.active.push(`${sourceName}: Advantage on ${abilities.map(a => ABILITY_NAMES[a]).join(", ")} saving throws`);
+  }
+
+  const damageTypes = ["Acid","Cold","Fire","Force","Lightning","Necrotic","Poison","Psychic","Radiant","Thunder","Bludgeoning","Piercing","Slashing"];
+  for (const sentence of raw.split(/(?<=[.!?])\s+/)) {
+    if (!/\bResistance\b/i.test(sentence)) continue;
+    for (const type of damageTypes) {
+      if (new RegExp(`\\b${type}\\s+damage\\b`, "i").test(sentence) && !effects.resistances.includes(type)) effects.resistances.push(type);
+    }
+  }
+
+  for (const match of raw.matchAll(/\b(?:your\s+)?Speed\s+increases\s+to\s+(\d+)\s+feet\b/gi)) {
+    effects.speedMinimum = Math.max(Number(effects.speedMinimum || 0), Number(match[1]));
+    effects.active.push(`${sourceName}: Speed ${match[1]} ft.`);
+  }
+  for (const match of raw.matchAll(/\bDarkvision\b[^.!?]{0,100}?\b(?:range\s+of|to)\s+(\d+)\s+feet\b/gi)) {
+    const label = `Darkvision ${match[1]} ft.`;
+    if (!effects.senses.includes(label)) effects.senses.push(label);
   }
 }
 function applySelectedSpeciesOptionEffects(c, speciesObj, effects) {
@@ -2726,13 +2743,21 @@ function applySelectedSpeciesOptionEffects(c, speciesObj, effects) {
     const option = spec.options.find(o => textNorm(o.name) === textNorm(selected.value || selected));
     if (!option) continue;
     effects.active.push(`${speciesObj.name}: ${option.name}`);
+    if (spec.kind === "skill") {
+      const skill = option.value || normalizeSkillKey(option.name);
+      if (skill && SKILLS[skill]) effects.skills.add(skill);
+    }
+    if (textNorm(speciesObj.name) === "dragonborn" && /draconic ancestry/i.test(spec.label || "")) {
+      const damageType = String(option.entries?.[0] || "").trim();
+      if (damageType && !effects.resistances.includes(damageType)) effects.resistances.push(damageType);
+    }
     applyTextualRulesEffects(option.entries, effects, `${speciesObj.name} · ${option.name}`);
   }
 }
 
 function buildDerivedEffects(c, d, featObjs) {
   const effects = {
-    acFormulas: [], acBonus: 0, acBonusWhileArmored: 0, acBonusWhileUnarmored: 0, hpPerLevel: 0, hpFlat: 0, speedBonus: 0, initiativeBonus: 0, d20Penalty: effectiveD20Penalty(c),
+    acFormulas: [], acBonus: 0, acBonusWhileArmored: 0, acBonusWhileUnarmored: 0, hpPerLevel: 0, hpFlat: 0, speedBonus: 0, speedMinimum: 0, initiativeBonus: 0, d20Penalty: effectiveD20Penalty(c),
     passivePerceptionBonus: 0, passiveInvestigationBonus: 0, resistances: [], senses: [], active: [], flags: new Set(),
     savingThrows: new Set(), savingThrowAdvantages: new Set(), skills: new Set(), expertise: new Set(), tools: [], languages: [], attackBonuses: {}, damageBonuses: {}
   };
@@ -3098,7 +3123,7 @@ async function deriveCharacter() {
   if (effectiveExpertise.has("investigation")) d.passiveInvestigation += d.pb;
   d.passiveInvestigation += Number(d.effects.passiveInvestigationBonus || 0);
   const fastMovementBonus = d.effects.flags.has("fastMovement") && !d.heavyArmorWorn ? 10 : 0;
-  d.speed = Number(c.speedOverride ?? Math.max(0, dfltSpeed(d.speciesObj) + Number(d.effects.speedBonus || 0) + fastMovementBonus - 5 * Number(c.exhaustion || 0) - Number(d.armorSpeedPenalty || 0)));
+  d.speed = Number(c.speedOverride ?? Math.max(0, Math.max(dfltSpeed(d.speciesObj) + Number(d.effects.speedBonus || 0), Number(d.effects.speedMinimum || 0)) + fastMovementBonus - 5 * Number(c.exhaustion || 0) - Number(d.armorSpeedPenalty || 0)));
   const baseMaxHp = defaultMaxHp(d.classObj, c.level, mods.con, c.hpMaxOverride);
   const hpPerLevelBonus = Number(d.effects.hpPerLevel || 0) * Number(c.level || 1) + Number(d.effects.hpFlat || 0);
   d.maxHp = c.hpMaxOverride == null ? baseMaxHp + hpPerLevelBonus : baseMaxHp;
