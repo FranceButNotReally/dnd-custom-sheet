@@ -176,6 +176,7 @@ function emptyCharacter() {
     attacks: [],
     notes: "",
     optionalFeatureChoices: {},
+    classFeatureChoices: {},
     weaponMasteries: [],
     startingEquipment: { class: null, background: null },
     progressionFeats: {},
@@ -245,6 +246,7 @@ function migrateCharacter(raw) {
   c.senses = Array.isArray(raw.senses) ? raw.senses : [];
   c.attacks = Array.isArray(raw.attacks) ? raw.attacks : [];
   c.optionalFeatureChoices = { ...(raw.optionalFeatureChoices || {}) };
+  c.classFeatureChoices = { ...(raw.classFeatureChoices || {}) };
   c.weaponMasteries = Array.isArray(raw.weaponMasteries) ? raw.weaponMasteries : [];
   c.startingEquipment = { ...base.startingEquipment, ...(raw.startingEquipment || {}) };
   if (Number(raw.schema || 0) < 11) {
@@ -1034,6 +1036,77 @@ function getSubclassFeatures(file, subclassObj, level) {
     (!f.subclassSource || f.subclassSource === subclassObj.source) &&
     Number(f.level) <= level
   );
+}
+
+function resolveClassFeatureRef(file, ref) {
+  const parsed = parseFeatureRef(ref);
+  if (!parsed) return null;
+  const all = file?.classFeature || [];
+  const matches = all.filter(f =>
+    f.name === parsed.name &&
+    f.className === parsed.className &&
+    Number(f.level) === Number(parsed.level) &&
+    isOfficial2024Entity(f)
+  );
+  return matches.find(f => String(f.source || "") === String(parsed.source || "")) ||
+    matches.find(f => f.source === DATA_SOURCE) ||
+    matches.find(f => f.edition === "one") ||
+    matches[0] || null;
+}
+
+function classFeatureChoiceSpecs(file, classObj, level) {
+  const specs = [];
+  const persistentNames = new Set(["divineorder","blessedstrikes","primalorder","elementalfury"]);
+  for (const feature of getClassFeatures(file, classObj, level)) {
+    if (!persistentNames.has(textNorm(feature?.name))) continue;
+    const refs = [];
+    const walk = value => {
+      if (Array.isArray(value)) { value.forEach(walk); return; }
+      if (!value || typeof value !== "object") return;
+      if (value.type === "refClassFeature" && value.classFeature) refs.push(value.classFeature);
+      for (const child of Object.values(value)) walk(child);
+    };
+    walk(feature.entries);
+    const options = refs.map(ref => {
+      const resolved = resolveClassFeatureRef(file, ref);
+      return resolved ? { name: resolved.name, source: resolved.source || DATA_SOURCE, level: resolved.level, feature: resolved } : null;
+    }).filter(Boolean);
+    const unique = [];
+    for (const option of options) if (!unique.some(x => textNorm(x.name) === textNorm(option.name))) unique.push(option);
+    if (unique.length < 2) continue;
+    specs.push({
+      key: `${classObj?.name || "Class"}|${classObj?.source || DATA_SOURCE}|feature|${feature.name}|${feature.level}`,
+      name: feature.name,
+      level: Number(feature.level || 0),
+      options: unique,
+      feature,
+    });
+  }
+  return specs;
+}
+
+function reconcileClassFeatureChoices(c, specs) {
+  c.classFeatureChoices = { ...(c.classFeatureChoices || {}) };
+  const valid = new Map((specs || []).map(spec => [spec.key, spec]));
+  for (const key of Object.keys(c.classFeatureChoices)) if (!valid.has(key)) delete c.classFeatureChoices[key];
+  for (const spec of specs || []) {
+    const selected = c.classFeatureChoices[spec.key];
+    if (!selected) continue;
+    const name = selected.name || selected;
+    if (!spec.options.some(option => textNorm(option.name) === textNorm(name))) delete c.classFeatureChoices[spec.key];
+  }
+}
+
+function selectedClassFeatureOptionObjects(c, specs) {
+  const out = [];
+  for (const spec of specs || []) {
+    const selected = c.classFeatureChoices?.[spec.key];
+    const name = selected?.name || selected;
+    if (!name) continue;
+    const option = spec.options.find(x => textNorm(x.name) === textNorm(name));
+    if (option?.feature) out.push({ ...option.feature, _choiceKey: spec.key, _choiceParent: spec.name });
+  }
+  return out;
 }
 
 
