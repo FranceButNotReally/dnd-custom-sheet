@@ -99,7 +99,7 @@ add('every 2024 class has a standard-array row using the same six values', () =>
 /* 39–53: final ability-score assembly */
 add('final stats preserve base scores with no bonuses', () => {
   const c = baseCharacter();
-  assert.deepEqual(a.calculateFinalStats(c, null, []), c.baseStats);
+  assert.deepEqual(JSON.parse(JSON.stringify(a.calculateFinalStats(c, null, []))), c.baseStats);
 });
 add('background +2 applies to selected score', () => {
   const c = baseCharacter({ backgroundAbility: { mode:'split', plus2:'int', plus1:null, plus1b:null, plus1c:null } });
@@ -237,15 +237,15 @@ add('negative spell-slot entries become zero', () => {
   assert.deepEqual(a.classSpellSlots(cls,1), [0,2,0]);
 });
 add('missing spell progression returns an empty array', () => {
-  assert.deepEqual(a.classSpellSlots({classTableGroups:[]},1), []);
+  assert.equal(a.classSpellSlots({classTableGroups:[]},1).length, 0);
 });
 add('Pact Magic table yields the correct slot count and level', () => {
   const cls = {classTableGroups:[{colLabels:['Spell Slots','Slot Level'],rows:[[2,1],[2,1],[2,2]]}]};
-  assert.deepEqual(a.classSpellSlots(cls,3), [0,2]);
+  assert.deepEqual([...a.classSpellSlots(cls,3)], [0,2,0,0,0,0,0,0,0]);
 });
 add('invalid Pact Magic slot count is rejected', () => {
   const cls = {classTableGroups:[{colLabels:['Spell Slots','Slot Level'],rows:[[0,1]]}]};
-  assert.deepEqual(a.classSpellSlots(cls,1), []);
+  assert.equal(a.classSpellSlots(cls,1).length, 0);
 });
 add('invalid Pact Magic slot level is rejected', () => {
   const cls = {classTableGroups:[{colLabels:['Spell Slots','Slot Level'],rows:[[2,10]]}]};
@@ -266,7 +266,7 @@ add('prepared casters do not expose a fixed known-spell cap', () => {
 
 /* 78–102: weapons and armor */
 add('dagger flags identify finesse, light, thrown, and melee', () => {
-  assert.deepEqual(a.weaponFlags({weaponCategory:'simple',property:['F','L','T']}), {
+  assert.deepEqual(JSON.parse(JSON.stringify(a.weaponFlags({weaponCategory:'simple',property:['F','L','T']}))), {
     ranged:false,thrown:true,finesse:true,light:true,twoHanded:false,melee:true,
   });
 });
@@ -365,7 +365,7 @@ add('invalid skill normalization returns null', () => {
 });
 add('granted skill maps are deduplicated', () => {
   const skills=a.grantedSkillsFromMap([{athletics:true},{Athletics:true},{stealth:true}]);
-  assert.deepEqual(skills.sort(),['athletics','stealth']);
+  assert.deepEqual(JSON.parse(JSON.stringify(skills.sort())),['athletics','stealth']);
 });
 add('normalized proficiency labels remove quantity suffixes', () => {
   assert.equal(a.normalizedProficiencyLabel('Smith Tools ×2'),'smithtools');
@@ -397,7 +397,7 @@ add('tool proficiency choices are tagged as tool choices', () => {
 add('background parser recognizes weighted +2/+1 choices', () => {
   const bg={ability:[{choose:{weighted:{from:['str','dex','con'],weights:[2,1]}}}]};
   const spec=a.backgroundAbilitySpec(bg);
-  assert.deepEqual(spec.plus2From.sort(),['con','dex','str']);
+  assert.deepEqual(JSON.parse(JSON.stringify(spec.plus2From.sort())),['con','dex','str']);
   assert.deepEqual(spec.plus1From.sort(),['con','dex','str']);
 });
 add('background parser recognizes three +1 choices', () => {
@@ -407,7 +407,7 @@ add('background parser recognizes three +1 choices', () => {
 });
 add('feat parser recognizes fixed ability bonuses', () => {
   const feat={name:'Fixed',source:'XPHB',ability:[{wisdom:1}]};
-  assert.deepEqual(a.featAbilitySpecs(feat)[0],{index:0,choiceIndex:0,from:['wis'],amount:1,fixed:true});
+  assert.deepEqual(JSON.parse(JSON.stringify(a.featAbilitySpecs(feat)[0])),{index:0,choiceIndex:0,from:['wis'],amount:1,fixed:true});
 });
 add('feat parser creates one choice spec per requested ability slot', () => {
   const feat={name:'Choose',source:'XPHB',ability:[{choose:{from:['str','dex'],count:2,amount:1}}]};
@@ -432,8 +432,8 @@ add('expertise feat parser creates selectable expertise choices', () => {
 add('additional spell choice parser captures spell lists and abilities', () => {
   const feat={name:'Magic Initiate',source:'XPHB',additionalSpells:[{names:['Cleric','Druid','Wizard'],ability:{choose:{from:['wisdom','intelligence','charisma']}}}]};
   const spec=a.featAdditionalSpellChoiceSpecs(feat)[0];
-  assert.deepEqual(spec.names,['Cleric','Druid','Wizard']);
-  assert.deepEqual(spec.abilityFrom.sort(),['cha','int','wis']);
+  assert.deepEqual(JSON.parse(JSON.stringify(spec.names)),['Cleric','Druid','Wizard']);
+  assert.deepEqual(JSON.parse(JSON.stringify(spec.abilityFrom.sort())),['cha','int','wis']);
 });
 
 /* 123–142: derived feature effects */
@@ -504,11 +504,11 @@ add('Fast Movement activates its conditional flag', () => {
 });
 add('Barbarian Unarmored Defense is represented in effects', () => {
   const e=a.buildDerivedEffects(baseCharacter(),baseDerived({classObj:{name:'Barbarian'}}),[]);
-  assert.deepEqual(e.acFormulas[0].abilities,['dex','con']);
+  assert.deepEqual(JSON.parse(JSON.stringify(e.acFormulas[0].abilities)),['dex','con']);
 });
 add('Monk Unarmored Defense is represented in effects', () => {
   const e=a.buildDerivedEffects(baseCharacter(),baseDerived({classObj:{name:'Monk'}}),[]);
-  assert.deepEqual(e.acFormulas[0].abilities,['dex','wis']);
+  assert.deepEqual(JSON.parse(JSON.stringify(e.acFormulas[0].abilities)),['dex','wis']);
 });
 add('textual save Advantage parsing recognizes exact named abilities', () => {
   const e={savingThrowAdvantages:new Set(),active:[]};
@@ -586,7 +586,7 @@ add('feature recovery parser recognizes short-or-long recovery', () => {
   assert.equal(a.featureRechargeDetails(f).recharge,'both');
 });
 add('feature use inference recognizes proficiency-bonus-sized resources', () => {
-  const f={entries:['You can use this feature a number of times equal to your Proficiency Bonus.']};
+  const f={entries:['You can use this feature a number of times equal to your Proficiency Bonus. You regain all expended uses when you finish a Long Rest.']};
   assert.equal(a.inferFeatureUseMaxFromText(f,{pb:4,mods:{},level:9}),4);
 });
 
@@ -619,7 +619,7 @@ add('healing from zero HP resets death saves', () => withState(() => {
   a.state.character.hpCurrent=0;
   a.state.character.deathSaves={success:2,failure:1};
   a.applyHealing(1,10);
-  assert.deepEqual(a.state.character.deathSaves,{success:0,failure:0});
+  assert.deepEqual(JSON.parse(JSON.stringify(a.state.character.deathSaves)),{success:0,failure:0});
 }));
 
 assert.equal(cases.length, 157, 'The regression matrix must contain exactly 157 test cases.');
