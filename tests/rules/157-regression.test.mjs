@@ -249,7 +249,7 @@ add('invalid Pact Magic slot count is rejected', () => {
 });
 add('invalid Pact Magic slot level is rejected', () => {
   const cls = {classTableGroups:[{colLabels:['Spell Slots','Slot Level'],rows:[[2,10]]}]};
-  assert.deepEqual(a.classSpellSlots(cls,1), []);
+  assert.equal(a.classSpellSlots(cls,1).length, 0);
 });
 add('cantrip progression returns the level-specific value', () => {
   assert.equal(a.classCantrips({cantripProgression:[3,3,3,4]},4),4);
@@ -398,7 +398,7 @@ add('background parser recognizes weighted +2/+1 choices', () => {
   const bg={ability:[{choose:{weighted:{from:['str','dex','con'],weights:[2,1]}}}]};
   const spec=a.backgroundAbilitySpec(bg);
   assert.deepEqual(JSON.parse(JSON.stringify(spec.plus2From.sort())),['con','dex','str']);
-  assert.deepEqual(spec.plus1From.sort(),['con','dex','str']);
+  assert.deepEqual(JSON.parse(JSON.stringify(spec.plus1From.sort())),['con','dex','str']);
 });
 add('background parser recognizes three +1 choices', () => {
   const bg={ability:[{choose:{weighted:{from:['str','dex','wis'],weights:[1,1,1]}}}]};
