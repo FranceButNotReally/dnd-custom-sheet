@@ -1468,6 +1468,17 @@ function featAdditionalSpellChoiceSpecs(feat) {
     add(group?.names); add(group?.name); if (!names.length && group?.choose?.from) add(group.choose.from);
     const abilityChoose = group?.ability?.choose;
     const abilityFrom = Array.isArray(abilityChoose?.from) ? abilityChoose.from.map(normalizeAbilityKey).filter(Boolean) : Array.isArray(abilityChoose) ? abilityChoose.map(normalizeAbilityKey).filter(Boolean) : [];
+    // 5etools also encodes class-list spell choices as known/innate spell entries.
+    const collectChooseClasses = value => {
+      if (value == null) return;
+      if (Array.isArray(value)) return value.forEach(collectChooseClasses);
+      if (typeof value === "object") return Object.values(value).forEach(collectChooseClasses);
+      const text = String(value);
+      const match = text.match(/(?:^|\\|)class=([^|]+)/i);
+      if (match) add(match[1]);
+    };
+    collectChooseClasses(group?.known);
+    collectChooseClasses(group?.innate);
     if (names.length || abilityFrom.length) specs.push({ index, names, abilityFrom, key: `${feat?.name || "Feat"}|${feat?.source || ""}|spells|${index}` });
   }
   return specs;
