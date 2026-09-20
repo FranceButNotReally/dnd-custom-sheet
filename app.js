@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.34.0";
+const APP_VERSION = "0.35.0";
 
 const PATHS = {
   books: "data/books.json",
@@ -15,6 +15,7 @@ const PATHS = {
   optionalfeatures: "data/optionalfeatures.json",
   spellIndex: "data/spells/index.json",
   items: "data/items.json",
+  itemsBase: "data/items-base.json",
   conditionsdiseases: "data/conditionsdiseases.json",
   variantrules: "data/variantrules.json",
   actions: "data/actions.json",
@@ -432,7 +433,8 @@ const dataFetchesInFlight = new Map();
 
 function isUsableCachedData(path, json) {
   if (json == null || typeof json !== "object") return false;
-  if (path === PATHS.items) return hasRequired2024Equipment(json);
+  if (path === PATHS.items) return Array.isArray(json?.item);
+  if (path === PATHS.itemsBase) return Array.isArray(json?.baseitem);
   if (path === PATHS.classIndex) return json && typeof json === "object" && Object.keys(json).length > 0;
   if (path === PATHS.spellIndex) return json && typeof json === "object" && Object.keys(json).length > 0;
   return true;
@@ -520,6 +522,7 @@ const CORE_CACHE_PATHS = [
   PATHS.variantrules,
   PATHS.actions,
   PATHS.items,
+  PATHS.itemsBase,
 ];
 
 function nextTick() { return new Promise(resolve => setTimeout(resolve, 0)); }
@@ -626,7 +629,7 @@ async function cacheAllLibraryData(version, core = null) {
 }
 
 async function loadCoreData(version) {
-  const [books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spellIndex, conditionsdiseases, variantrules, actions, items] = await loadPathsInBatches(
+  const [books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spellIndex, conditionsdiseases, variantrules, actions, items, itemsBase] = await loadPathsInBatches(
     version,
     CORE_CACHE_PATHS,
     {batchSize: 3, phase: "Core catalogs", total: CORE_CACHE_PATHS.length, label: "Loading core 2024 catalogs"}
@@ -635,8 +638,9 @@ async function loadCoreData(version) {
   const officialSources = new Set(sourceMeta.map(x => x.source));
   const referenceCache = new Map();
   for (const sense of SPECIAL_SENSES) referenceCache.set(referenceCacheKey("sense", sense, DATA_SOURCE), SPECIAL_SENSE_FALLBACKS[sense]);
-  const itemIndex = buildItemIndex(items, officialSources);
-  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, itemIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
+  const mergedItems = mergeItemCatalogs(items, itemsBase);
+  const itemIndex = buildItemIndex(mergedItems, officialSources);
+  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items: mergedItems, itemSourceData: items, itemsBase, itemIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
 }
 
 async function loadSpellSource(version, source) {
@@ -785,6 +789,22 @@ async function getClassDetails(className) {
   return data;
 }
 
+function mergeItemCatalogs(items, itemsBase) {
+  const merged = { ...(items && typeof items === "object" ? items : {}) };
+  const normalItems = Array.isArray(items?.item) ? items.item : [];
+  const baseItems = Array.isArray(itemsBase?.baseitem) ? itemsBase.baseitem : [];
+  const seen = new Set(normalItems.map(x => `${String(x?.name || "").toLowerCase()}|${String(x?.source || "").toLowerCase()}`));
+  merged.item = normalItems.slice();
+  for (const item of baseItems) {
+    const key = `${String(item?.name || "").toLowerCase()}|${String(item?.source || "").toLowerCase()}`;
+    if (item?.name && !seen.has(key)) {
+      merged.item.push(item);
+      seen.add(key);
+    }
+  }
+  return merged;
+}
+
 function hasRequired2024Equipment(items) {
   const list = Array.isArray(items?.item) ? items.item : [];
   const required = ["dagger", "quarterstaff", "mace", "shield", "leather armor"];
@@ -793,11 +813,16 @@ function hasRequired2024Equipment(items) {
 
 async function refreshItemsData(version) {
   await deleteCachedData(version, PATHS.items);
-  const fresh = await fetch5eData(version, PATHS.items);
-  if (!hasRequired2024Equipment(fresh)) throw new Error("The downloaded 2024 equipment catalog is missing required core items.");
-  state.data.items = fresh;
-  state.data.itemIndex = buildItemIndex(fresh, state.data.officialSources);
-  return fresh;
+  await deleteCachedData(version, PATHS.itemsBase);
+  const freshItems = await fetch5eData(version, PATHS.items);
+  const freshBase = await fetch5eData(version, PATHS.itemsBase);
+  const merged = mergeItemCatalogs(freshItems, freshBase);
+  if (!hasRequired2024Equipment(merged)) throw new Error("The downloaded 2024 equipment catalog is missing required core items.");
+  state.data.items = merged;
+  state.data.itemSourceData = freshItems;
+  state.data.itemsBase = freshBase;
+  state.data.itemIndex = buildItemIndex(merged, state.data.officialSources);
+  return merged;
 }
 
 function buildItemIndex(items, sourceSet = state.data.officialSources) {

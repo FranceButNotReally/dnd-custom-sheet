@@ -8,7 +8,7 @@ This is a static PWA intended for GitHub Pages. Keep `.github/workflows/pages.ym
 
 ## Data
 
-The app checks the latest 5etools release, then synchronizes the complete detected 2024 player-facing rules library in staged batches. Core catalogs, class files, and spell-source files are cached locally in IndexedDB. The character data is stored separately so rules-data updates do not overwrite characters.
+The app checks the latest 5etools release, then synchronizes the complete detected 2024 player-facing rules library in staged batches. Core catalogs, both item catalog files (`items.json` and `items-base.json`), class files, and spell-source files are cached locally in IndexedDB. The character data is stored separately so rules-data updates do not overwrite characters.
 
 The synchronization path validates the equipment catalogue and can repair a stale/incomplete item cache before the library is marked ready.
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.35.0
+
+- Fixed the equipment-cache regression caused by 5etools splitting ordinary/base equipment into `items-base.json`.
+- Core synchronization now batches both `items.json` and `items-base.json`, then merges their `item`/`baseitem` records into the application equipment catalog.
+- Equipment validation now checks the merged catalog, so Dagger, Quarterstaff, and other ordinary 2024 equipment are resolved from the same catalogue used by 5etools.
+- Download validation no longer incorrectly rejects a structurally valid `items.json` merely because ordinary equipment lives in `items-base.json`.
+- Bumped the app-shell asset query strings and service-worker cache to v350 to prevent an older JavaScript shell from being served as `?v=0330`.
+
 ## v0.34.0
 
 - Restored the known-good v0.28 equipment catalog behavior rather than replacing it with a new item-filtering layer.
@@ -28,6 +36,14 @@
 - Interrupted/incomplete caches are detected and resumed rather than leaving individual features dependent on whichever files happened to finish downloading.
 - 
 # Changelog
+
+## v0.35.0
+
+- Fixed the equipment-cache regression caused by 5etools splitting ordinary/base equipment into `items-base.json`.
+- Core synchronization now batches both `items.json` and `items-base.json`, then merges their `item`/`baseitem` records into the application equipment catalog.
+- Equipment validation now checks the merged catalog, so Dagger, Quarterstaff, and other ordinary 2024 equipment are resolved from the same catalogue used by 5etools.
+- Download validation no longer incorrectly rejects a structurally valid `items.json` merely because ordinary equipment lives in `items-base.json`.
+- Bumped the app-shell asset query strings and service-worker cache to v350 to prevent an older JavaScript shell from being served as `?v=0330`.
 
 ## v0.29.0
 
