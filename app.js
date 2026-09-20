@@ -3002,6 +3002,21 @@ function buildDerivedEffects(c, d, featObjs) {
   for (const feat of featObjs || []) {
     const n = textNorm(feat.name);
     applyTextualRulesEffects(feat.entries, effects, feat.name);
+
+    // 2024 Fighting Styles are encoded as feats in 5etools. Apply the same
+    // persistent sheet effects regardless of whether a style arrives via the
+    // feat-progression or optional-feature path.
+    const featCategories = Array.isArray(feat.category) ? feat.category : [feat.category].filter(Boolean);
+    const isFightingStyle = featCategories.some(cat => /^FS(?::|$)/i.test(String(cat)));
+    if (isFightingStyle) {
+      if (n === "defense") { effects.acBonusWhileArmored += 1; effects.active.push("Defense: +1 AC while wearing armor"); }
+      if (n === "archery") { effects.attackBonuses.ranged = (effects.attackBonuses.ranged || 0) + 2; effects.active.push("Archery: +2 ranged attack rolls"); }
+      if (n === "dueling") { effects.damageBonuses.dueling = 2; effects.active.push("Dueling: +2 damage with qualifying one-handed attacks"); }
+      if (n === "thrownweaponfighting") { effects.damageBonuses.thrown = 2; effects.active.push("Thrown Weapon Fighting: +2 damage with thrown weapons"); }
+      if (n === "blindfighting" && !effects.senses.includes("Blindsight 10 ft.")) { effects.senses.push("Blindsight 10 ft."); effects.active.push("Blind Fighting: Blindsight 10 ft."); }
+      if (["greatweaponfighting","twoweaponfighting","protection","interception","unarmedfighting"].includes(n)) effects.flags.add(n);
+    }
+
     if (n === "tough") { effects.hpPerLevel += 2; effects.active.push("Tough: +2 Hit Points per character level"); }
     if (n === "dualwielder") { effects.flags.add("dualWielder"); effects.active.push("Dual Wielder: +1 AC while wielding a qualifying weapon in each hand"); }
     if (n === "alert" && String(feat.source || "").toLowerCase() === DATA_SOURCE.toLowerCase()) { effects.initiativeBonus += d.pb; effects.active.push("Alert: add Proficiency Bonus to Initiative"); }
