@@ -1,3 +1,17 @@
+# v0.27.0 — equipment, spells, filters, and editor polish
+
+- Fixed equipment hydration and weapon equip/wield resolution.
+- Added robust Simple/Martial weapon proficiency token handling for Weapon Mastery.
+- Weapon Mastery now derives from the complete official 2024 weapon catalog and no longer drops standard weapons because `rarity` is `"none"`.
+- Added legacy PHB → XPHB spell reference fallback.
+- Spell browser/filter now forces the current XPHB catalog into the merged cache before filtering.
+- Equipment page now has inventory search/category/equipped filters.
+- Removed redundant gaming-set placeholders once a concrete gaming set is selected.
+- Removed duplicate special-sense text so Darkvision 120 ft. is shown once.
+- Background ability choices support the 2024 +1/+1/+1 mode.
+- Management/editor controls use the parchment character-sheet visual system with readable light inputs and modal surfaces.
+- Service-worker cache bumped so the new shell is actually delivered.
+
 ## v0.25.0
 
 - Fixed structured starting-equipment resolution by loading 2024 item data before applying equipment choices.

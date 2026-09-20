@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.25.0";
+const APP_VERSION = "0.27.0";
 
 const PATHS = {
   books: "data/books.json",
@@ -102,7 +102,7 @@ function emptyCharacter() {
     manualToolProficiencies: [],
     manualLanguages: [],
     languageChoices: [],
-    backgroundAbility: { plus2: null, plus1: null },
+    backgroundAbility: { mode: "split", plus2: null, plus1: null, plus1b: null, plus1c: null },
     hpCurrent: null,
     hpAuto: true,
     hpMaxOverride: null,
@@ -160,6 +160,11 @@ function migrateCharacter(raw) {
   c.deathSaves = { ...base.deathSaves, ...(raw.deathSaves || {}) };
   c.currency = { ...base.currency, ...(raw.currency || {}) };
   c.backgroundAbility = { ...base.backgroundAbility, ...(raw.backgroundAbility || {}) };
+  if (!['split','three'].includes(c.backgroundAbility.mode)) c.backgroundAbility.mode = 'split';
+  c.backgroundAbility.plus2 = c.backgroundAbility.plus2 || null;
+  c.backgroundAbility.plus1 = c.backgroundAbility.plus1 || null;
+  c.backgroundAbility.plus1b = c.backgroundAbility.plus1b || null;
+  c.backgroundAbility.plus1c = c.backgroundAbility.plus1c || null;
   c.classSkillChoices = Array.isArray(raw.classSkillChoices) ? raw.classSkillChoices.map(normalizeSkillKey).filter(Boolean) : [];
   c.expertise = Array.isArray(raw.expertise) ? raw.expertise.map(normalizeSkillKey).filter(Boolean) : [];
   c.customSkillProficiencies = Array.isArray(raw.customSkillProficiencies)
@@ -453,18 +458,21 @@ async function loadCoreData(version) {
   const officialSources = new Set(sourceMeta.map(x => x.source));
   const referenceCache = new Map();
   for (const sense of SPECIAL_SENSES) referenceCache.set(referenceCacheKey("sense", sense, DATA_SOURCE), SPECIAL_SENSE_FALLBACKS[sense]);
-  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
+  const itemIndex = new Map();
+  for (const item of Array.isArray(items?.item) ? items.item : []) if (isOfficial2024Entity(item, officialSources)) itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
+  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, itemIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
 }
 
 async function loadSpellSource(version, source) {
   if (!source || !state.data.spellIndex) return null;
   const key = String(source).toLowerCase();
   if (state.data.spellFiles.has(key)) return state.data.spellFiles.get(key);
-  const file = state.data.spellIndex[source] || state.data.spellIndex[Object.keys(state.data.spellIndex).find(k => k.toLowerCase() === key)];
+  const file = state.data.spellIndex[source] || state.data.spellIndex[Object.keys(state.data.spellIndex).find(k => k.toLowerCase() === key)] || (key === String(DATA_SOURCE).toLowerCase() ? "spells-xphb.json" : null);
   if (!file) return null;
   try {
     const data = await fetch5eData(version, `data/spells/${file}`);
     state.data.spellFiles.set(key, data);
+    mergeOfficialSpells();
     return data;
   } catch (e) {
     console.warn(`Unable to load spell source ${source}:`, e);
@@ -504,7 +512,10 @@ async function loadVersion(version) {
 
 async function hydrateBackgroundData(version) {
   try {
-    await hydrateSpellData(version, false);
+    // Keep startup light, but warm the 2024 core spell catalog in the background so the
+    // picker and hover references do not begin from an empty cache.
+    await loadSpellSource(version, DATA_SOURCE);
+    mergeOfficialSpells();
     // The current character's class is the only class file needed for the initial sheet.
     // Other class files remain lazy and are loaded only when selected/referenced.
     if (state.character?.class?.name) await getClassDetails(state.character.class.name);
@@ -585,6 +596,35 @@ async function getItemsData() {
   return state.data.items;
 }
 
+function officialItemCatalog() {
+  const entries = officialEntries(state.data.items, "item");
+  if (!state.data.itemIndex) state.data.itemIndex = new Map();
+  if (state.data.itemIndex.size !== entries.length) {
+    state.data.itemIndex.clear();
+    for (const item of entries) state.data.itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
+  }
+  return entries;
+}
+
+function officialWeaponCatalog() {
+  return officialItemCatalog().filter(it => Boolean(it?.weaponCategory) && masteryObjects(it).length > 0);
+}
+
+function itemFromCatalog(name, source=null) {
+  const raw = String(name||'').trim();
+  const src = source ? String(source).toLowerCase() : null;
+  const index = state.data.itemIndex || new Map();
+  if (src) {
+    const exact = index.get(`${raw.toLowerCase()}|${src}`);
+    if (exact) return exact;
+  }
+  for (const candidate of [raw, canonicalLabel(raw, 'item')]) {
+    const hit = [...index.values()].find(x => String(x.name||'').toLowerCase() === String(candidate).toLowerCase() && (!src || String(x.source||'').toLowerCase() === src));
+    if (hit) return hit;
+  }
+  return null;
+}
+
 function getLoadedSpells() {
   if (!state.data.spells) mergeOfficialSpells();
   return state.data.spells?.spell || [];
@@ -601,13 +641,14 @@ async function getSpellById(id) {
   mergeOfficialSpells();
   found = getLoadedSpells().find(s => s.name?.toLowerCase() === name.toLowerCase() && (!sourceRaw || s.source?.toLowerCase() === source.toLowerCase()));
   if (found) { cacheReferenceEntity("spell", found); return found; }
-  // A source-less reference may belong to another official 2024 source. Search loaded files first.
-  if (!sourceRaw) {
-    for (const src of Object.keys(state.data.spellIndex || {})) {
-      if (!state.data.spellFiles.has(src.toLowerCase())) await loadSpellSource(state.version, src);
-      found = getLoadedSpells().find(s => s.name?.toLowerCase() === name.toLowerCase());
-      if (found) { cacheReferenceEntity("spell", found); return found; }
-    }
+  // Older character data may carry PHB-era source markers even though the active 2024 spell
+  // catalog uses XPHB. Prefer the current 2024 entry by name as a compatibility fallback.
+  found = getLoadedSpells().find(s => s.name?.toLowerCase() === name.toLowerCase());
+  if (found) { cacheReferenceEntity("spell", found); return found; }
+  for (const src of Object.keys(state.data.spellIndex || {})) {
+    if (!state.data.spellFiles.has(src.toLowerCase())) await loadSpellSource(state.version, src);
+    found = getLoadedSpells().find(s => s.name?.toLowerCase() === name.toLowerCase());
+    if (found) { cacheReferenceEntity("spell", found); return found; }
   }
   return null;
 }
@@ -789,6 +830,11 @@ function extractEquipmentTerms(value, out = []) {
       out.push({ type: "item", ref: `${name}|${source}`, quantity: qtyMatch ? Number(qtyMatch[1]) : 1, displayName: qtyMatch ? name : displayName });
       return out;
     }
+    const plainRef = value.trim().match(/^([^|]+)\|([A-Za-z][A-Za-z0-9-]{1,15})(?:\|([^|]+))?$/);
+    if (plainRef && !/^(?:a|an|the|or|and)$/i.test(plainRef[1].trim())) {
+      out.push({ type: "item", ref: `${plainRef[1].trim()}|${plainRef[2].trim()}`, quantity: 1, displayName: plainRef[3]?.trim() || plainRef[1].trim() });
+      return out;
+    }
     const money = value.match(/(\d+(?:\.\d+)?)\s*(pp|gp|ep|sp|cp)\b/i);
     if (money) {
       const amount = Number(money[1]);
@@ -803,6 +849,7 @@ function extractEquipmentTerms(value, out = []) {
   if (Number.isFinite(Number(value.value))) out.push({ type: "value", value: Number(value.value) });
   if (Number.isFinite(Number(value.containsValue))) out.push({ type: "value", value: Number(value.containsValue) });
   if (value.special && typeof value.special === "string") out.push({ type: "special", name: value.special, quantity: Math.max(1, Number(value.quantity || 1)) });
+  if (value.equipmentType) out.push({ type: "equipmentType", value: String(value.equipmentType) });
   for (const key of ["_", "A", "B", "C", "D", "E", "F"]) if (Object.prototype.hasOwnProperty.call(value,key)) extractEquipmentTerms(value[key], out);
   return out;
 }
@@ -921,9 +968,16 @@ async function applyStartingEquipment(kind, groupKey, optionKey, obj) {
         c.inventory.push({ name: term.name, source: DATA_SOURCE, quantity: term.quantity, equipped: false, origin, displayName: term.name, unresolved: true });
         continue;
       }
+      if (term.type === "equipmentType") {
+        const label = term.value === "focusSpellcastingArcane" ? "Arcane Focus" : canonicalLabel(term.value);
+        const found = findOfficialItemByName(label, DATA_SOURCE) || findOfficialItemByName(label);
+        c.inventory.push({ name: found?.name || label, source: found?.source || DATA_SOURCE, quantity: 1, equipped: false, origin, displayName: found?.name || label, unresolved: !found });
+        continue;
+      }
       const { name, source } = splitRefId(term.ref);
-      const found = findByNameAndSource(itemsData ? officialEntries(itemsData, "item") : [], name, source);
+      const found = findOfficialItemByName(name, source) || findOfficialItemByName(name);
       const canonicalName = found?.name || name;
+      if (found) cacheReferenceEntity("item", found);
       const canonicalSource = found?.source || source || DATA_SOURCE;
       const existing = c.inventory.find(x => x.name?.toLowerCase() === canonicalName.toLowerCase() && String(x.source||"").toLowerCase() === String(canonicalSource||"").toLowerCase() && x.origin === origin);
       if (existing) existing.quantity += term.quantity;
@@ -1212,8 +1266,7 @@ function findReferenceEntitySync(tag, name, source = null) {
     return found ? cacheReferenceEntity(kind, found) : null;
   }
   if (kind === "item") {
-    const entries = state.data.items ? officialEntries(state.data.items, "item") : [];
-    const found = findByNameAndSource(entries, name, source) || findByNameAndSource(entries, canonicalLabel(name, "item"), source);
+    const found = findOfficialItemByName(name, source) || findOfficialItemByName(canonicalLabel(name, "item"), source);
     return found ? cacheReferenceEntity(kind, found) : null;
   }
   if (kind === "feat") return findFeat(name, source);
@@ -1534,51 +1587,80 @@ function backgroundAbilitySpec(bg) {
   const choices = [];
   const plus2From = new Set();
   const plus1From = new Set();
+  let supportsThree = false;
+  let threeFrom = [];
 
   for (const [index, entry] of entries.entries()) {
     const choose = entry?.choose;
     if (choose?.weighted) {
-      // 2024 backgrounds normally encode the +2/+1 choice as one weighted choice,
-      // e.g. weights [2, 1] from the same list of abilities.
-      const from = Array.isArray(choose.weighted.from) ? choose.weighted.from : [];
-      const weights = Array.isArray(choose.weighted.weights) ? choose.weighted.weights : [];
-      choices.push({ index, from, amount: 2, weighted: true, weights });
+      const from = (Array.isArray(choose.weighted.from) ? choose.weighted.from : []).map(normalizeAbilityKey).filter(Boolean);
+      const weights = Array.isArray(choose.weighted.weights) ? choose.weighted.weights.map(Number) : [];
+      choices.push({ index, from, weighted: true, weights });
       if (weights.includes(2)) from.forEach(a => plus2From.add(a));
       if (weights.includes(1)) from.forEach(a => plus1From.add(a));
+      if (weights.length >= 3 && weights.every(w => w === 1)) {
+        supportsThree = true;
+        threeFrom = [...new Set([...threeFrom, ...from])];
+      }
       continue;
     }
     if (choose) {
-      const from = Array.isArray(choose.from) ? choose.from : [];
+      const from = (Array.isArray(choose.from) ? choose.from : []).map(normalizeAbilityKey).filter(Boolean);
       const amount = Number(choose.amount || 1);
-      choices.push({ index, from, amount });
+      const count = Math.max(1, Number(choose.count || 1));
+      choices.push({ index, from, amount, count });
       if (amount === 2) from.forEach(a => plus2From.add(a));
       if (amount === 1) from.forEach(a => plus1From.add(a));
+      if (amount === 1 && count >= 3) { supportsThree = true; threeFrom = [...new Set([...threeFrom, ...from])]; }
       continue;
     }
-    // Be tolerant of a fixed ability object such as {str: true}.
     for (const [ability, value] of Object.entries(entry || {})) {
-      if (value === 2) plus2From.add(ability);
-      if (value === 1) plus1From.add(ability);
+      const a = normalizeAbilityKey(ability);
+      if (value === 2) plus2From.add(a);
+      if (value === 1) plus1From.add(a);
     }
   }
+  return { choices, plus2From:[...plus2From].filter(a=>ABILITIES.includes(a)), plus1From:[...plus1From].filter(a=>ABILITIES.includes(a)), supportsThree, threeFrom: threeFrom.filter(a=>ABILITIES.includes(a)) };
+}
 
-  return {
-    choices,
-    plus2From: [...plus2From].filter(a => ABILITIES.includes(a)),
-    plus1From: [...plus1From].filter(a => ABILITIES.includes(a)),
-  };
+function applyBackgroundAbilityFallback(c, bg) {
+  const spec = backgroundAbilitySpec(bg);
+  if (!spec.supportsThree) c.backgroundAbility.mode = 'split';
 }
 
 function reconcileBackgroundAbilityChoices(c, bg) {
-  c.backgroundAbility = { plus2: c.backgroundAbility?.plus2 || null, plus1: c.backgroundAbility?.plus1 || null };
+  const prior = c.backgroundAbility || {};
+  c.backgroundAbility = {
+    mode: ['split','three'].includes(prior.mode) ? prior.mode : 'split',
+    plus2: prior.plus2 || null,
+    plus1: prior.plus1 || null,
+    plus1b: prior.plus1b || null,
+    plus1c: prior.plus1c || null,
+  };
   const spec = backgroundAbilitySpec(bg);
-  const plus2 = spec.plus2From || [];
-  const plus1 = spec.plus1From || [];
-  if (!plus2.includes(c.backgroundAbility.plus2)) c.backgroundAbility.plus2 = plus2[0] || null;
-  if (!plus1.includes(c.backgroundAbility.plus1) || c.backgroundAbility.plus1 === c.backgroundAbility.plus2) {
-    c.backgroundAbility.plus1 = plus1.find(a => a !== c.backgroundAbility.plus2) || null;
+  if (!spec.supportsThree && c.backgroundAbility.mode === 'three') c.backgroundAbility.mode = 'split';
+  if (c.backgroundAbility.mode === 'three') {
+    const choices = [c.backgroundAbility.plus1, c.backgroundAbility.plus1b, c.backgroundAbility.plus1c].filter(Boolean);
+    const fixed = [];
+    for (const value of choices) if (spec.threeFrom.includes(value) && !fixed.includes(value)) fixed.push(value);
+    while (fixed.length < 3) {
+      const next = spec.threeFrom.find(a => !fixed.includes(a));
+      if (!next) break;
+      fixed.push(next);
+    }
+    c.backgroundAbility.plus1 = fixed[0] || null;
+    c.backgroundAbility.plus1b = fixed[1] || null;
+    c.backgroundAbility.plus1c = fixed[2] || null;
+    c.backgroundAbility.plus2 = null;
+    return;
   }
+  c.backgroundAbility.plus2 = spec.plus2From.includes(c.backgroundAbility.plus2) ? c.backgroundAbility.plus2 : (spec.plus2From[0] || null);
+  const validPlus1 = spec.plus1From.filter(a => a !== c.backgroundAbility.plus2);
+  c.backgroundAbility.plus1 = validPlus1.includes(c.backgroundAbility.plus1) ? c.backgroundAbility.plus1 : (validPlus1[0] || null);
+  c.backgroundAbility.plus1b = null;
+  c.backgroundAbility.plus1c = null;
 }
+
 function backgroundFeatNames(bg) {
   const feats = bg?.feats || [];
   const refs = [];
@@ -1598,10 +1680,15 @@ function backgroundFeatNames(bg) {
 function calculateFinalStats(c, bg, featObjs = selectedFeatObjects(c)) {
   const stats = { ...(c.baseStats || c.stats || {}) };
   for (const a of ABILITIES) stats[a] = clamp(Number(stats[a] ?? 10), 1, 30);
-  const bonus2 = c.backgroundAbility?.plus2;
-  const bonus1 = c.backgroundAbility?.plus1;
-  if (bonus2 && ABILITIES.includes(bonus2)) stats[bonus2] = Math.min(20, Number(stats[bonus2]) + 2);
-  if (bonus1 && ABILITIES.includes(bonus1) && bonus1 !== bonus2) stats[bonus1] = Math.min(20, Number(stats[bonus1]) + 1);
+  const bgAbility = c.backgroundAbility || {};
+  if (bgAbility.mode === "three") {
+    for (const ability of [bgAbility.plus1, bgAbility.plus1b, bgAbility.plus1c]) if (ability && ABILITIES.includes(ability)) stats[ability] = Math.min(20, Number(stats[ability]) + 1);
+  } else {
+    const bonus2 = bgAbility.plus2;
+    const bonus1 = bgAbility.plus1;
+    if (bonus2 && ABILITIES.includes(bonus2)) stats[bonus2] = Math.min(20, Number(stats[bonus2]) + 2);
+    if (bonus1 && ABILITIES.includes(bonus1) && bonus1 !== bonus2) stats[bonus1] = Math.min(20, Number(stats[bonus1]) + 1);
+  }
   for (const feat of featObjs || []) {
     for (const spec of featAbilitySpecs(feat)) {
       const key = featSpecKey(feat, spec);
@@ -1698,13 +1785,13 @@ function allLanguageOptionsForChoice(spec) {
 }
 
 function findOfficialItemByName(name, source = null) {
-  const items = officialEntries(state.data.items, "item");
   const raw = String(name || "").trim();
+  if (!raw) return null;
   const candidates = [raw, canonicalLabel(raw, "item")];
   if (/^(dragonchess|dice|playing cards|three-dragon ante)$/i.test(raw)) candidates.push(`${raw} Set`);
   if (/^playing cards$/i.test(raw)) candidates.push("Playing Card Set");
   for (const candidate of candidates) {
-    const found = findByNameAndSource(items, candidate, source);
+    const found = itemFromCatalog(candidate, source);
     if (found) return found;
   }
   return null;
@@ -1818,7 +1905,9 @@ function toolConcreteCategory(name) {
 }
 function cleanChoicePlaceholders(values, slots = {}) {
   const chosenValues = [...Object.values(slots || {}), ...(state.character.toolChoices || []), ...(state.character.manualToolProficiencies || [])].map(String);
-  const selectedCategories = new Set(chosenValues.map(toolConcreteCategory).filter(Boolean));
+  const normalizedChosenValues = chosenValues.map(v => displayToolProficiencyLabel(v));
+  const selectedCategories = new Set([...chosenValues, ...normalizedChosenValues].map(toolConcreteCategory).filter(Boolean));
+  const hasConcreteGaming = normalizedChosenValues.some(v => /dragonchess|three-dragon ante|playing cards|dice(?: set)?/i.test(v)) || selectedCategories.has("gaming");
   return (values || []).map(value => {
     const text = String(value || "").trim();
     if (/^Dragonchess Set$/i.test(text)) return "Dragonchess";
@@ -1828,6 +1917,7 @@ function cleanChoicePlaceholders(values, slots = {}) {
     return text;
   }).filter(text => {
     const cat = toolChoiceCategory(text);
+    if (/^choose a gaming set$/i.test(text) && hasConcreteGaming) return false;
     return !(cat && /^choose a /i.test(text) && selectedCategories.has(cat));
   });
 }
@@ -1879,13 +1969,16 @@ function cSafeLanguageSlots(includeManual=true){ return includeManual ? (state.c
 
 function hasWeaponProficiency(item, profs) {
   const name = String(item?.name || "").toLowerCase();
-  const clean = (profs || []).map(p => stripTags(String(p || "")).toLowerCase());
-  if (clean.some(p => p === name)) return true;
+  const clean = (profs || []).map(p => stripTags(String(p || "")).trim().toLowerCase());
+  const normalizedName = textNorm(name);
+  const compact = p => p.replace(/[^a-z0-9]/g, "");
+  const compactSet = new Set(clean.map(compact));
+  if (clean.some(p => p === name || textNorm(p) === normalizedName || p.includes(normalizedName))) return true;
   const category = String(item?.weaponCategory || "").toLowerCase();
-  const props = new Set((item?.property || []).map(String).map(x => x.split("|")[0]));
-  if (category === "simple" && clean.some(p => p === "simple weapons")) return true;
+  const props = new Set((item?.property || []).map(String).map(x => x.split("|")[0].toUpperCase()));
+  if (category === "simple" && (compactSet.has("simple") || compactSet.has("simpleweapons"))) return true;
   if (category === "martial") {
-    if (clean.some(p => p === "martial weapons")) return true;
+    if (compactSet.has("martial") || compactSet.has("martialweapons")) return true;
     if (clean.some(p => /martial weapons.*light property/i.test(p)) && props.has("L")) return true;
   }
   return false;
@@ -2302,7 +2395,7 @@ async function deriveCharacter() {
   const c = state.character;
   const backgroundObj = findBackground(c.background?.name, c.background?.source || null);
   if (backgroundObj) reconcileBackgroundAbilityChoices(c, backgroundObj);
-  else c.backgroundAbility = { plus2: null, plus1: null };
+  else c.backgroundAbility = { mode: "split", plus2: null, plus1: null, plus1b: null, plus1c: null };
   const featObjs = selectedFeatObjects(c);
   reconcileFeatChoices(c, featObjs);
   const finalStats = calculateFinalStats(c, backgroundObj, featObjs);
@@ -2346,7 +2439,7 @@ async function deriveCharacter() {
     if (d.weaponMasteryCount <= 0) c.weaponMasteries = [];
     else {
       try {
-        const masteryItems = officialEntries(await getItemsData(), "item").filter(it => String(it.source || "") === DATA_SOURCE && it.weaponCategory && masteryLabel(it) && !it.rarity && hasWeaponProficiency(it, parseProficiencyDisplay(d.classObj, backgroundObj, d.speciesObj, featObjs).weapons));
+        const masteryItems = officialEntries(await getItemsData(), "item").filter(it => String(it.source || "") === DATA_SOURCE && it.weaponCategory && masteryLabel(it) && (it.rarity == null || String(it.rarity).toLowerCase() === "none") && hasWeaponProficiency(it, parseProficiencyDisplay(d.classObj, backgroundObj, d.speciesObj, featObjs).weapons));
         const validKeys = new Set(masteryItems.map(it => normalizeRefId(it.name, it.source).toLowerCase()));
         c.weaponMasteries = (c.weaponMasteries || []).filter(x => validKeys.has(String(x).toLowerCase())).slice(0, d.weaponMasteryCount);
       } catch {}
@@ -2394,8 +2487,22 @@ async function deriveCharacter() {
     if (parsed) d.senseRefs.push({ tag: "sense", name: parsed[1], source: DATA_SOURCE, label: parsed[2] ? `${parsed[1]} ${parsed[2]}` : parsed[1] });
     else if (sense && !d.senses.includes(sense)) d.senses.push(sense);
   }
-  const seenSense = new Set();
-  d.senseRefs = d.senseRefs.filter(ref => { const key = `${textNorm(ref.name)}|${String(ref.label || "").toLowerCase()}`; if (seenSense.has(key)) return false; seenSense.add(key); return true; });
+  const senseByType = new Map();
+  const senseRange = ref => {
+    const m = String(ref.label || "").match(/(\d+)\s*ft\.?/i);
+    return m ? Number(m[1]) : null;
+  };
+  for (const ref of d.senseRefs) {
+    const key = textNorm(ref.name);
+    if (!key) continue;
+    const existing = senseByType.get(key);
+    if (!existing) { senseByType.set(key, ref); continue; }
+    const oldRange = senseRange(existing), newRange = senseRange(ref);
+    if (newRange != null && (oldRange == null || newRange > oldRange)) senseByType.set(key, ref);
+  }
+  d.senseRefs = [...senseByType.values()];
+  const specialSenseNames = new Set(SPECIAL_SENSES.map(textNorm));
+  d.senses = d.senses.filter(value => !specialSenseNames.has(textNorm(String(value).replace(/\s+\d+\s*ft\.?$/i, ""))));
   d.proficiencies = parseProficiencyDisplay(d.classObj, d.backgroundObj, d.speciesObj, featObjs);
   try {
     const acResult = calcAutoAc(c, mods, await getItemsData(), d.effects, d.proficiencies, d.stats);
@@ -2440,7 +2547,7 @@ async function deriveCharacter() {
   if (d.currentHp > d.maxHp && c.hpMaxOverride == null) { d.currentHp = d.maxHp; c.hpCurrent = d.maxHp; }
   if (d.currentHp > 0 && (Number(c.deathSaves?.success || 0) || Number(c.deathSaves?.failure || 0))) c.deathSaves = { success: 0, failure: 0 };
   if (!c.baseStats) c.baseStats = { ...c.stats };
-  if (c.backgroundAbility?.plus2 === c.backgroundAbility?.plus1) c.backgroundAbility.plus1 = null;
+  if (c.backgroundAbility?.mode === "split" && c.backgroundAbility?.plus2 === c.backgroundAbility?.plus1) c.backgroundAbility.plus1 = null;
   state.lastDerived = d;
   await saveCharacter();
   return d;
@@ -2746,8 +2853,8 @@ async function renderBuilder(app) {
   const generalFeatSlots = d.progressionFeatSlots || [];
   const masteryCount = d.weaponMasteryCount || 0;
   const masteryItemsData = masteryCount ? await getItemsData().catch(() => null) : null;
-  const masteryItems = masteryItemsData ? officialEntries(masteryItemsData, "item")
-    .filter(it => String(it.source || "") === DATA_SOURCE && it.weaponCategory && masteryLabel(it) && !it.rarity && hasWeaponProficiency(it, d.proficiencies.weapons))
+  const masteryItems = masteryItemsData ? officialWeaponCatalog()
+    .filter(it => String(it.source || "").toLowerCase() === String(DATA_SOURCE).toLowerCase() && (it.rarity == null || String(it.rarity).toLowerCase() === "none") && hasWeaponProficiency(it, d.proficiencies.weapons))
     .sort((a,b)=>a.name.localeCompare(b.name)) : [];
   const uniqueMasteryItems = [];
   const masteryNames = new Set();
@@ -2786,7 +2893,8 @@ async function renderBuilder(app) {
   const refValue = (obj) => normalizeRefId(obj.name, obj.source);
   const selectRefOptions = (list, current) => list.map(x => `<option value="${escapeHtml(refValue(x))}" ${current?.name===x.name && current?.source===x.source?"selected":""}>${escapeHtml(x.name)}${x.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(x.source))}`:""}</option>`).join("");
   const manualList = (key) => (c[key] || []).map((x,i)=>`<span class="editable-chip">${escapeHtml(x)}<button data-action="remove-manual" data-list="${key}" data-index="${i}">×</button></span>`).join("") || `<span class="mini">None added manually.</span>`;
-  const autoBonusLines = `<div class="final-stat-preview">${ABILITIES.map(a => `<div><span>${ABILITY_LABELS[a]}</span><strong>${c.baseStats[a]}</strong><em>${c.backgroundAbility.plus2===a?"+2":c.backgroundAbility.plus1===a?"+1":""}</em><b>${d.stats[a]}</b></div>`).join("")}</div>`;
+  const bgBonusFor = a => bgMode === "three" ? ([selectedAbility1, selectedAbility1b, selectedAbility1c].includes(a) ? "+1" : "") : (selectedAbility2===a?"+2":selectedAbility1===a?"+1":"");
+  const autoBonusLines = `<div class="final-stat-preview">${ABILITIES.map(a => `<div><span>${ABILITY_LABELS[a]}</span><strong>${c.baseStats[a]}</strong><em>${bgBonusFor(a)}</em><b>${d.stats[a]}</b></div>`).join("")}</div>`;
   const generalFeatMarkup = generalFeatSlots.length ? generalFeatSlots.map(spec => {
     const selected = c.progressionFeats?.[spec.key];
     const options = feats.filter(f => featCategoryMatches(f, spec.category)).filter(f => Number(f.prerequisite?.[0]?.level || 0) <= Number(c.level || 1));
@@ -2797,7 +2905,7 @@ async function renderBuilder(app) {
     const options = availableOptionalFeatures(spec);
     return `<div class="feat-choice-row"><label class="field">${escapeHtml(spec.name)} · Choice ${spec.index}<select data-optional-feature="${escapeHtml(spec.key)}"><option value="">— Select —</option>${options.map(f=>`<option value="${escapeHtml(refValue(f))}" ${selected?.name===f.name&&selected?.source===f.source?"selected":""}>${escapeHtml(f.name)}${f.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(f.source))}`:""}</option>`).join("")}</select></label></div>`;
   }).join("") : `<div class="empty">This class has no selectable optional class features at this level.</div>`;
-  const masteryMarkup = masteryCount ? `<div class="selection-count">${selectedWeaponMasteryRefs(c).length} / ${masteryCount} selected</div><div class="mastery-picker"><select id="weaponMasterySelect" data-weapon-mastery-select><option value="">Choose a weapon…</option>${uniqueMasteryItems.filter(item=>!hasSelectedWeaponMastery(c,item)).map(item=>`<option value="${escapeHtml(normalizeRefId(item.name,item.source))}">${escapeHtml(item.name)} — ${escapeHtml(masteryLabel(item))}</option>`).join("")}</select></div><div class="selected-mastery-list">${selectedWeaponMasteryRefs(c).map(ref=>{const item=findOfficialItemByName(splitRefId(ref).name,splitRefId(ref).source); return item ? `<div class="selected-mastery-item"><span>${renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`)} <small>${masteryObjects(item).map(x=>renderWeaponMasteryLink(x.name)).join(", ")}</small></span><button type="button" class="button button-small" data-remove-weapon-mastery="${escapeHtml(normalizeRefId(item.name,item.source))}">Remove</button></div>` : "";}).join("") || `<div class="empty">No weapon masteries selected.</div>`}</div><div class="selected-mastery-rules"><b>Selected mastery rules</b>${uniqueMasteryItems.filter(item=>hasSelectedWeaponMastery(c,item)).map(item=>`<div class="mastery-rule-row"><strong>${escapeHtml(item.name)}</strong><span>${masteryObjects(item).map(x=>renderWeaponMasteryLink(x.name)).join(", ") || "—"}</span></div>`).join("") || `<div class="mini">Select a mastered weapon to see its rule here.</div>`}</div>` : `<div class="empty">Weapon Mastery is not part of this class at the current level.</div>`;
+  const masteryMarkup = masteryCount ? `<div class="selection-count">${selectedWeaponMasteryRefs(c).length} / ${masteryCount} selected</div><div class="mastery-picker"><label class="field">Mastered weapon<select id="weaponMasterySelect" data-weapon-mastery-select><option value="">Choose a weapon…</option>${uniqueMasteryItems.filter(item=>!hasSelectedWeaponMastery(c,item)).map(item=>`<option value="${escapeHtml(normalizeRefId(item.name,item.source))}">${escapeHtml(item.name)} — ${escapeHtml(masteryLabel(item))}</option>`).join("")}</select></label></div><div class="selected-mastery-list">${selectedWeaponMasteryRefs(c).map(ref=>{const item=findOfficialItemByName(splitRefId(ref).name,splitRefId(ref).source); return item ? `<div class="selected-mastery-item"><span>${renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`)} <small>${masteryObjects(item).map(x=>renderWeaponMasteryLink(x.name)).join(", ")}</small></span><button type="button" class="button button-small" data-remove-weapon-mastery="${escapeHtml(normalizeRefId(item.name,item.source))}">Remove</button></div>` : "";}).join("") || `<div class="empty">No weapon masteries selected.</div>`}</div>` : `<div class="empty">Weapon Mastery is not part of this class at the current level.</div>`;
   const startOptions = (obj, kind) => {
     const groups = normalizeStartingEquipmentGroups(obj);
     if (!groups.length) return `<div class="empty">No structured starting-equipment choices are available for this ${kind} in the cached 5etools data.</div>`;
@@ -2821,7 +2929,7 @@ async function renderBuilder(app) {
     <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Ability scores</div><div class="mini">Base scores are stored separately. The final values include background increases and any manual bonuses.</div></div><div class="quick-actions"><button class="button button-small" data-action="apply-standard-array">Standard array</button><button class="button button-small" data-action="apply-point-buy">27-point reset</button><span class="status-pill">Point buy: ${pointBuyTotal} / 27</span></div></div><div class="ability-editor">${ABILITIES.map(a=>`<label class="ability-editor-cell"><span>${ABILITY_LABELS[a]}</span><input type="number" min="1" max="30" data-stat="${a}" value="${c.baseStats[a]}"><small>Final ${d.stats[a]}</small></label>`).join("")}</div></section>
 
     <div class="grid two compact-gap"><section class="card"><div class="section-head"><div><div class="section-title">Class feature choices</div><div class="mini">Choices such as Fighting Styles and Eldritch Invocations are stored as 5etools references and can contribute derived effects.</div></div></div>${optionalChoiceMarkup}<div class="subhead"><div class="section-title">General feats</div></div>${generalFeatMarkup}</section><section class="card"><div class="section-head"><div><div class="section-title">Weapon Mastery</div><div class="mini">Select the weapons you have mastered. Only currently proficient weapons with 5etools mastery data are shown.</div></div></div>${masteryMarkup}</section></div>
-    <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Background ability increases</div><div class="mini">Choose the increases granted by the selected 2024 background. The final scores above update immediately. The +2/+1 choices are prefilled to the first legal options and remain editable.</div></div></div>${bg ? `<div class="mini" style="margin-bottom:10px">${escapeHtml(bg.name)}: +2 from ${escapeHtml((bgAbility.plus2From || []).map(x=>ABILITY_LABELS[x]).join(", ") || "choice")} and +1 from ${escapeHtml((bgAbility.plus1From || []).map(x=>ABILITY_LABELS[x]).join(", ") || "choice")}.</div><div class="form-grid two"><label class="field">+2 ability<select data-builder="bgPlus2"><option value="">— Select —</option>${(bgAbility.plus2From || []).map(x=>`<option value="${x}" ${selectedAbility2===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1"><option value="">— Select —</option>${(bgAbility.plus1From || []).filter(x=>x!==selectedAbility2).map(x=>`<option value="${x}" ${selectedAbility1===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label></div>${autoBonusLines}` : `<div class="empty">Choose a 2024 background to see its ability-score options.</div>`}</section>
+    <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Background ability increases</div><div class="mini">2024 backgrounds can use either +2/+1 or +1/+1/+1 when the background offers that choice.</div></div></div>${bg ? `<div class="mini" style="margin-bottom:10px">${escapeHtml(bg.name)}: choose from ${escapeHtml((bgAbility.plus1From || []).map(x=>ABILITY_LABELS[x]).join(", ") || "the listed abilities")}.</div>${bgAbility.supportsThree ? `<label class="field">Increase pattern<select data-builder="bgMode"><option value="split" ${bgMode==="split"?"selected":""}>+2 / +1</option><option value="three" ${bgMode==="three"?"selected":""}>+1 / +1 / +1</option></select></label>` : ""}${bgMode === "three" && bgAbility.supportsThree ? `<div class="form-grid three"><label class="field">+1 ability<select data-builder="bgPlus1"><option value="">— Select —</option>${bgAbility.threeFrom.map(x=>`<option value="${x}" ${selectedAbility1===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1b"><option value="">— Select —</option>${bgAbility.threeFrom.filter(x=>x!==selectedAbility1).map(x=>`<option value="${x}" ${selectedAbility1b===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1c"><option value="">— Select —</option>${bgAbility.threeFrom.filter(x=>x!==selectedAbility1&&x!==selectedAbility1b).map(x=>`<option value="${x}" ${selectedAbility1c===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label></div>` : `<div class="form-grid two"><label class="field">+2 ability<select data-builder="bgPlus2"><option value="">— Select —</option>${(bgAbility.plus2From || []).map(x=>`<option value="${x}" ${selectedAbility2===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1"><option value="">— Select —</option>${(bgAbility.plus1From || []).filter(x=>x!==selectedAbility2).map(x=>`<option value="${x}" ${selectedAbility1===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label></div>`}${autoBonusLines}` : `<div class="empty">Choose a 2024 background to see its ability-score options.</div>`}</section>
 
     <div class="grid two compact-gap"><section class="card"><div class="section-head"><div class="section-title">Class skill choices</div><span class="status-pill">${classSkillChoices.size} / ${maxClassSkills || 0}</span></div>${classOptionsSkills.length ? `<div class="skill-grid">${classOptionsSkills.map(key=>`<label class="skill-check"><input type="checkbox" data-class-skill="${key}" ${classSkillChoices.has(key)?"checked":""}>${escapeHtml(SKILLS[key]?.[1] || canonicalLabel(key))}</label>`).join("")}</div>` : `<div class="empty">Choose a class to load its skill choices from 5etools.</div>`}<div class="section-title subhead">Skill expertise</div><div class="skill-grid">${Object.entries(SKILLS).map(([key,[,name]])=>`<label class="skill-check"><input type="checkbox" data-expertise="${key}" ${c.expertise.includes(key)?"checked":""}>${escapeHtml(name)}</label>`).join("")}</div></section><section class="card"><div class="section-title">Background</div>${bg ? `<div class="detail-list"><div><strong>Skills</strong><span>${escapeHtml(grantedSkillsFromMap(bg.skillProficiencies).map(k=>SKILLS[k]?.[1]||canonicalLabel(k)).join(", ")||"None")}</span></div><div><strong>Origin feat</strong><span>${escapeHtml(bgFeatRefs.map(x=>x.name || x).join(", ")||"Choice")}</span></div><div><strong>Tools</strong><span>${escapeHtml(backgroundProficiencies.tools.join(", ")||"None")}</span></div><div><strong>Languages</strong><span>${escapeHtml(backgroundProficiencies.languages.join(", ")||"None")}</span></div></div>` : `<div class="empty">Choose a background.</div>`}</section></div>
 ${startingEquipmentMarkup}
@@ -2880,7 +2988,7 @@ function spellAvailableToCharacter(spell, d = state.lastDerived) {
   if (!spell) return false;
   const refs = spellClassRefs(spell).map(normalizeRefName);
   const className = normalizeRefName(d?.classObj?.name);
-  if (!className) return false;
+  if (!className) return true;
   if (!refs.length) return true;
   if (refs.some(ref => ref === className)) return true;
   const subclassName = normalizeRefName(d?.subclassObj?.name);
@@ -2889,19 +2997,20 @@ function spellAvailableToCharacter(spell, d = state.lastDerived) {
 
 async function renderSpellbook(app) {
   if (!state.data.spellFiles.has(String(DATA_SOURCE).toLowerCase())) await loadSpellSource(state.version, DATA_SOURCE);
-  if (!state.data.spells || !state.data.spells.spell?.length) await hydrateSpellData(state.version, true);
+  await hydrateSpellData(state.version, true);
   const c = state.character;
   await deriveCharacter();
-  const spells = Array.isArray(state.data.spells?.spell) ? officialEntries(state.data.spells, "spell").sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name)) : [];
+  let spells = Array.isArray(state.data.spells?.spell) ? officialEntries(state.data.spells, "spell").sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name)) : [];
+  if (!spells.length) { await loadSpellSource(state.version, DATA_SOURCE); mergeOfficialSpells(); spells = officialEntries(state.data.spells, "spell").sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name)); }
   const maxPrepared = state.lastDerived?.maxPrepared ?? null;
   const maxCantrips = state.lastDerived?.cantrips ?? null;
   const tab = state.spellPickerTab;
   const collection = tab === "prepared" ? c.preparedSpells : tab === "cantrips" ? c.cantrips : tab === "spellbook" ? c.spellbook : c.knownSpells;
   const collectionIds = new Set(collection.map(x=>String(x).toLowerCase()));
   const className = c.class?.name || "";
-  const castLevel = Math.max(0, Number(c.level || 1));
   const knownLimit = state.lastDerived?.knownSpells ?? null;
-  const available = spells.filter(s => (s.level === 0 || s.level <= castLevel) && spellAvailableToCharacter(s, state.lastDerived)).slice(0, 1000);
+  // This is a spell library, not a cast-at-this-moment filter. Selection limits are enforced separately.
+  const available = spells.filter(s => spellAvailableToCharacter(s, state.lastDerived)).slice(0, 2000);
 
   app.innerHTML = `${pageHeader("SPELLBOOK", `${escapeHtml(c.name || "Character")} · Spells`, `${escapeHtml(className || "No class")} · 2024 official spell data`, `<button class="button" data-action="sheet">Character</button>`)}
     <section class="card"><div class="tabbar"><button class="tab-inner ${tab==="prepared"?"active":""}" data-spell-tab="prepared">Prepared ${maxPrepared!=null?`(${c.preparedSpells.length}/${maxPrepared})`:""}</button><button class="tab-inner ${tab==="cantrips"?"active":""}" data-spell-tab="cantrips">Cantrips ${maxCantrips!=null?`(${c.cantrips.length}/${maxCantrips})`:""}</button><button class="tab-inner ${tab==="spellbook"?"active":""}" data-spell-tab="spellbook">Spellbook ${c.spellbook.length}</button><button class="tab-inner ${tab==="known"?"active":""}" data-spell-tab="known">Known ${knownLimit!=null?`(${c.knownSpells.length}/${knownLimit})`:""}</button></div><div class="spell-toolbar"><input id="spellSearch" type="search" placeholder="Search 2024 spells…"><select id="spellLevel"><option value="all">All levels</option>${Array.from({length:10},(_,i)=>`<option value="${i}">${i===0?"Cantrip":`Level ${i}`}</option>`).join("")}</select></div><div id="spellResults" class="spell-results"></div></section>`;
@@ -2932,11 +3041,44 @@ function spellById(id) {
   return getLoadedSpells().find(s => s.name?.toLowerCase() === String(name || "").toLowerCase() && (!source || s.source?.toLowerCase() === source.toLowerCase())) || null;
 }
 
-function renderEquipment(app) {
+async function renderEquipment(app) {
+  try { await getItemsData(); officialItemCatalog(); } catch (e) { console.warn("Equipment catalog hydration failed", e); }
   const items = state.character.inventory || [];
-  app.innerHTML = `${pageHeader("EQUIPMENT", `${escapeHtml(state.character.name || "Character")} · Equipment`, "Items can be resolved directly from the cached 2024 5etools item data.", `<button class="button" data-action="sheet">Character</button><button class="button button-primary" data-action="item-picker">Add item</button>`)}
-  <section class="card"><div class="equipment-total-value">Total currency value: <strong>${formatCurrencyValue(currencyToCp(state.character.currency))}</strong></div><div class="currency-grid">${["pp","gp","ep","sp","cp"].map(k=>`<label class="field"><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" min="0" step="1" value="${Number(state.character.currency?.[k] || 0)}"></label>`).join("")}</div><div class="equipment-list">${items.length ? items.map((it,i)=>`<div class="equipment-row"><div>${renderInventoryItemLink(it)}<div class="mini">${escapeHtml(it.source || DATA_SOURCE)}${it.quantity>1?` · ×${it.quantity}`:""}${it.equipped?" · Equipped":""}</div></div><div class="quick-actions"><button class="button button-small ${it.equipped?"button-primary":""}" data-action="toggle-equipped" data-index="${i}">${it.equipped?"Equipped":"Equip"}</button>${findOfficialItemByName(it.name, it.source)?.weaponCategory ? `<button class="button button-small ${it.wielding!==false?"button-primary":""}" data-action="toggle-wielding" data-index="${i}">${it.wielding!==false?"Wielding":"Wield"}</button>` : ""}<button class="button button-small" data-action="qty-minus" data-index="${i}">−</button><button class="button button-small" data-action="qty-plus" data-index="${i}">+</button><button class="button button-small button-danger" data-action="remove-item" data-index="${i}">Remove</button></div></div>`).join("") : `<div class="empty">No inventory items yet.</div>`}</div></section>`;
+  app.innerHTML = `${pageHeader("EQUIPMENT", `${escapeHtml(state.character.name || "Character")} · Equipment`, "Items are resolved against the cached 2024 5etools equipment catalog.", `<button class="button" data-action="sheet">Character</button><button class="button button-primary" data-action="item-picker">Add item</button>`)}
+  <section class="card"><div class="equipment-total-value">Total currency value: <strong>${formatCurrencyValue(currencyToCp(state.character.currency))}</strong></div><div class="currency-grid">${["pp","gp","ep","sp","cp"].map(k=>`<label class="field"><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" min="0" step="1" value="${Number(state.character.currency?.[k] || 0)}"></label>`).join("")}</div>
+  <div class="picker-toolbar equipment-page-toolbar"><input id="equipmentSearch" type="search" placeholder="Filter inventory…"><select id="equipmentCategory"><option value="all">All equipment</option><option value="weapon">Weapons</option><option value="armor">Armor</option><option value="shield">Shields</option><option value="tool">Tools</option><option value="gear">Adventuring gear</option><option value="magic">Magic items</option></select><label class="picker-check"><input id="equipmentEquipped" type="checkbox"> Equipped only</label></div>
+  <div id="equipmentRows" class="equipment-list"></div></section>`;
+  const categoryOf = it => {
+    const found = findOfficialItemByName(it.name, it.source) || findOfficialItemByName(it.name);
+    const x = found || it; const t = String(x.type || "").toUpperCase();
+    if (x.weaponCategory) return "weapon";
+    if (x.ac != null || /^(LA|MA|HA|S)$/.test(t.split("|")[0])) return t.startsWith("S") ? "shield" : "armor";
+    if (t.startsWith("AT") || t.startsWith("GS") || t.startsWith("INS") || t.startsWith("T")) return "tool";
+    if (x.rarity && String(x.rarity).toLowerCase() !== "none") return "magic";
+    return "gear";
+  };
+  const rerender = () => {
+    const q = (document.querySelector("#equipmentSearch")?.value || "").trim().toLowerCase();
+    const cat = document.querySelector("#equipmentCategory")?.value || "all";
+    const equippedOnly = Boolean(document.querySelector("#equipmentEquipped")?.checked);
+    const list = items.map((it,index)=>({it,index})).filter(({it}) => {
+      const label = String(it.displayName || it.name || "").toLowerCase();
+      return (!q || label.includes(q)) && (cat === "all" || categoryOf(it) === cat) && (!equippedOnly || it.equipped);
+    });
+    const root = document.querySelector("#equipmentRows"); if (!root) return;
+    root.innerHTML = list.length ? list.map(({it,index})=>{
+      const found = findOfficialItemByName(it.name,it.source) || findOfficialItemByName(it.name);
+      const isWeapon = Boolean(found?.weaponCategory);
+      const label = found?.name || it.displayName || it.name;
+      return `<div class="equipment-row"><div>${found ? renderReferenceTag("item", `${found.name}|${found.source}|${found.name}`) : `<span>${escapeHtml(label)}</span>`}<div class="mini">${escapeHtml(found?.source || it.source || DATA_SOURCE)}${it.quantity>1?` · ×${it.quantity}`:""}${it.equipped?" · Equipped":""}${isWeapon && it.wielding!==false?" · Wielding":""}</div></div><div class="quick-actions"><button class="button button-small ${it.equipped?"button-primary":""}" data-action="toggle-equipped" data-index="${index}">${it.equipped?"Equipped":"Equip"}</button>${isWeapon?`<button class="button button-small ${it.wielding!==false?"button-primary":""}" data-action="toggle-wielding" data-index="${index}">${it.wielding!==false?"Wielding":"Wield"}</button>`:""}<button class="button button-small" data-action="item-info" data-index="${index}">Details</button><button class="button button-small" data-action="qty-minus" data-index="${index}">−</button><button class="button button-small" data-action="qty-plus" data-index="${index}">+</button><button class="button button-small button-danger" data-action="remove-item" data-index="${index}">Remove</button></div></div>`;
+    }).join("") : `<div class="empty">No equipment matches the current filters.</div>`;
+    bindEvents();
+  };
   bindEvents();
+  document.querySelector("#equipmentSearch").oninput = rerender;
+  document.querySelector("#equipmentCategory").onchange = rerender;
+  document.querySelector("#equipmentEquipped").onchange = rerender;
+  rerender();
 }
 
 async function renderDataView(app) {
@@ -3090,8 +3232,25 @@ function bindEvents() {
         if (action === "spell" || action === "spell-info") { const ref = splitRefId(decodeURIComponent(el.dataset.spell || "")); const s = await getSpellById(normalizeRefId(ref.name, ref.source || DATA_SOURCE)); if (s) return openSpellModal(s); showToast("Spell data is not available yet."); }
         if (action === "item-picker") return openItemPicker();
         if (action === "item-info") return openInventoryItemInfo(Number(el.dataset.index));
-        if (action === "toggle-equipped") { const i = Number(el.dataset.index); const item = state.character.inventory[i]; if (!item) return; const official=findOfficialItemByName(item.name,item.source)||findOfficialItemByName(item.name); const isWeapon=Boolean(official?.weaponCategory); item.equipped=!item.equipped; if (!item.equipped) item.wielding=false; else if (isWeapon) item.wielding=true; await saveCharacter(); return render(); }
-        if (action === "toggle-wielding") { const i = Number(el.dataset.index); const item = state.character.inventory[i]; if (!item) return; item.wielding = item.wielding === false; if (item.wielding) item.equipped = true; await saveCharacter(); return render(); }
+        if (action === "toggle-equipped") {
+          const i = Number(el.dataset.index); const item = state.character.inventory[i]; if (!item) return;
+          const official = findOfficialItemByName(item.name,item.source) || findOfficialItemByName(item.name);
+          if (!official) { showToast(`Could not resolve ${item.name} from the cached equipment data.`); return; }
+          item.name = official.name; item.source = official.source; item.displayName = official.name; item.unresolved = false;
+          const isWeapon = Boolean(official.weaponCategory);
+          item.equipped = !item.equipped;
+          if (!item.equipped) item.wielding = false;
+          else if (isWeapon) item.wielding = true;
+          await saveCharacter(); return render();
+        }
+        if (action === "toggle-wielding") {
+          const i = Number(el.dataset.index); const item = state.character.inventory[i]; if (!item) return;
+          const official = findOfficialItemByName(item.name,item.source) || findOfficialItemByName(item.name);
+          if (!official?.weaponCategory) { showToast(`Could not resolve ${item.name} as a weapon.`); return; }
+          item.name = official.name; item.source = official.source; item.displayName = official.name; item.unresolved = false;
+          item.wielding = item.wielding === false; if (item.wielding) item.equipped = true;
+          await saveCharacter(); return render();
+        }
         if (action === "remove-item") { state.character.inventory.splice(Number(el.dataset.index),1); await saveCharacter(); return render(); }
         if (action === "qty-minus") { adjustItemQty(Number(el.dataset.index), -1); return; }
         if (action === "qty-plus") { adjustItemQty(Number(el.dataset.index), 1); return; }
@@ -3126,7 +3285,7 @@ function bindEvents() {
     el.onchange = async () => {
       const key = el.dataset.builder;
       await readBuilder();
-      if (["background","bgPlus2","bgPlus1","species","class","subclass","feat","level","xp"].includes(key)) render();
+      if (["background","bgMode","bgPlus2","bgPlus1","bgPlus1b","bgPlus1c","species","class","subclass","feat","level","xp"].includes(key)) render();
     };
   });
   document.querySelectorAll("[data-optional-feature]").forEach(el => el.onchange = async () => {
@@ -3173,7 +3332,7 @@ function bindEvents() {
   document.querySelectorAll("[data-spell-toggle]").forEach(el => el.onchange = async () => toggleSpellCollection(el.dataset.spellToggle, el.checked));
   document.querySelectorAll("[data-spell-tab]").forEach(el => el.onclick = () => { state.spellPickerTab = el.dataset.spellTab; render(); });
   const search = document.querySelector("#spellSearch"); const level = document.querySelector("#spellLevel");
-  if (search) search.oninput = () => updateSpellResultFilter(); if (level) level.onchange = () => updateSpellResultFilter();
+  if (search) search.oninput = () => { updateSpellResultFilter().catch(console.warn); }; if (level) level.onchange = () => { updateSpellResultFilter().catch(console.warn); };
   document.querySelectorAll("[data-currency]").forEach(el => el.onchange = async () => { state.character.currency[el.dataset.currency] = Math.max(0, Number(el.value || 0)); await saveCharacter(); });
   const classSelect = document.querySelector('[data-builder="class"]');
   if (classSelect) classSelect.onchange = async () => {
@@ -3234,9 +3393,14 @@ async function readBuilder() {
     c[key] = ref.name ? { name: ref.name, source: ref.source || DATA_SOURCE } : null;
   }
   c.additionalFeats = Array.isArray(c.additionalFeats) ? c.additionalFeats : [];
+  if (!c.backgroundAbility) c.backgroundAbility = { mode:"split", plus2:null, plus1:null, plus1b:null, plus1c:null };
+  if (get("bgMode")) c.backgroundAbility.mode = get("bgMode").value === "three" ? "three" : "split";
   if (get("bgPlus2")) c.backgroundAbility.plus2 = get("bgPlus2").value || null;
   if (get("bgPlus1")) c.backgroundAbility.plus1 = get("bgPlus1").value || null;
-  if (c.backgroundAbility.plus2 && c.backgroundAbility.plus2 === c.backgroundAbility.plus1) c.backgroundAbility.plus1 = null;
+  if (get("bgPlus1b")) c.backgroundAbility.plus1b = get("bgPlus1b").value || null;
+  if (get("bgPlus1c")) c.backgroundAbility.plus1c = get("bgPlus1c").value || null;
+  if (c.backgroundAbility.mode === "three") { c.backgroundAbility.plus2 = null; const vals=[c.backgroundAbility.plus1,c.backgroundAbility.plus1b,c.backgroundAbility.plus1c].filter(Boolean); const uniq=[]; for (const v of vals) if (!uniq.includes(v)) uniq.push(v); c.backgroundAbility.plus1=uniq[0]||null; c.backgroundAbility.plus1b=uniq[1]||null; c.backgroundAbility.plus1c=uniq[2]||null; }
+  else if (c.backgroundAbility.plus2 && c.backgroundAbility.plus2 === c.backgroundAbility.plus1) c.backgroundAbility.plus1 = null;
   c.classSkillChoices = normalizeSkillArray(c.classSkillChoices);
   c.customSkillProficiencies = normalizeSkillArray(c.customSkillProficiencies);
   c.expertise = normalizeSkillArray(c.expertise);
@@ -3370,32 +3534,52 @@ function openAttackManager() {
 async function openItemPicker() {
   try {
     const data = await getItemsData();
-    const items = officialEntries(data, "item").sort((a,b)=>a.name.localeCompare(b.name));
-    openModal("Add 2024 item", `<div class="spell-toolbar"><input id="itemSearch" type="search" placeholder="Search items…"></div><div id="itemResults" class="spell-results"></div>`);
+    const items = officialItemCatalog().sort((a,b)=>a.name.localeCompare(b.name));
+    const categories = [
+      ["all", "All equipment"], ["weapon", "Weapons"], ["armor", "Armor"], ["shield", "Shields"],
+      ["tool", "Tools"], ["gear", "Adventuring gear"], ["magic", "Magic items"], ["mount", "Mounts & vehicles"]
+    ];
+    openModal("Add 2024 equipment", `<div class="picker-toolbar equipment-picker-toolbar"><input id="itemSearch" type="search" placeholder="Search equipment…"><select id="itemCategory">${categories.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}</select><label class="picker-check"><input id="itemAttune" type="checkbox"> Requires attunement</label></div><div id="itemResults" class="spell-results"></div>`);
+    const categoryOf = it => {
+      const t = String(it.type || "").toUpperCase();
+      if (it.weaponCategory) return "weapon";
+      if (it.ac != null || /^(LA|MA|HA|S)$/.test(t.split("|")[0])) return t.startsWith("S") ? "shield" : "armor";
+      if (t.startsWith("AT") || t.startsWith("GS") || t.startsWith("INS") || t.startsWith("T")) return "tool";
+      if (it.speed != null || /^MNT|VEH/.test(t)) return "mount";
+      if (it.rarity && String(it.rarity).toLowerCase() !== "none") return "magic";
+      return "gear";
+    };
     const rerender = () => {
       const q = (document.querySelector("#itemSearch")?.value || "").toLowerCase().trim();
-      const list = items.filter(i=>!q||i.name.toLowerCase().includes(q)).slice(0,300);
+      const cat = document.querySelector("#itemCategory")?.value || "all";
+      const attune = Boolean(document.querySelector("#itemAttune")?.checked);
+      const list = items.filter(i => (!q || i.name.toLowerCase().includes(q)) && (cat === "all" || categoryOf(i) === cat) && (!attune || Boolean(i.reqAttune))).slice(0,500);
       const root = document.querySelector("#itemResults"); if(!root)return;
-      root.innerHTML = list.map((it,i)=>`<div class="spell-row"><div>${renderReferenceTag("item", `${it.name}|${it.source}|${it.name}`)}<div class="spell-meta">${escapeHtml(it.type || "Item")}</div></div><button class="button button-small button-primary" data-add-item="${i}">Add</button></div>`).join("")||`<div class="empty">No matching items.</div>`;
-      root.querySelectorAll("[data-add-item]").forEach(btn=>btn.onclick=async()=>{const it=list[Number(btn.dataset.addItem)]; if(!it)return; addInventoryItem(it); closeModal(); state.view="equipment"; render();});
-      root.querySelectorAll("[data-item-detail]").forEach(btn=>btn.onclick=()=>{const it=list[Number(btn.dataset.itemDetail)]; if(it)openModal(it.name,`<div class="modal-kicker">${escapeHtml(sourceLabel(it.source))} · ${escapeHtml(it.type||"")}</div><div class="rules-text formatted-rules">${renderRichEntries(it.entries)}</div>`);});
+      root.innerHTML = list.map((it,i)=>`<div class="spell-row"><div>${renderReferenceTag("item", `${it.name}|${it.source}|${it.name}`)}<div class="spell-meta">${escapeHtml(it.type || "Item")}${it.rarity && String(it.rarity).toLowerCase() !== "none" ? ` · ${escapeHtml(String(it.rarity))}` : ""}</div></div><button class="button button-small button-primary" data-add-item="${i}">Add</button></div>`).join("")||`<div class="empty">No matching equipment.</div>`;
+      bindRuleReferenceLinks(root);
+      root.querySelectorAll("[data-add-item]").forEach(btn=>btn.onclick=async()=>{const it=list[Number(btn.dataset.addItem)]; if(!it)return; await addInventoryItem(it); closeModal(); state.view="equipment"; render();});
     };
-    document.querySelector("#itemSearch").oninput=rerender; rerender();
-  } catch(e){showToast(`Items could not be loaded: ${e.message}`);}
+    document.querySelector("#itemSearch").oninput=rerender;
+    document.querySelector("#itemCategory").onchange=rerender;
+    document.querySelector("#itemAttune").onchange=rerender;
+    rerender();
+  } catch(e){showToast(`Equipment could not be loaded: ${e.message}`);}
 }
-function addInventoryItem(it){const existing=state.character.inventory.find(x=>x.name===it.name&&x.source===it.source);if(existing)existing.quantity=Number(existing.quantity||1)+1;else { const isWeapon=Boolean(it?.weaponCategory); state.character.inventory.push({name:it.name,source:it.source,quantity:1,equipped:isWeapon,wielding:isWeapon}); } saveCharacter();}
+async function addInventoryItem(it){const existing=state.character.inventory.find(x=>x.name===it.name&&x.source===it.source);if(existing)existing.quantity=Number(existing.quantity||1)+1;else state.character.inventory.push({name:it.name,source:it.source,quantity:1,equipped:false,wielding:false}); await saveCharacter();}
 function adjustItemQty(i,delta){const item=state.character.inventory[i];if(!item)return;item.quantity=Number(item.quantity||1)+delta;if(item.quantity<=0)state.character.inventory.splice(i,1);saveCharacter().then(render);}
-async function openInventoryItemInfo(i){const item=state.character.inventory[i];if(!item)return;const data=await getItemsData();const found=officialEntries(data,"item").find(x=>x.name===item.name&&x.source===item.source)||officialEntries(data,"item").find(x=>x.name===item.name);if(found)openModal(found.name,`<div class="modal-kicker">${escapeHtml(sourceLabel(found.source))} · ${escapeHtml(found.type||"")}</div><div class="rules-text formatted-rules">${renderRichEntries(found.entries)}</div>`);}
+async function openInventoryItemInfo(i){const item=state.character.inventory[i];if(!item)return;await getItemsData();const found=findOfficialItemByName(item.name,item.source)||findOfficialItemByName(item.name);if(found){cacheReferenceEntity("item",found);openModal(found.name,`<div class="modal-kicker">${escapeHtml(sourceLabel(found.source))} · ${escapeHtml(found.type||"")}</div><div class="rules-text formatted-rules">${renderRichEntries(found.entries||found.entry||[])}</div>`);}}
 
 function maxCastableSpellLevel(d = state.lastDerived) {
   const slots = d?.spellSlots || [];
   for (let i = slots.length - 1; i >= 0; i--) if (Number(slots[i] || 0) > 0) return i + 1;
   return 0;
 }
-function updateSpellResultFilter(){
+async function updateSpellResultFilter(){
+  await loadSpellSource(state.version, DATA_SOURCE);
+  mergeOfficialSpells();
   const spells = getLoadedSpells().filter(s => isOfficial2024Entity(s)).sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
-  const maxSpellLevel = maxCastableSpellLevel();
-  const available = spells.filter(s => (s.level === 0 || s.level <= maxSpellLevel) && spellAvailableToCharacter(s, state.lastDerived)).slice(0,1000);
+  const d = state.lastDerived || await deriveCharacter();
+  const available = spells.filter(s => spellAvailableToCharacter(s, d)).slice(0,2000);
   renderSpellResults(available);
 }
 async function toggleSpellCollection(id, checked){

@@ -777,3 +777,51 @@ body { min-height: 100vh; }
 @media (max-width:420px) {
   .identity-stat-box.hp .hp-actions { grid-template-columns:1fr; }
 }
+
+/* v0.26: character-sheet editor surfaces remain readable on the parchment/light sheet UI. */
+.modal .field, .modal .editor-head, .modal .resource-mode { color:#4c4a45; }
+.modal input, .modal select, .modal textarea, .modal .editor-row input, .modal .editor-row select { background:#fbfaf6; color:#24231f; border-color:#b9b4aa; }
+.modal .resource-editor-row, .modal .attack-editor { background:#f5f2eb; border-color:#c8c2b6; }
+.modal .editor-head { color:#706b61; }
+.builder-view .ability-editor-cell, .ability-editor-cell { background:#f5f2eb; color:#292720; }
+.ability-editor-cell span { color:#69645b; }
+.ability-editor-cell input { background:#fff; color:#24231f; border-color:#b9b4aa; }
+.picker-toolbar { display:grid; gap:8px; margin-bottom:12px; }
+.equipment-picker-toolbar { grid-template-columns:minmax(0,1fr) 190px auto; align-items:center; }
+.picker-check { display:flex; align-items:center; gap:7px; min-height:42px; color:var(--muted); font-size:.74rem; font-weight:800; white-space:nowrap; }
+.mastery-picker { margin-bottom:10px; }
+.mastery-picker select { width:100%; }
+@media (max-width: 720px) { .equipment-picker-toolbar { grid-template-columns:1fr; } }
+
+/* v0.26.1 — finish the parchment character-sheet visual system and editor contrast. */
+.topbar {
+  background: rgba(244,238,223,.98) !important;
+  border-bottom: 2px solid #3f3a33 !important;
+  color: #2b2823;
+  box-shadow: 0 4px 14px rgba(70,55,37,.12);
+}
+.brand-title { color:#2b2823 !important; }
+.brand-subtitle { color:#6b6258 !important; }
+.brand-mark { background:#eee5d5 !important; color:#302d27 !important; }
+.tabs { background:rgba(244,238,223,.98) !important; border-bottom-color:#b8ac98 !important; }
+.tab.is-active { background:#302d27 !important; color:#fffaf0 !important; }
+.modal { background:#faf5e9 !important; color:#2b2823 !important; }
+.modal-head { background:#f0e8da !important; color:#2b2823 !important; border-bottom:1px solid #b8ac98 !important; }
+.modal-title { color:#2b2823 !important; }
+.modal-close { background:#eee4d2 !important; color:#302d27 !important; border-color:#aa9f8b !important; }
+.modal-body, .modal .rules-text { color:#2b2823 !important; }
+.modal .resource-editor-row, .modal .attack-editor, .modal .editor-row { background:#f1eadb !important; color:#2b2823 !important; border-color:#c2b7a4 !important; }
+.modal .resource-mode { background:#e6ddcc !important; color:#5f574d !important; border:1px solid #c2b7a4; border-radius:4px; padding:4px 6px; }
+.modal .editor-head { color:#6a6258 !important; }
+.modal .field { color:#5f574d !important; }
+.modal .field input, .modal .field select, .modal .field textarea,
+.modal .editor-row input, .modal .editor-row select { background:#fffaf0 !important; color:#2b2823 !important; border-color:#b7ac98 !important; }
+.builder-head, .hero { color:#2b2823; }
+.ability-editor-cell { background:#f1eadb !important; color:#2b2823 !important; border-color:#b8ac98 !important; }
+.ability-editor-cell span { color:#5f574d !important; }
+.ability-editor-cell small { color:#756d61 !important; }
+.ability-editor-cell input { background:#fffaf0 !important; color:#2b2823 !important; border-color:#b7ac98 !important; }
+.picker-check { color:#5f574d !important; }
+.picker-toolbar input, .picker-toolbar select { background:#fffaf0 !important; color:#2b2823 !important; border-color:#b7ac98 !important; }
+.equipment-page-toolbar { grid-template-columns:minmax(0,1fr) 190px auto; align-items:center; }
+@media (max-width:720px) { .equipment-page-toolbar { grid-template-columns:1fr; } }
