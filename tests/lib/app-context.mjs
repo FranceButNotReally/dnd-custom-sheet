@@ -39,6 +39,7 @@ export function loadAppTestContext() {
     'SKILLS', 'SPECIAL_SENSES', 'WEAPON_PROPERTY_INFO', 'WEAPON_MASTERY_INFO', 'SPELL_COMPONENT_INFO',
     'emptyCharacter', 'migrateCharacter', 'abilityMod', 'formatMod', 'proficiencyBonus',
     'classSpellSlots', 'classCantrips', 'classPrepared', 'classKnownSpells', 'hitDieFaces', 'defaultMaxHp',
+    'skillChoiceSpec', 'optionalFeatureProgression', 'getSubclassUnlockLevel',
     'featAbilitySpecs', 'featSaveSpecs', 'featSkillSpecs', 'featMixedChoiceSpecs', 'featExpertiseSpecs',
     'featAdditionalSpellChoiceSpecs', 'mixedChoiceOptions', 'speciesChoiceSpecs', 'reconcileSpeciesChoices',
     'reconcileFeatChoices', 'backgroundAbilitySpec', 'reconcileBackgroundAbilityChoices', 'backgroundFeatNames', 'calculateFinalStats',
