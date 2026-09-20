@@ -54,7 +54,7 @@ test('Elf exposes lineage and Keen Senses choices', () => {
   assert.ok(lineage);
   const keen=a.speciesChoiceSpecs(species).find(x=>x.kind==='skill' && /Keen Senses/i.test(x.label));
   assert.ok(keen);
-  assert.deepEqual(keen.options.map(x=>x.value).sort(),['insight','perception','survival']);
+  assert.deepEqual(JSON.parse(JSON.stringify(keen.options.map(x=>x.value).sort())),['insight','perception','survival']);
 });
 
 test('Wood Elf and Drow selected lineage effects are derived', () => {
@@ -71,13 +71,13 @@ test('Wood Elf and Drow selected lineage effects are derived', () => {
 test('Gnome, Goliath, and Tiefling expose their persistent lineage choices', () => {
   const gnome=findChoice(byName(races,'Gnome'),['Forest Gnome','Rock Gnome']);
   assert.ok(gnome);
-  assert.deepEqual(gnome.abilityFrom.sort(),['cha','int','wis']);
+  assert.deepEqual(JSON.parse(JSON.stringify(gnome.abilityFrom.sort())),['cha','int','wis']);
   const goliath=findChoice(byName(races,'Goliath'),["Cloud's Jaunt (Cloud Giant)","Fire's Burn (Fire Giant)","Frost's Chill (Frost Giant)","Hill's Tumble (Hill Giant)","Stone's Endurance (Stone Giant)","Storm's Thunder (Storm Giant)"]);
   assert.ok(goliath);
   assert.equal(goliath.options.length,6);
   const tiefling=findChoice(byName(races,'Tiefling'),['Abyssal','Chthonic','Infernal']);
   assert.ok(tiefling);
-  assert.deepEqual(tiefling.abilityFrom.sort(),['cha','int','wis']);
+  assert.deepEqual(JSON.parse(JSON.stringify(tiefling.abilityFrom.sort())),['cha','int','wis']);
 });
 
 test('selected Tiefling legacy contributes resistance', () => {
