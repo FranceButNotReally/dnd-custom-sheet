@@ -1424,7 +1424,13 @@ function featSkillSpecs(feat) {
       for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, count: 1 });
       continue;
     }
-    for (const [skill, value] of Object.entries(entry || {})) if (value) { const key = normalizeSkillKey(skill); if (key) specs.push({ index, choiceIndex: 0, from: [key], count: 1, fixed: true }); }
+    for (const [skill, value] of Object.entries(entry || {})) if (value) {
+      if (/^any$/i.test(skill)) specs.push({ index, choiceIndex: 0, from: Object.keys(SKILLS), count: 1 });
+      else {
+        const key = normalizeSkillKey(skill);
+        if (key) specs.push({ index, choiceIndex: 0, from: [key], count: 1, fixed: true });
+      }
+    }
   }
   return specs;
 }
