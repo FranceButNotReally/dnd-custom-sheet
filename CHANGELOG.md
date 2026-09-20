@@ -1,3 +1,14 @@
+## 0.22.0
+
+- Fixed 2024 optional-feature progression handling for class data that uses `optionalfeatureProgression` and `featureType`, notably Warlock Eldritch Invocations.
+- Fixed class-table Pact Magic slot resolution and kept prepared-spell classes from being incorrectly capped by a known-spells progression.
+- Added conservative automatic resource detection for feature text when 5etools has no structured `uses` object, including limited-use features such as Action Surge and Indomitable.
+- Automatic class-table resources and text-derived feature resources now carry an explicit `auto` mode and feature origin.
+- Automatic resources can no longer be deleted as though they were manual resources.
+- Removed dynamic expression evaluation from resource maxima.
+- Fixed Fast Movement so its +10-foot bonus is suppressed while wearing Heavy Armor, including when AC is manually overridden.
+- Armor Strength speed penalties are now checked against equipped armor rather than only trained armor.
+
 ## 0.21.0
 
 - Initial character render no longer waits for the complete class and spell datasets.

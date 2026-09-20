@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.21.0";
+const APP_VERSION = "0.22.0";
 
 const PATHS = {
   books: "data/books.json",
@@ -658,15 +658,38 @@ function getSubclassFeatures(file, subclassObj, level) {
 }
 
 
+function progressionCountAtLevel(progression, level) {
+  const lvl = Math.max(1, Number(level || 1));
+  if (Array.isArray(progression)) return Math.max(0, Number(progression[lvl - 1] || 0));
+  const levels = Object.keys(progression || {}).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);
+  let count = 0;
+  for (const lv of levels) {
+    if (lv > lvl) break;
+    count = Math.max(0, Number(progression[String(lv)] || 0));
+  }
+  return count;
+}
+
+function progressionUnlockLevel(progression) {
+  if (Array.isArray(progression)) {
+    const idx = progression.findIndex(v => Number(v || 0) > 0);
+    return idx >= 0 ? idx + 1 : null;
+  }
+  const levels = Object.keys(progression || {}).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);
+  for (const lv of levels) if (Number(progression[String(lv)] || 0) > 0) return lv;
+  return null;
+}
+
 function optionalFeatureProgression(classObj, level) {
   const out = [];
-  for (const prog of classObj?.featProgression || []) {
-    const progression = prog?.progression || {};
-    const levels = Object.keys(progression).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);
-    let count = 0, unlockLevel = null;
-    for (const lv of levels) if (lv <= Number(level || 1)) { count = Number(progression[String(lv)] || 0); unlockLevel = lv; }
+  // 2024 optional class features (notably Warlock Eldritch Invocations) use
+  // optionalfeatureProgression + featureType rather than featProgression + category.
+  for (const prog of classObj?.optionalfeatureProgression || []) {
+    const progression = prog?.progression || [];
+    const count = progressionCountAtLevel(progression, level);
+    const unlockLevel = progressionUnlockLevel(progression);
     if (!count || !unlockLevel) continue;
-    const category = Array.isArray(prog.category) ? prog.category : [];
+    const category = Array.isArray(prog.featureType) ? prog.featureType : (prog.featureType ? [prog.featureType] : []);
     for (let i = 0; i < count; i++) out.push({ key: `${prog.name}|${category.join(",")}|${i+1}`, name: prog.name, category, index: i+1, level: unlockLevel });
   }
   return out;
@@ -742,19 +765,6 @@ function selectedWeaponMasteryRefs(c) { return Array.isArray(c.weaponMasteries) 
 function hasSelectedWeaponMastery(c, item) {
   const key = normalizeRefId(item?.name, item?.source);
   return selectedWeaponMasteryRefs(c).some(x => String(x).toLowerCase() === key.toLowerCase());
-}
-
-function equipmentChoicesFromObject(obj) {
-  const data = obj?.startingEquipment?.defaultData;
-  if (!Array.isArray(data) || !data.length) return [];
-  const result = [];
-  for (const raw of data) {
-    const branches = Object.entries(raw || {}).filter(([k]) => /^[A-Z]$/.test(k));
-    if (branches.length) {
-      for (const [letter, contents] of branches) result.push({ key: letter, items: extractEquipmentTerms(contents) });
-    } else result.push({ key: "A", items: extractEquipmentTerms(raw) });
-  }
-  return result.filter(x => x.items.length);
 }
 
 function extractEquipmentTerms(value, out = []) {
@@ -1434,9 +1444,29 @@ function abilityMod(score) { return Math.floor((Number(score || 10) - 10) / 2); 
 function formatMod(mod) { return mod >= 0 ? `+${mod}` : String(mod); }
 function proficiencyBonus(level) { return 2 + Math.floor((Math.max(1, Number(level || 1)) - 1) / 4); }
 function classSpellSlots(classObj, level) {
-  const group = (classObj?.classTableGroups || []).find(g => Array.isArray(g.rowsSpellProgression));
-  const row = group?.rowsSpellProgression?.[level - 1];
-  return Array.isArray(row) ? row.slice(0, 9).map(Number) : [];
+  const lvl = Math.max(1, Number(level || 1));
+  const progressionGroup = (classObj?.classTableGroups || []).find(g => Array.isArray(g.rowsSpellProgression));
+  const progressionRow = progressionGroup?.rowsSpellProgression?.[lvl - 1];
+  if (Array.isArray(progressionRow)) return progressionRow.slice(0, 9).map(v => Math.max(0, Number(v) || 0));
+
+  // Some 2024 classes (notably Warlock) expose Pact Magic in an ordinary
+  // class-table row instead of rowsSpellProgression. The table contains both
+  // the number of slots and the level of those slots.
+  for (const group of classObj?.classTableGroups || []) {
+    const labels = Array.isArray(group.colLabels) ? group.colLabels : [];
+    const slotIdx = labels.findIndex(label => textNorm(stripTags(label)) === "spellslots" || textNorm(stripTags(label)).includes("spellslots"));
+    const slotLevelIdx = labels.findIndex(label => textNorm(stripTags(label)) === "slotlevel" || textNorm(stripTags(label)).includes("slotlevel"));
+    if (slotIdx < 0 || slotLevelIdx < 0 || !Array.isArray(group.rows)) continue;
+    const row = group.rows[lvl - 1];
+    if (!Array.isArray(row)) continue;
+    const count = Number(row[slotIdx]);
+    const slotLevel = Number(row[slotLevelIdx]);
+    if (!Number.isFinite(count) || !Number.isFinite(slotLevel) || count <= 0 || slotLevel < 1 || slotLevel > 9) continue;
+    const out = Array(9).fill(0);
+    out[slotLevel - 1] = Math.floor(count);
+    return out;
+  }
+  return [];
 }
 function classCantrips(classObj, level) { return Number(classObj?.cantripProgression?.[level - 1] || 0) || null; }
 function classPrepared(classObj, level, mods) {
@@ -1449,6 +1479,10 @@ function classPrepared(classObj, level, mods) {
   return null;
 }
 function classKnownSpells(classObj, level) {
+  // Prepared/spellbook casters don't have a fixed "known spells" cap. In
+  // particular, the Wizard's fixed progression describes spells added to the
+  // spellbook rather than the maximum number of spells the wizard can know.
+  if (Array.isArray(classObj?.preparedSpellsProgression) || classObj?.preparedSpells || classObj?.spellbook) return null;
   const prog = classObj?.spellsKnownProgressionFixed;
   if (!Array.isArray(prog)) return null;
   const value = Number(prog[Math.max(0, Number(level || 1) - 1)] || 0);
@@ -1458,10 +1492,11 @@ function hitDieFaces(classObj) { return Number(classObj?.hd?.faces || 8); }
 function defaultMaxHp(classObj, level, conMod, override) {
   const hasOverride = override !== null && override !== undefined && override !== "" && Number.isFinite(Number(override));
   if (hasOverride) return Math.max(1, Number(override));
+  const lvl = Math.max(1, Number(level || 1));
   const faces = hitDieFaces(classObj);
-  const first = faces + conMod;
-  const later = Math.floor(faces / 2) + 1 + conMod;
-  return Math.max(1, first + Math.max(0, level - 1) * later);
+  const first = Math.max(1, faces + conMod);
+  const later = Math.max(1, Math.floor(faces / 2) + 1 + conMod);
+  return Math.max(1, first + Math.max(0, lvl - 1) * later);
 }
 function spellSchoolName(code) { return SPELL_SCHOOLS[code] || code || ""; }
 function skillChoiceSpec(classObj) {
@@ -1851,7 +1886,11 @@ async function getAttackRows(d) {
     if (flags.ranged) bonus += Number(d.effects?.attackBonuses?.ranged || 0);
     const abilityDamage = d.mods[ability];
     let extraDamage = 0;
-    if (d.effects?.damageBonuses?.dueling && flags.melee && !flags.twoHanded) extraDamage += Number(d.effects.damageBonuses.dueling || 0);
+    if (d.effects?.damageBonuses?.dueling && flags.melee && !flags.twoHanded) {
+      const wieldedWeapons = (state.character.inventory || []).filter(x => x?.equipped && x.wielding !== false && x?.name).map(x => officialItems.find(it => it.name === x.name && (!x.source || it.source === x.source)) || officialItems.find(it => it.name === x.name)).filter(it => it?.weaponCategory);
+      const otherWeaponCount = wieldedWeapons.filter(other => other !== item).length;
+      if (otherWeaponCount === 0) extraDamage += Number(d.effects.damageBonuses.dueling || 0);
+    }
     if (d.effects?.damageBonuses?.thrown && flags.thrown) extraDamage += Number(d.effects.damageBonuses.thrown || 0);
     const damageFormula = item.dmg1 ? `${item.dmg1}${abilityDamage || extraDamage ? ` ${formatMod(abilityDamage + extraDamage)}` : ""}` : "—";
     const properties = (item.property || []).map(x => canonicalLabel(String(x).split("|")[0])).join(", ");
@@ -1869,7 +1908,22 @@ function damageTypeName(value) {
   return map[String(value || "").split("|")[0]] || canonicalLabel(value);
 }
 
-function calcAutoAc(c, mods, itemsData = null, effects = null) {
+function hasArmorTraining(proficiencies, itemType) {
+  const labels = Array.isArray(proficiencies?.armor) ? proficiencies.armor : [];
+  const wanted = itemType === "S" ? "shield" : itemType === "LA" ? "lightarmor" : itemType === "MA" ? "mediumarmor" : itemType === "HA" ? "heavyarmor" : "";
+  if (!wanted) return false;
+  return labels.some(label => {
+    const n = textNorm(stripTags(label));
+    if (n === wanted) return true;
+    if (itemType === "S") return n === "shields";
+    if (itemType === "LA") return n === "light";
+    if (itemType === "MA") return n === "medium";
+    if (itemType === "HA") return n === "heavy";
+    return false;
+  });
+}
+
+function calcAutoAc(c, mods, itemsData = null, effects = null, proficiencies = null, abilityScores = null) {
   const inventory = Array.isArray(c.inventory) ? c.inventory : [];
   const equipped = inventory.filter(x => x && x.equipped && x.name);
   const items = itemsData ? officialEntries(itemsData, "item") : [];
@@ -1880,6 +1934,8 @@ function calcAutoAc(c, mods, itemsData = null, effects = null) {
   const itemType = item => String(item?.type || "").split("|")[0];
   const armor = resolved.filter(({ item }) => ["LA", "MA", "HA"].includes(itemType(item)));
   const shields = resolved.filter(({ item }) => itemType(item) === "S");
+  const trainedArmor = armor.filter(({ item }) => hasArmorTraining(proficiencies, itemType(item)));
+  const trainedShields = shields.filter(({ item }) => hasArmorTraining(proficiencies, "S"));
   const formula = effects?.acFormulas?.[0] || getUnarmoredDefenseFormula(c.class, c.level);
 
   let best = 10 + mods.dex;
@@ -1899,8 +1955,8 @@ function calcAutoAc(c, mods, itemsData = null, effects = null) {
     }
   }
 
-  if (armor.length) {
-    for (const { item } of armor) {
+  if (trainedArmor.length) {
+    for (const { item } of trainedArmor) {
       const base = Number(item.ac);
       if (!Number.isFinite(base)) continue;
       const bonus = Number.parseInt(String(item.bonusAc || "0"), 10) || 0;
@@ -1921,10 +1977,10 @@ function calcAutoAc(c, mods, itemsData = null, effects = null) {
     }
   }
 
-  if (shields.length) {
+  if (trainedShields.length) {
     const canUseShield = sourceMode !== "unarmored" || Boolean(formula?.allowShield);
     if (canUseShield) {
-      const shieldAc = Math.max(0, ...shields.map(({ item }) => Number(item.ac || 0) + (Number.parseInt(String(item.bonusAc || "0"), 10) || 0)));
+      const shieldAc = Math.max(0, ...trainedShields.map(({ item }) => Number(item.ac || 0) + (Number.parseInt(String(item.bonusAc || "0"), 10) || 0)));
       if (shieldAc) { best += shieldAc; breakdown.push(`shield +${shieldAc}`); reason += ` + shield`; }
     }
   }
@@ -1938,6 +1994,12 @@ function calcAutoAc(c, mods, itemsData = null, effects = null) {
     });
     if (meleeWeapons.length >= 2) conditionalAcBonus += 1;
   }
+  let armorSpeedPenalty = 0;
+  for (const { item } of armor) {
+    const req = Number(item.str ?? item.strRequirement ?? item.strengthRequirement ?? 0);
+    const score = Number(abilityScores?.str ?? c.baseStats?.str ?? 10);
+    if (req > 0 && score < req) armorSpeedPenalty = Math.max(armorSpeedPenalty, 10);
+  }
   const acBonus = sourceMode === "armor"
     ? Number(effects?.acBonus || 0) + Number(effects?.acBonusWhileArmored || 0)
     : sourceMode === "unarmored"
@@ -1946,7 +2008,7 @@ function calcAutoAc(c, mods, itemsData = null, effects = null) {
   const totalAcBonus = acBonus + conditionalAcBonus;
   if (totalAcBonus) { best += totalAcBonus; breakdown.push(`other ${formatMod(totalAcBonus)}`); reason += ` + ${formatMod(totalAcBonus)}`; }
   const formulaText = sourceMode === "unarmored" ? breakdown.join(" ") + ` = ${best}` : reason;
-  return { value: best, reason: formulaText, mode: sourceMode, breakdown };
+  return { value: best, reason: formulaText, mode: sourceMode, breakdown, speedPenalty: armorSpeedPenalty, wearingHeavyArmor: armor.some(({ item }) => itemType(item) === "HA") };
 }
 
 function textNorm(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); }
@@ -1999,7 +2061,7 @@ function buildDerivedEffects(c, d, featObjs) {
       const bonus = classTableNumericValue(d.classObj, "unarmored movement", c.level);
       if (bonus) { effects.speedBonus += bonus; effects.active.push(`Unarmored Movement: +${bonus} ft.`); }
     }
-    if (n === "fastmovement") { effects.speedBonus += 10; effects.active.push("Fast Movement: +10 ft."); }
+    if (n === "fastmovement") { effects.flags.add("fastMovement"); effects.active.push("Fast Movement: +10 ft. while not wearing heavy armor"); }
   }
   if (d.classObj && ["barbarian", "monk"].includes(textNorm(d.classObj.name)) && !hasNamedFeature(allFeatures, "Unarmored Defense")) {
     effects.active.push(`${uad.label} (class rule)`);
@@ -2058,9 +2120,17 @@ function buildDerivedEffects(c, d, featObjs) {
 }
 
 function resourceRechargeLabel(value) {
-  const raw = String(value || "").toLowerCase();
-  if (raw.includes("short")) return "short";
-  if (raw.includes("long")) return "long";
+  if (Array.isArray(value)) {
+    const parts = value.map(resourceRechargeLabel).filter(Boolean);
+    if (parts.includes("short") && parts.includes("long")) return "both";
+    return parts[0] || "";
+  }
+  const raw = String(value ?? "").toLowerCase().replace(/[_-]/g, " ");
+  const hasShort = raw.includes("short") || /\bsr\b/.test(raw) || raw.includes("restshort");
+  const hasLong = raw.includes("long") || /\blr\b/.test(raw) || raw.includes("restlong") || raw.includes("daily") || raw.includes("day");
+  if (hasShort && hasLong) return "both";
+  if (hasShort) return "short";
+  if (hasLong) return "long";
   return "";
 }
 function resourceMaxValue(number, d) {
@@ -2070,17 +2140,106 @@ function resourceMaxValue(number, d) {
   if (/^\d+$/.test(raw)) return Number(raw);
   return 0;
 }
+
+function numberWordValue(value) {
+  const key = String(value || "").toLowerCase().trim();
+  return ({once:1, twice:2, "three times":3, "four times":4, "five times":5, "six times":6})[key] || 0;
+}
+
+function inferFeatureUseMaxFromText(feature, d) {
+  const text = entriesToText(feature?.entries || "");
+  if (!text || !featureRechargeFromText(feature)) return 0;
+  let count = /\b(?:once you use|when you use|after you use|can't use (?:this feature|it) again|cannot use (?:this feature|it) again)\b/i.test(text) ? 1 : 0;
+  if (/a number of times equal to (?:your )?proficiency bonus/i.test(text)) count = Math.max(count, Number(d?.pb || 0));
+  const modMatch = text.match(/a number of times equal to (?:your )?(Strength|Dexterity|Constitution|Intelligence|Wisdom|Charisma) modifier/i);
+  if (modMatch) {
+    const key = modMatch[1].slice(0,3).toLowerCase();
+    count = Math.max(count, Number(d?.mods?.[key] || 0));
+  }
+  const gated = /(?:starting at|when you reach|at)\s+(?:level\s+)?(\d+)[^.!?]{0,120}?(?:can|may) use (?:this feature|it)\s+(once|twice|three times|four times|five times|six times)/gi;
+  for (const m of text.matchAll(gated)) {
+    if (Number(d?.level || 1) >= Number(m[1])) count = Math.max(count, numberWordValue(m[2]));
+  }
+  const gatedReverse = /(?:can|may) use (?:this feature|it)\s+(once|twice|three times|four times|five times|six times)[^.!?]{0,120}?(?:starting at|when you reach|at)\s+(?:level\s+)?(\d+)/gi;
+  for (const m of text.matchAll(gatedReverse)) {
+    if (Number(d?.level || 1) >= Number(m[2])) count = Math.max(count, numberWordValue(m[1]));
+  }
+  const countBeforeGate = /\b(once|twice|three times|four times|five times|six times)[^.!?]{0,80}?(?:starting at|when you reach|at)\s+(?:level\s+)?(\d+)/gi;
+  for (const m of text.matchAll(countBeforeGate)) {
+    if (Number(d?.level || 1) >= Number(m[2])) count = Math.max(count, numberWordValue(m[1]));
+  }
+  if (!count) {
+    const direct = text.match(/\b(?:can|may) use (?:this feature|it)\s+(once|twice|three times|four times|five times|six times)\b/i);
+    if (direct && !/starting at\s+(?:level\s+)?\d+|when you reach\s+(?:level\s+)?\d+|at\s+(?:level\s+)?\d+/i.test(direct[0])) count = numberWordValue(direct[1]);
+  }
+  return count;
+}
+
+function featureRechargeDetails(feature) {
+  const text = entriesToText(feature?.entries || "");
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  let short = false, long = false;
+  let shortRestore = "all", longRestore = "all";
+  for (const sentence of sentences) {
+    const hasRestRecovery = /(regain|regains|recover|recovers|restore|restores|restored|replenish|replenishes|replenished)/i.test(sentence);
+    const hasUseReset = /(?:use|uses) (?:this feature|it) again|use (?:this feature|it)\s+until|finish (?:a|an) (?:short|long) rest before (?:you )?(?:can )?use/i.test(sentence);
+    const hasPerRest = /(?:once|twice|three times|four times|five times|six times|\d+ times)\s+per\s+(short|long) rest/i.test(sentence);
+    if (!hasRestRecovery && !hasUseReset && !hasPerRest) continue;
+    if (/short rest/i.test(sentence)) {
+      short = true;
+      if (/regain (?:one|1) (?:expended )?uses?/i.test(sentence) || /regain (?:one|1) of (?:your|its) expended uses?/i.test(sentence)) shortRestore = "one";
+    }
+    if (/long rest/i.test(sentence)) long = true;
+  }
+  // “Short or Long Rest before you can use it again” means the resource is
+  // completely refreshed by either rest, unlike features that explicitly
+  // regain one expended use on a Short Rest.
+  if (/short or long rest/i.test(text) && /(?:use|uses) (?:this feature|it) again/i.test(text)) {
+    short = long = true;
+    shortRestore = longRestore = "all";
+  }
+  return { recharge: short && long ? "both" : short ? "short" : long ? "long" : "", shortRestore, longRestore };
+}
+
+function featureRechargeFromText(feature) { return featureRechargeDetails(feature).recharge; }
+
 function featureResourceSpecs(features, d, prefix) {
   const out = [];
   for (const f of features || []) {
     const uses = f?.uses;
-    if (!uses || typeof uses !== "object") continue;
-    const max = resourceMaxValue(uses.number ?? uses.max ?? uses.amount, d);
+    const max = uses && typeof uses === "object"
+      ? resourceMaxValue(uses.number ?? uses.max ?? uses.amount, d)
+      : inferFeatureUseMaxFromText(f, d);
     if (!max) continue;
-    const recharge = resourceRechargeLabel(uses.recharge || uses.recovery || uses.rest);
-    if (!recharge) continue;
+    const details = uses && typeof uses === "object" && resourceRechargeLabel(uses.recharge || uses.recovery || uses.rest)
+      ? { recharge: resourceRechargeLabel(uses.recharge || uses.recovery || uses.rest), shortRestore: "all", longRestore: "all" }
+      : featureRechargeDetails(f);
+    if (!details.recharge) continue;
     const id = `${prefix}:${f.source || DATA_SOURCE}:${f.name}`.toLowerCase();
-    out.push({ id, name: f.name, max, recharge, origin: { type: prefix, name: f.name, source: f.source || DATA_SOURCE } });
+    out.push({ id, name: f.name, max, recharge: details.recharge, shortRestore: details.shortRestore, longRestore: details.longRestore, mode: "auto", origin: { type: prefix, name: f.name, source: f.source || DATA_SOURCE } });
+  }
+  return out;
+}
+function classTableResourceSpecs(classObj, features, d) {
+  const out = [];
+  const featureMap = new Map((features || []).map(f => [textNorm(f?.name), f]));
+  const ignored = new Set(["cantrips", "preparedspells", "spellslots", "slotlevel", "weaponmastery", "ragedamage"]);
+  for (const group of classObj?.classTableGroups || []) {
+    const labels = Array.isArray(group.colLabels) ? group.colLabels : [];
+    const row = Array.isArray(group.rows) ? group.rows[Math.max(0, Number(d.level || 1) - 1)] : null;
+    if (!Array.isArray(row)) continue;
+    labels.forEach((label, idx) => {
+      const normalized = textNorm(stripTags(label));
+      if (!normalized || ignored.has(normalized)) return;
+      const feature = featureMap.get(normalized) || featureMap.get(normalized.replace(/s$/, ""));
+      if (!feature) return;
+      const max = resourceMaxValue(row[idx], d);
+      if (!max) return;
+      const details = featureRechargeDetails(feature);
+      if (!details.recharge) return;
+      const id = `classfeature:${feature.source || DATA_SOURCE}:${feature.name}`.toLowerCase();
+      out.push({ id, name: feature.name, max, recharge: details.recharge, shortRestore: details.shortRestore, longRestore: details.longRestore, mode: "auto", origin: { type: "classfeature", name: feature.name, source: feature.source || DATA_SOURCE } });
+    });
   }
   return out;
 }
@@ -2088,13 +2247,14 @@ function reconcileResources(c, specs) {
   const existing = Array.isArray(c.resources) ? c.resources : [];
   const byId = new Map(existing.filter(r => r?.mode === "auto" && r.id).map(r => [r.id, r]));
   const manual = existing.filter(r => r?.mode !== "auto");
-  const auto = specs.map(spec => {
+  const unique = new Map();
+  for (const spec of specs || []) unique.set(spec.id, spec);
+  const auto = [...unique.values()].map(spec => {
     const prior = byId.get(spec.id);
     return { ...spec, mode: "auto", current: prior ? clamp(Number(prior.current ?? spec.max), 0, spec.max) : spec.max };
   });
   c.resources = [...manual, ...auto];
 }
-
 async function deriveCharacter() {
   const c = state.character;
   const backgroundObj = findBackground(c.background?.name, c.background?.source || null);
@@ -2105,7 +2265,7 @@ async function deriveCharacter() {
   const finalStats = calculateFinalStats(c, backgroundObj, featObjs);
   const mods = Object.fromEntries(ABILITIES.map(a => [a, abilityMod(finalStats[a])]));
   const d = {
-    mods, stats: finalStats, baseStats: c.baseStats || c.stats || finalStats, pb: proficiencyBonus(c.level),
+    level: Number(c.level || 1), mods, stats: finalStats, baseStats: c.baseStats || c.stats || finalStats, pb: proficiencyBonus(c.level),
     classFile: null, classObj: null, subclassObj: null, subclassOptions: [],
     speciesObj: findSpecies(c.species?.name, c.species?.source || null), backgroundObj,
     featObj: featObjs[0] || null, featObjs, classFeatures: [], subclassFeatures: [],
@@ -2122,7 +2282,7 @@ async function deriveCharacter() {
     d.classFile = await getClassDetails(c.class.name);
     d.classObj = getClassFromFile(d.classFile, c.class.name, c.class.source || null);
     d.subclassOptions = getSubclassOptions(d.classFile, c.class.name);
-    const subclassUnlock = 3;
+    const subclassUnlock = getSubclassUnlockLevel(d.classObj);
     if (Number(c.level || 1) < subclassUnlock) c.subclass = null;
     d.subclassObj = d.subclassOptions.find(s => s.name.toLowerCase() === String(c.subclass?.name || "").toLowerCase() && (!c.subclass?.source || s.source === c.subclass.source)) || null;
     d.classFeatures = getClassFeatures(d.classFile, d.classObj, c.level);
@@ -2132,6 +2292,7 @@ async function deriveCharacter() {
     d.optionalFeatureObjects = selectedOptionalFeatureObjects(c, d.classObj, c.level);
     d.autoResourceSpecs = [
       ...featureResourceSpecs(d.classFeatures, d, "classfeature"),
+      ...classTableResourceSpecs(d.classObj, d.classFeatures, d),
       ...featureResourceSpecs(d.subclassFeatures, d, "subclassfeature"),
       ...featureResourceSpecs(d.featObjs, d, "feat"),
       ...featureResourceSpecs(d.optionalFeatureObjects, d, "optionalfeature")
@@ -2176,10 +2337,20 @@ async function deriveCharacter() {
   if (d.speciesObj?.darkvision) d.senses.push(`Darkvision ${d.speciesObj.darkvision} ft.`);
   for (const [sense, value] of Object.entries(d.speciesObj?.senses || {})) if (value) d.senses.push(`${canonicalLabel(sense)} ${value} ft.`);
   for (const sense of c.senses || []) if (sense && !d.senses.includes(sense)) d.senses.push(sense);
-  if (c.acOverride == null) {
-    try { const acResult = calcAutoAc(c, mods, await getItemsData(), d.effects); d.ac = acResult.value; d.acReason = acResult.reason; d.acBreakdown = acResult.breakdown || []; d.unarmoredDefense = d.effects.acFormulas?.[0] || getUnarmoredDefenseFormula(d.classObj || c.class, c.level); }
-    catch (error) { console.warn("Equipment AC calculation unavailable", error); }
-  } else { d.ac = Number(c.acOverride); d.acAutomatic = false; d.acReason = "Manual override"; }
+  d.proficiencies = parseProficiencyDisplay(d.classObj, d.backgroundObj, d.speciesObj, featObjs);
+  try {
+    const acResult = calcAutoAc(c, mods, await getItemsData(), d.effects, d.proficiencies, d.stats);
+    d.heavyArmorWorn = Boolean(acResult.wearingHeavyArmor);
+    d.armorSpeedPenalty = Number(acResult.speedPenalty || 0);
+    d.unarmoredDefense = d.effects.acFormulas?.[0] || getUnarmoredDefenseFormula(d.classObj || c.class, c.level);
+    if (c.acOverride == null) {
+      d.ac = acResult.value;
+      d.acReason = acResult.reason;
+      d.acBreakdown = acResult.breakdown || [];
+    } else {
+      d.ac = Number(c.acOverride); d.acAutomatic = false; d.acReason = "Manual override";
+    }
+  } catch (error) { console.warn("Equipment AC calculation unavailable", error); d.heavyArmorWorn = false; d.armorSpeedPenalty = 0; }
   for (const s of d.effects.skills) d.skillProficiencies.add(s);
   const effectiveExpertise = new Set([...(c.expertise || []), ...(d.effects.expertise || [])]);
   d.effectiveExpertise = effectiveExpertise;
@@ -2190,16 +2361,16 @@ async function deriveCharacter() {
   if (d.skillProficiencies.has("investigation")) d.passiveInvestigation += d.pb;
   if (effectiveExpertise.has("investigation")) d.passiveInvestigation += d.pb;
   d.passiveInvestigation += Number(d.effects.passiveInvestigationBonus || 0);
-  d.proficiencies = parseProficiencyDisplay(d.classObj, d.backgroundObj, d.speciesObj, featObjs);
-  d.speed = Number(c.speedOverride ?? Math.max(0, dfltSpeed(d.speciesObj) + Number(d.effects.speedBonus || 0) - 5 * Number(c.exhaustion || 0)));
+  const fastMovementBonus = d.effects.flags.has("fastMovement") && !d.heavyArmorWorn ? 10 : 0;
+  d.speed = Number(c.speedOverride ?? Math.max(0, dfltSpeed(d.speciesObj) + Number(d.effects.speedBonus || 0) + fastMovementBonus - 5 * Number(c.exhaustion || 0) - Number(d.armorSpeedPenalty || 0)));
   const baseMaxHp = defaultMaxHp(d.classObj, c.level, mods.con, c.hpMaxOverride);
   const hpPerLevelBonus = Number(d.effects.hpPerLevel || 0) * Number(c.level || 1) + Number(d.effects.hpFlat || 0);
   d.maxHp = c.hpMaxOverride == null ? baseMaxHp + hpPerLevelBonus : baseMaxHp;
   d.maxHpAutomatic = c.hpMaxOverride == null;
   const faces = hitDieFaces(d.classObj);
-  const later = Math.floor(faces / 2) + 1 + mods.con;
+  const later = Math.max(1, Math.floor(faces / 2) + 1 + mods.con);
   d.hpFormula = c.hpMaxOverride == null
-    ? `Level 1: d${faces} ${formatMod(mods.con)}; later levels: ${formatMod(later)} each${hpPerLevelBonus ? `; automatic feature bonus ${formatMod(hpPerLevelBonus)} total` : ""}`
+    ? `Level 1: max of 1 or d${faces} ${formatMod(mods.con)}; later levels: max of 1 or ${formatMod(later)} each${hpPerLevelBonus ? `; automatic feature bonus ${formatMod(hpPerLevelBonus)} total` : ""}`
     : "Manual maximum";
   if (c.acOverride == null && !Number.isFinite(d.ac)) d.ac = 10 + mods.dex;
   c.hitDiceUsed = Math.min(Math.max(0, Number(c.hitDiceUsed || 0)), Math.max(0, Number(c.level || 1)));
@@ -2284,7 +2455,6 @@ function pipBar(count, used, action, data = {}) {
   return `<div class="pips">${Array.from({ length: n }, (_, i) => `<button class="pip ${i < u ? "used" : ""}" data-action="${action}" data-index="${i}" ${Object.entries(data).map(([k,v]) => `data-${k}="${escapeHtml(v)}"`).join(" ")}></button>`).join("")}</div>`;
 }
 
-async 
 function renderInventoryItemLink(item) {
   if (!item?.name) return "—";
   const found = findOfficialItemByName(item.name, item.source || null);
@@ -2993,8 +3163,8 @@ function openResourceManager() {
     <input class="editor-name" data-resource-name="${i}" value="${escapeHtml(r.name || "Resource")}" aria-label="Resource name" ${r.mode==="auto"?"readonly":""}>
     <input type="number" min="0" max="99" data-resource-max="${i}" value="${Number(r.max || 0)}" aria-label="Resource maximum" ${r.mode==="auto"?"readonly":""}>
     <input type="number" min="0" max="99" data-resource-current="${i}" value="${Number(r.current || 0)}" aria-label="Current resource">
-    <select data-resource-recharge="${i}" aria-label="Recharge" ${r.mode==="auto"?"disabled":""}><option value="" ${!r.recharge?"selected":""}>Manual</option><option value="short" ${r.recharge==="short"?"selected":""}>Short rest</option><option value="long" ${r.recharge==="long"?"selected":""}>Long rest</option></select>
-    <span class="resource-mode">${r.mode==="auto" ? `Auto · ${escapeHtml(r.origin?.name || "Feature")}` : "Manual"}</span><button class="icon-button" data-resource-delete="${i}" title="Remove">×</button>
+    <select data-resource-recharge="${i}" aria-label="Recharge" ${r.mode==="auto"?"disabled":""}><option value="" ${!r.recharge?"selected":""}>Manual</option><option value="short" ${r.recharge==="short"?"selected":""}>Short rest</option><option value="long" ${r.recharge==="long"?"selected":""}>Long rest</option><option value="both" ${r.recharge==="both"?"selected":""}>Short or Long rest</option></select>
+    <span class="resource-mode">${r.mode==="auto" ? `Auto · ${escapeHtml(r.origin?.name || "Feature")}` : "Manual"}</span>${r.mode==="auto" ? `<button class="icon-button" disabled title="Automatic resources are derived from their feature">×</button>` : `<button class="icon-button" data-resource-delete="${i}" title="Remove">×</button>`}
   </div>`).join("") || `<div class="empty">No resources. Add one below.</div>`;
   openModal("Manage resources", `<div class="editor-head"><span>Name</span><span>Max</span><span>Current</span><span>Recharge</span><span>Mode / Origin</span><span></span></div><div id="resourceEditor" class="editor-list">${renderRows()}</div><button class="button button-primary" data-resource-add style="margin-top:12px">Add manual resource</button>`);
   const wire = () => {
@@ -3059,7 +3229,7 @@ async function openInventoryItemInfo(i){const item=state.character.inventory[i];
 function maxCastableSpellLevel(d = state.lastDerived) {
   const slots = d?.spellSlots || [];
   for (let i = slots.length - 1; i >= 0; i--) if (Number(slots[i] || 0) > 0) return i + 1;
-  return d?.classObj?.spellcastingAbility ? Math.min(9, Math.max(1, Number(state.character?.level || 1))) : 0;
+  return 0;
 }
 function updateSpellResultFilter(){
   const spells = getLoadedSpells().filter(s => isOfficial2024Entity(s)).sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
@@ -3136,7 +3306,11 @@ function applyHealing(amount, maxHp){
 }
 function shortRest(){
   const c=state.character;
-  for(const r of c.resources){ if(r.recharge==="short") r.current=r.max; }
+  for(const r of c.resources){
+    if(r.recharge!=="short" && r.recharge!=="both") continue;
+    if(r.shortRestore === "one") r.current=Math.min(Number(r.max||0), Number(r.current||0)+1);
+    else r.current=r.max;
+  }
   saveCharacter().then(()=>{showToast("Short rest recorded.");render();});
 }
 function longRest(){
@@ -3150,7 +3324,7 @@ function longRest(){
   c.spellSlotsUsed=[];
   c.exhaustion=Math.max(0, Number(c.exhaustion||0)-1);
   c.concentration=null;
-  for(const r of c.resources){if(r.recharge==="short"||r.recharge==="long")r.current=r.max;}
+  for(const r of c.resources){if(r.recharge==="short"||r.recharge==="long"||r.recharge==="both")r.current=r.max;}
   saveCharacter().then(()=>{showToast("Long rest recorded. HP, spell slots, hit dice, and exhaustion updated.");render();});
 }
 
