@@ -137,6 +137,7 @@ function emptyCharacter() {
     feats: [],
     additionalFeats: [],
     featAbilityChoices: {},
+    featAbilityModes: {},
     featSaveChoices: {},
     featSkillChoices: {},
     featMixedChoices: {},
@@ -272,6 +273,7 @@ function migrateCharacter(raw) {
   c.feat = raw.feat ? raw.feat : (c.feats[0] || null);
   c.additionalFeats = Array.isArray(raw.additionalFeats) ? raw.additionalFeats : c.feats.slice(1);
   c.featAbilityChoices = { ...(raw.featAbilityChoices || {}) };
+  c.featAbilityModes = { ...(raw.featAbilityModes || {}) };
   c.featSaveChoices = { ...(raw.featSaveChoices || {}) };
   c.featSkillChoices = { ...(raw.featSkillChoices || {}) };
   c.featMixedChoices = { ...(raw.featMixedChoices || {}) };
@@ -1226,7 +1228,24 @@ function progressionFeatSlots(classObj, level) {
       out.push({ key: `feat:${prog.name}|${category.join(",")}|${i+1}`, name: prog.name, category, index: i+1, level: unlockLevel });
     }
   }
-  return out;
+
+  // 2024 class files encode ordinary ASI/general-feat levels as class
+  // features rather than featProgression entries. Synthesize one stable slot
+  // per printed Ability Score Improvement feature.
+  const asiRefs = (classObj?.classFeatures || []).map(parseFeatureRef).filter(ref =>
+    ref && textNorm(ref.name) === "abilityscoreimprovement" && Number(ref.level) <= Number(level || 1)
+  );
+  for (const ref of asiRefs) {
+    out.push({
+      key: `feat:Ability Score Improvement|G|level-${ref.level}`,
+      name: "Ability Score Improvement",
+      category: ["G"],
+      index: ref.level,
+      level: ref.level,
+    });
+  }
+
+  return out.sort((a,b)=>Number(a.level)-Number(b.level) || String(a.name).localeCompare(String(b.name)) || Number(a.index)-Number(b.index));
 }
 
 function featCategoryMatches(feat, categories) {
@@ -1496,24 +1515,54 @@ function normalizeAbilityKey(value) {
   return ABILITIES.includes(raw) ? raw : aliases[raw] || null;
 }
 function normalizeSkillArray(values) { return [...new Set((values || []).map(normalizeSkillKey).filter(Boolean))]; }
-function featRefKey(feat, index = 0, choiceIndex = 0) { return `${feat?.name || "Feat"}|${feat?.source || ""}|${index}|${choiceIndex}`; }
+function featRefKey(feat, index = 0, choiceIndex = 0) { return `${featInstanceKey(feat)}|${index}|${choiceIndex}`; }
 function featSpecKey(feat, spec) { return featRefKey(feat, spec.index, spec.choiceIndex || 0); }
+function isAbilityScoreImprovementFeat(feat) {
+  return textNorm(feat?.name) === "abilityscoreimprovement" && String(feat?.source || "").toUpperCase() === DATA_SOURCE;
+}
+
+function featInstanceKey(feat) {
+  const base = `${feat?.name || "Feat"}|${feat?.source || ""}`;
+  return feat?._instanceKey ? `${base}|@${feat._instanceKey}` : base;
+}
+
 function selectedFeatObjects(c) {
-  const refs = [
-    ...(c?.feat ? [c.feat] : []),
-    ...(Array.isArray(c?.additionalFeats) ? c.additionalFeats : []),
-    ...(Object.values(c?.progressionFeats || {}) || []),
-    ...(Array.isArray(c?.feats) && !c?.additionalFeats?.length && !Object.keys(c?.progressionFeats || {}).length ? c.feats.slice(1) : []),
-  ];
+  const candidates = [];
+  if (c?.feat) candidates.push({ ref: c.feat, instanceKey: "origin", label: "Origin feat" });
+  for (const [i, ref] of (Array.isArray(c?.additionalFeats) ? c.additionalFeats : []).entries()) candidates.push({ ref, instanceKey: `additional-${i + 1}`, label: `Additional feat ${i + 1}` });
+  for (const [slotKey, ref] of Object.entries(c?.progressionFeats || {})) candidates.push({ ref, instanceKey: `progression-${slotKey}`, label: slotKey });
+  if (Array.isArray(c?.feats) && !c?.additionalFeats?.length && !Object.keys(c?.progressionFeats || {}).length) {
+    c.feats.slice(1).forEach((ref,i)=>candidates.push({ ref, instanceKey: `legacy-${i + 1}`, label: `Legacy feat ${i + 1}` }));
+  }
+
   const out = [];
-  for (const ref of refs) {
-    const obj = findFeat(ref?.name, ref?.source || null);
-    if (obj && !out.some(x => x.name.toLowerCase() === obj.name.toLowerCase() && x.source === obj.source)) out.push(obj);
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const obj = findFeat(candidate.ref?.name, candidate.ref?.source || null);
+    if (!obj) continue;
+    const identity = `${String(obj.name).toLowerCase()}|${String(obj.source || "").toLowerCase()}`;
+    if (obj.repeatable) {
+      const copy = { ...obj, _instanceKey: candidate.instanceKey, _instanceLabel: candidate.label };
+      if (isAbilityScoreImprovementFeat(copy)) copy._abilityMode = c.featAbilityModes?.[featInstanceKey(copy)] || null;
+      out.push(copy);
+    } else if (!seen.has(identity)) {
+      seen.add(identity);
+      out.push(obj);
+    }
   }
   return out;
 }
 function featAbilitySpecs(feat) {
   const specs = [];
+  if (isAbilityScoreImprovementFeat(feat)) {
+    const mode = feat?._abilityMode;
+    if (mode === "plus2") return [{ index: 0, choiceIndex: 0, from: [...ABILITIES], amount: 2, asiMode: mode }];
+    if (mode === "split") return [
+      { index: 1, choiceIndex: 0, from: [...ABILITIES], amount: 1, asiMode: mode },
+      { index: 1, choiceIndex: 1, from: [...ABILITIES], amount: 1, asiMode: mode },
+    ];
+    return specs;
+  }
   for (const [index, entry] of (Array.isArray(feat?.ability) ? feat.ability : []).entries()) {
     if (entry?.choose?.weighted) {
       const from = entry.choose.weighted.from || [];
@@ -1744,20 +1793,42 @@ function reconcileSpeciesChoices(c, species) {
 
 function reconcileFeatChoices(c, feats) {
   c.featAbilityChoices = { ...(c.featAbilityChoices || {}) };
+  c.featAbilityModes = { ...(c.featAbilityModes || {}) };
   c.featSaveChoices = { ...(c.featSaveChoices || {}) };
   c.featSkillChoices = { ...(c.featSkillChoices || {}) };
   c.featMixedChoices = { ...(c.featMixedChoices || {}) };
   c.featSpellChoices = { ...(c.featSpellChoices || {}) };
   c.featExpertiseChoices = { ...(c.featExpertiseChoices || {}) };
-  const validMixed = new Set(), validSpell = new Set(), validExpertise = new Set();
+  const validAbility = new Set(), validModes = new Set(), validSave = new Set(), validSkill = new Set(), validMixed = new Set(), validSpell = new Set(), validExpertise = new Set();
   for (const feat of feats || []) {
-    for (const spec of featAbilitySpecs(feat)) { const key=featSpecKey(feat,spec); if (spec.fixed) c.featAbilityChoices[key]=spec.from[0]; else if (!spec.from.includes(c.featAbilityChoices[key])) c.featAbilityChoices[key]=null; }
-    for (const spec of featSaveSpecs(feat)) { const key=featSpecKey(feat,spec); if (spec.fixed) c.featSaveChoices[key]=spec.from[0]; else if (!spec.from.includes(c.featSaveChoices[key])) c.featSaveChoices[key]=null; }
-    for (const spec of featSkillSpecs(feat)) { const key=featSpecKey(feat,spec); if (spec.fixed) c.featSkillChoices[key]=spec.from[0]; else if (!spec.from.includes(c.featSkillChoices[key])) c.featSkillChoices[key]=null; }
+    if (isAbilityScoreImprovementFeat(feat)) {
+      const modeKey = featInstanceKey(feat);
+      validModes.add(modeKey);
+      if (!["plus2","split"].includes(c.featAbilityModes[modeKey])) delete c.featAbilityModes[modeKey];
+    }
+    for (const spec of featAbilitySpecs(feat)) {
+      const key=featSpecKey(feat,spec); validAbility.add(key);
+      if (spec.fixed) c.featAbilityChoices[key]=spec.from[0];
+      else if (!spec.from.includes(c.featAbilityChoices[key])) delete c.featAbilityChoices[key];
+    }
+    for (const spec of featSaveSpecs(feat)) {
+      const key=featSpecKey(feat,spec); validSave.add(key);
+      if (spec.fixed) c.featSaveChoices[key]=spec.from[0];
+      else if (!spec.from.includes(c.featSaveChoices[key])) delete c.featSaveChoices[key];
+    }
+    for (const spec of featSkillSpecs(feat)) {
+      const key=featSpecKey(feat,spec); validSkill.add(key);
+      if (spec.fixed) c.featSkillChoices[key]=spec.from[0];
+      else if (!spec.from.includes(c.featSkillChoices[key])) delete c.featSkillChoices[key];
+    }
     for (const spec of featMixedChoiceSpecs(feat)) validMixed.add(spec.key);
     for (const spec of featAdditionalSpellChoiceSpecs(feat)) validSpell.add(spec.key);
     for (const spec of featExpertiseSpecs(feat)) validExpertise.add(spec.key);
   }
+  for (const key of Object.keys(c.featAbilityChoices)) if (!validAbility.has(key)) delete c.featAbilityChoices[key];
+  for (const key of Object.keys(c.featAbilityModes)) if (!validModes.has(key)) delete c.featAbilityModes[key];
+  for (const key of Object.keys(c.featSaveChoices)) if (!validSave.has(key)) delete c.featSaveChoices[key];
+  for (const key of Object.keys(c.featSkillChoices)) if (!validSkill.has(key)) delete c.featSkillChoices[key];
   for (const key of Object.keys(c.featMixedChoices)) if (!validMixed.has(key)) delete c.featMixedChoices[key];
   for (const key of Object.keys(c.featSpellChoices)) if (!validSpell.has(key)) delete c.featSpellChoices[key];
   for (const key of Object.keys(c.featExpertiseChoices)) if (!validExpertise.has(key)) delete c.featExpertiseChoices[key];
