@@ -842,3 +842,66 @@ body { min-height: 100vh; }
 .sheet-note-link:hover, .sheet-note-link:focus-visible { background:#eee4d3; outline:none; }
 .rules-condition-hover { touch-action:manipulation; -webkit-user-select:none; user-select:none; }
 @media (max-width: 720px) { .language-choice-grid { grid-template-columns:1fr; } }
+
+
+/* v0.30 — staged rules-cache progress */
+.cache-progress-root {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(45, 40, 31, .42);
+  backdrop-filter: blur(3px);
+}
+.cache-progress-root[hidden] { display: none; }
+.cache-progress-card {
+  width: min(560px, calc(100vw - 32px));
+  padding: 22px 22px 20px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--paper, #f3ead7);
+  color: var(--ink, #2f2a23);
+  box-shadow: 0 18px 60px rgba(0,0,0,.25);
+}
+.cache-progress-phase {
+  font-size: .72rem;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  opacity: .66;
+  margin-bottom: 5px;
+}
+.cache-progress-title { font: 700 1.08rem Georgia, serif; }
+.cache-progress-detail {
+  min-height: 1.35em;
+  margin: 5px 0 14px;
+  font-size: .82rem;
+  opacity: .72;
+  overflow-wrap: anywhere;
+}
+.cache-progress-track {
+  height: 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(89,75,55,.13);
+  overflow: hidden;
+}
+.cache-progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: #6a5842;
+  transition: width .18s ease;
+}
+.cache-progress-count {
+  margin-top: 9px;
+  text-align: right;
+  font-size: .76rem;
+  font-variant-numeric: tabular-nums;
+  opacity: .75;
+}
+@media (max-width: 640px) {
+  .cache-progress-root { padding: 12px; }
+  .cache-progress-card { padding: 18px; }
+}

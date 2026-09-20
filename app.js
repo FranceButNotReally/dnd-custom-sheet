@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.28.0";
+const APP_VERSION = "0.30.0";
 
 const PATHS = {
   books: "data/books.json",
@@ -74,6 +74,8 @@ const state = {
   view: "sheet",
   online: navigator.onLine,
   busy: false,
+  cacheProgress: null,
+  libraryReady: false,
   version: null,
   lastSync: null,
   lastReleaseCheck: null,
@@ -463,21 +465,129 @@ function buildOfficialSourceMeta(books) {
   return [...seen.values()].sort((a,b) => (a.published || "9999").localeCompare(b.published || "9999") || a.name.localeCompare(b.name));
 }
 
+
+const CORE_CACHE_PATHS = [
+  PATHS.books,
+  PATHS.classIndex,
+  PATHS.races,
+  PATHS.backgrounds,
+  PATHS.feats,
+  PATHS.languages,
+  PATHS.optionalfeatures,
+  PATHS.spellIndex,
+  PATHS.conditionsdiseases,
+  PATHS.variantrules,
+  PATHS.actions,
+  PATHS.items,
+];
+
+function nextTick() { return new Promise(resolve => setTimeout(resolve, 0)); }
+
+function setCacheProgress({label="Preparing rules data…", detail="", done=0, total=1, phase="Caching"} = {}) {
+  const safeTotal = Math.max(1, Number(total || 1));
+  const safeDone = Math.min(safeTotal, Math.max(0, Number(done || 0)));
+  state.cacheProgress = { label, detail, done: safeDone, total: safeTotal, phase };
+  const root = document.querySelector("#cacheProgressRoot");
+  if (!root) return;
+  const pct = Math.round((safeDone / safeTotal) * 100);
+  root.hidden = false;
+  const title = root.querySelector("[data-cache-progress-title]");
+  const detailEl = root.querySelector("[data-cache-progress-detail]");
+  const bar = root.querySelector("[data-cache-progress-bar]");
+  const count = root.querySelector("[data-cache-progress-count]");
+  const phaseEl = root.querySelector("[data-cache-progress-phase]");
+  if (title) title.textContent = label;
+  if (detailEl) detailEl.textContent = detail;
+  if (bar) bar.style.width = `${pct}%`;
+  if (count) count.textContent = `${pct}% · ${safeDone} / ${safeTotal}`;
+  if (phaseEl) phaseEl.textContent = phase;
+}
+
+function hideCacheProgress() {
+  state.cacheProgress = null;
+  const root = document.querySelector("#cacheProgressRoot");
+  if (root) root.hidden = true;
+}
+
+async function loadPathsInBatches(version, paths, {batchSize=3, phase="Core catalogs", startDone=0, total=paths.length, label="Caching core catalogs"} = {}) {
+  const results = new Array(paths.length);
+  for (let i = 0; i < paths.length; i += batchSize) {
+    const batch = paths.slice(i, i + batchSize);
+    const values = [];
+    for (const path of batch) {
+      const index = i + values.length;
+      setCacheProgress({
+        label,
+        detail: path,
+        done: startDone + index,
+        total,
+        phase,
+      });
+      values.push(await fetch5eData(version, path));
+      setCacheProgress({
+        label,
+        detail: path,
+        done: startDone + index + 1,
+        total,
+        phase,
+      });
+      await nextTick();
+    }
+    for (let j = 0; j < values.length; j++) results[i + j] = values[j];
+    await nextTick();
+  }
+  return results;
+}
+
+async function runCacheBatches(entries, worker, {batchSize=4, phase="Library cache", done=0, total=entries.length, label="Caching data"} = {}) {
+  for (let i = 0; i < entries.length; i += batchSize) {
+    const batch = entries.slice(i, i + batchSize);
+    await Promise.all(batch.map((entry, offset) => worker(entry, i + offset)));
+    done += batch.length;
+    setCacheProgress({ label, detail: `${done} of ${total}`, done, total, phase });
+    await nextTick();
+  }
+}
+
+function officialSpellSourcesForData(core) {
+  const index = core?.spellIndex || {};
+  const official = core?.officialSources || new Set([DATA_SOURCE]);
+  const keys = Object.keys(index);
+  return keys.filter(source => official.has(source) || String(source).toLowerCase() === String(DATA_SOURCE).toLowerCase());
+}
+
+async function cacheAllLibraryData(version, core = null) {
+  const loadedCore = core || await loadCoreData(version);
+  const classEntries = Object.entries(loadedCore.classIndex || {});
+  const spellSources = officialSpellSourcesForData(loadedCore);
+  const total = CORE_CACHE_PATHS.length + classEntries.length + spellSources.length;
+  let done = CORE_CACHE_PATHS.length;
+  setCacheProgress({label: "Caching 2024 rules library", detail: `${done} of ${total} core catalogs loaded`, done, total, phase: "Core catalogs"});
+
+  await runCacheBatches(classEntries, async ([name, file]) => {
+    const data = await fetch5eData(version, `data/class/${file}`);
+    state.data.classFiles.set(String(name).toLowerCase(), data);
+  }, {batchSize: 3, phase: "Classes", done, total, label: "Caching class files"});
+  done += classEntries.length;
+
+  await runCacheBatches(spellSources, async source => {
+    await loadSpellSource(version, source);
+  }, {batchSize: 3, phase: "Spells", done, total, label: "Caching spell sources"});
+  done += spellSources.length;
+
+  mergeOfficialSpells();
+  state.libraryReady = true;
+  setCacheProgress({label: "Rules library ready", detail: "All staged 2024 player-facing data is cached on this device.", done: total, total, phase: "Complete"});
+  await nextTick();
+  return { core: loadedCore, total, classCount: classEntries.length, spellSourceCount: spellSources.length };
+}
+
 async function loadCoreData(version) {
-  const [books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spellIndex, conditionsdiseases, variantrules, actions, items] = await Promise.all([
-    fetch5eData(version, PATHS.books),
-    fetch5eData(version, PATHS.classIndex),
-    fetch5eData(version, PATHS.races),
-    fetch5eData(version, PATHS.backgrounds),
-    fetch5eData(version, PATHS.feats),
-    fetch5eData(version, PATHS.languages),
-    fetch5eData(version, PATHS.optionalfeatures),
-    fetch5eData(version, PATHS.spellIndex),
-    fetch5eData(version, PATHS.conditionsdiseases),
-    fetch5eData(version, PATHS.variantrules),
-    fetch5eData(version, PATHS.actions),
-    fetch5eData(version, PATHS.items),
-  ]);
+  const [books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spellIndex, conditionsdiseases, variantrules, actions, items] = await loadPathsInBatches(
+    version,
+    CORE_CACHE_PATHS,
+    {batchSize: 3, phase: "Core catalogs", total: CORE_CACHE_PATHS.length, label: "Loading core 2024 catalogs"}
+  );
   const sourceMeta = buildOfficialSourceMeta(books);
   const officialSources = new Set(sourceMeta.map(x => x.source));
   const referenceCache = new Map();
@@ -530,75 +640,93 @@ async function hydrateSpellData(version, all = false) {
 }
 
 async function loadVersion(version) {
+  state.libraryReady = false;
   const core = await loadCoreData(version);
   state.data = core;
+  return core;
+}
+
+async function ensureLibraryReady(version) {
+  if (!version) return false;
+  if (state.libraryReady) return true;
+  setCacheProgress({label: "Finishing 2024 rules cache", detail: "Loading the remaining classes and spell sources in small batches…", done: 0, total: 1, phase: "Preparing"});
+  const result = await cacheAllLibraryData(version, state.data?.classIndex ? state.data : null);
+  return Boolean(result);
 }
 
 async function hydrateBackgroundData(version) {
   try {
-    // Keep startup light, but warm the 2024 core spell catalog in the background so the
-    // picker and hover references do not begin from an empty cache.
-    await loadSpellSource(version, DATA_SOURCE);
-    mergeOfficialSpells();
-    // The current character's class is the only class file needed for the initial sheet.
-    // Other class files remain lazy and are loaded only when selected/referenced.
-    if (state.character?.class?.name) await getClassDetails(state.character.class.name);
+    await ensureLibraryReady(version);
   } catch (e) {
-    console.warn("Background rules hydration failed", e);
+    state.libraryReady = false;
+    console.warn("Rules library hydration failed", e);
+    showToast(`Rules library is incomplete: ${e.message}`);
   }
 }
 
 async function syncData(force = false) {
   if (state.busy) return;
   state.busy = true;
+  state.libraryReady = false;
   setBusy(true);
   updateHeader();
   try {
     if (!state.online) {
       if (!state.version) throw new Error("Connect to the internet for the first data sync.");
+      setCacheProgress({label: "Checking cached rules library", detail: "Offline mode — using data already stored on this device.", done: 0, total: 1, phase: "Offline"});
       await loadVersion(state.version);
+      await ensureLibraryReady(state.version);
       render();
-      hydrateBackgroundData(state.version).then(() => render()).catch(console.warn);
-      showToast(`Offline: using cached 5etools ${state.version}.`);
+      showToast(`Offline: 5etools ${state.version} rules library is ready.`);
       return;
     }
+
     const latest = await getLatestReleaseTag(force);
     const needsUpdate = force || !state.version || latest !== state.version;
+    const oldVersion = state.version;
     if (!needsUpdate) {
       await loadVersion(state.version);
+      await ensureLibraryReady(state.version);
       render();
-      hydrateBackgroundData(state.version).then(() => render()).catch(console.warn);
-      showToast(`5etools ${state.version} is current.`);
+      showToast(`5etools ${state.version} is current; rules library is fully cached.`);
       return;
     }
-    showToast(`Downloading 5etools ${latest}…`);
-    const oldVersion = state.version;
+
+    showToast(`Downloading 5etools ${latest} in staged batches…`);
     await loadVersion(latest);
     state.version = latest;
-    render();
-    hydrateBackgroundData(latest).then(() => render()).catch(console.warn);
+    const result = await cacheAllLibraryData(latest, state.data);
     state.lastSync = new Date().toISOString();
     await persistMeta();
     if (oldVersion && oldVersion !== latest) await idbDeletePrefix("data", `${oldVersion}::`);
-    showToast(`5etools updated to ${latest}.`);
+    render();
+    showToast(`5etools updated to ${latest}: ${result.classCount} class files and ${result.spellSourceCount} spell sources cached.`);
   } catch (error) {
     console.warn(error);
     if (state.version) {
       try {
         await loadVersion(state.version);
+        await ensureLibraryReady(state.version);
         render();
-        hydrateBackgroundData(state.version).then(() => render()).catch(console.warn);
-        showToast(`Using cached 5etools ${state.version}. ${state.online ? "Update check failed." : "Offline mode."}`);
+        showToast(`Using cached 5etools ${state.version}. ${state.libraryReady ? "Rules library ready." : "Rules library remains incomplete."}`);
       } catch (cacheError) {
+        state.libraryReady = false;
         showToast(`5etools data could not be loaded: ${cacheError.message}`);
       }
     } else {
+      state.libraryReady = false;
       showToast(`Could not load 5etools data: ${error.message}`);
     }
   } finally {
     state.busy = false;
     setBusy(false);
     updateHeader();
+    if (state.libraryReady) {
+      setCacheProgress({label: "Rules library ready", detail: "All staged 2024 player-facing data is cached on this device.", done: 1, total: 1, phase: "Complete"});
+      setTimeout(hideCacheProgress, 650);
+    } else {
+      setCacheProgress({label: "Rules cache incomplete", detail: "Retry Update data while online to resume the staged cache.", done: 0, total: 1, phase: "Incomplete"});
+    }
     render();
   }
 }
@@ -2625,7 +2753,7 @@ function updateHeader() {
     net.textContent = state.online ? "Online" : "Offline";
     net.className = `status-pill ${state.online ? "online" : "offline"}`;
   }
-  if (data) data.textContent = state.version ? `5etools ${state.version}` : "5etools: not synced";
+  if (data) data.textContent = state.version ? `5etools ${state.version}${state.libraryReady ? "" : " · caching…"}` : "5etools: not synced";
   if (install) install.hidden = !state.deferredInstallPrompt;
 }
 function setBusy(value) { state.busy = value; const btn = document.querySelector("#updateBtn"); if (btn) { btn.disabled = value; btn.textContent = value ? "Updating…" : "Update data"; } }
@@ -2641,8 +2769,8 @@ function render() {
   const app = document.querySelector("#app");
   if (!app) return;
   document.querySelectorAll(".tab").forEach(btn => btn.classList.toggle("is-active", btn.dataset.view === state.view));
-  if (!state.version || !state.data.classIndex) {
-    app.innerHTML = emptyState();
+  if (!state.version || !state.data.classIndex || !state.libraryReady) {
+    app.innerHTML = !state.version ? emptyState() : `<div class="card empty-state"><div class="empty-icon">◆</div><h2>Finishing rules cache</h2><p>The app uses a complete local 2024 rules cache to avoid missing equipment, spells, proficiencies, and references. The cache is built in small batches and can be resumed safely.</p><button class="button button-primary" data-action="cache-extended" ${state.busy ? "disabled" : ""}>${state.busy ? "Caching…" : "Complete / repair cache"}</button></div>`;
     bindEvents();
     return;
   }
@@ -2665,7 +2793,7 @@ function pageHeader(kicker, title, meta, actions = "") {
 }
 
 function emptyState() {
-  return `<div class="card empty-state"><div class="empty-icon">◆</div><h2>Sync 5etools to begin</h2><p>The first sync downloads the 2024 official player-facing data currently represented by 5etools to this device. After that, the character sheet can work offline.</p><button class="button button-primary" data-action="sync">Sync 5etools</button></div>`;
+  return `<div class="card empty-state"><div class="empty-icon">◆</div><h2>Sync 5etools to begin</h2><p>The first sync downloads and caches the 2024 player-facing rules library in small batches. A progress bar shows what is being stored so the app does not depend on partially cached data.</p><button class="button button-primary" data-action="sync">Sync 5etools</button></div>`;
 }
 
 function metric(label, value, sub = "") {
@@ -2944,6 +3072,9 @@ async function renderBuilder(app) {
   ]).filter(Boolean).join("");
   const selectedAbility2 = c.backgroundAbility.plus2;
   const selectedAbility1 = c.backgroundAbility.plus1;
+  const selectedAbility1b = c.backgroundAbility.plus1b;
+  const selectedAbility1c = c.backgroundAbility.plus1c;
+  const bgMode = c.backgroundAbility.mode === "three" ? "three" : "split";
   const classSkillChoices = new Set(normalizeSkillArray(c.classSkillChoices));
   const classOptionsSkills = d.skillChoiceSpec?.from || [];
   const maxClassSkills = d.skillChoiceSpec?.count || 0;
@@ -3147,38 +3278,27 @@ async function renderEquipment(app) {
 }
 
 async function cacheExtendedRules(){
-  if (!state.version) { showToast("Sync the 5etools data once before building the extended cache."); return; }
-  if (!state.online) { showToast("Extended caching requires an internet connection."); return; }
+  if (!state.version) { showToast("Sync the 5etools data once before completing the library cache."); return; }
+  if (!state.online) { showToast("Completing the full rules cache requires an internet connection."); return; }
   if (state.busy) return;
   state.busy = true;
+  state.libraryReady = false;
   setBusy(true);
   updateHeader();
   try {
-    const classEntries = Object.entries(state.data.classIndex || {});
-    const spellSources = Object.keys(state.data.spellIndex || {});
-    let classDone = 0, spellDone = 0;
-    const runBatch = async (entries, worker, chunk = 4) => {
-      for (let i = 0; i < entries.length; i += chunk) await Promise.all(entries.slice(i, i + chunk).map(worker));
-    };
-    await runBatch(classEntries, async ([name, file]) => {
-      try {
-        const data = await fetch5eData(state.version, `data/class/${file}`);
-        state.data.classFiles.set(String(name).toLowerCase(), data);
-      } finally { classDone++; }
-    });
-    await runBatch(spellSources, async source => {
-      try { await loadSpellSource(state.version, source); } finally { spellDone++; }
-    });
-    mergeOfficialSpells();
-    showToast(`Extended cache complete: ${classDone} class files and ${spellDone} spell sources cached.`);
+    const core = state.data?.classIndex ? state.data : await loadVersion(state.version);
+    const result = await cacheAllLibraryData(state.version, core);
+    showToast(`Rules library complete: ${result.classCount} class files and ${result.spellSourceCount} spell sources cached.`);
   } catch (e) {
-    console.warn("Extended cache failed", e);
-    showToast(`Extended cache stopped: ${e.message}`);
+    state.libraryReady = false;
+    console.warn("Rules cache completion failed", e);
+    showToast(`Rules cache stopped: ${e.message}`);
   } finally {
     state.busy = false;
     setBusy(false);
     updateHeader();
-    await render();
+    if (state.libraryReady) setTimeout(hideCacheProgress, 650);
+    render();
   }
 }
 
@@ -3200,7 +3320,7 @@ async function renderDataView(app) {
     <section class="card compact-gap"><div class="section-title">Detected 2024-era official sources</div><div class="source-chip-grid">${(state.data.sourceMeta || []).map(x=>`<div class="source-chip"><strong>${escapeHtml(x.name)}</strong><span>${escapeHtml(x.source)}${x.published?` · ${escapeHtml(x.published)}`:""}</span></div>`).join("")}</div></section>
     <div class="grid three compact-gap">${Object.entries(counts).map(([k,v])=>metric(k, v == null ? "Not loaded" : v)).join("")}</div>
     <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Characters on this device</div><div class="mini">Character state is independent of 5etools rules data.</div></div><button class="button button-small button-primary" data-action="new-character">New character</button></div><div class="character-list">${chars.map(ch=>`<div class="character-row ${ch.id===state.character.id?"current":""}"><button class="character-select" data-action="switch-character" data-id="${ch.id}"><strong>${escapeHtml(ch.name)}</strong><span>${escapeHtml([ch.species?.name,ch.class?.name,ch.subclass?.name,`Level ${ch.level}`].filter(Boolean).join(" · "))}</span></button>${ch.id!==state.character.id?`<button class="icon-button" data-action="delete-character" data-id="${ch.id}">×</button>`:""}</div>`).join("")}</div></section>
-    <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Extended cache</div><div class="mini">Initial load stays light. This optional action downloads and stores all indexed class files and all spell-source files for the selected 5etools release, so later browsing and reference lookups can work without fetching additional files.</div></div><button class="button button-small button-primary" data-action="cache-extended" ${state.busy?"disabled":""}>Cache extended library</button></div></section>
+    <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Extended cache</div><div class="mini">The rules library is cached in small batches with visible progress. Use this to resume or repair an incomplete cache after an interrupted download or cleared browser storage.</div></div><button type="button" id="cacheExtendedBtn" class="button button-small button-primary" data-action="cache-extended" ${state.busy?"disabled":""}>Complete / repair rules cache</button></div></section>
     <section class="card compact-gap"><div class="section-title">Storage model</div><p class="note">The app caches versioned 5etools JSON on the device, stores character state separately, and can continue running without a network connection after synchronization. A rules-data update does not replace your character.</p><p class="mini">Data source: ${escapeHtml(REPO)} · 2024 sources detected automatically</p></section>`;
   bindEvents();
 }
@@ -3818,10 +3938,22 @@ function longRest(){
   saveCharacter().then(()=>{showToast("Long rest recorded. HP, spell slots, hit dice, and exhaustion updated.");render();});
 }
 
+ensureCacheProgressRoot();
 window.addEventListener("online",()=>{state.online=true;updateHeader();showToast("Back online.");});
 window.addEventListener("offline",()=>{state.online=false;updateHeader();showToast("Offline mode. Cached rules data remains available.");});
 window.addEventListener("beforeinstallprompt",event=>{event.preventDefault();state.deferredInstallPrompt=event;updateHeader();});
 document.querySelectorAll(".tab").forEach(btn=>btn.addEventListener("click",()=>{state.view=btn.dataset.view;render();}));
+
+function ensureCacheProgressRoot() {
+  if (document.querySelector("#cacheProgressRoot")) return;
+  const root = document.createElement("div");
+  root.id = "cacheProgressRoot";
+  root.className = "cache-progress-root";
+  root.hidden = true;
+  root.innerHTML = `<div class="cache-progress-card" role="status" aria-live="polite"><div class="cache-progress-phase" data-cache-progress-phase>Preparing</div><div class="cache-progress-title" data-cache-progress-title>Preparing rules data…</div><div class="cache-progress-detail" data-cache-progress-detail></div><div class="cache-progress-track"><div class="cache-progress-bar" data-cache-progress-bar style="width:0%"></div></div><div class="cache-progress-count" data-cache-progress-count>0%</div></div>`;
+  document.body.appendChild(root);
+}
+
 document.querySelector("#updateBtn")?.addEventListener("click",()=>syncData(true));
 document.querySelector("#installBtn")?.addEventListener("click",async()=>{if(!state.deferredInstallPrompt)return;state.deferredInstallPrompt.prompt();await state.deferredInstallPrompt.userChoice;state.deferredInstallPrompt=null;updateHeader();});
 
@@ -3831,14 +3963,9 @@ async function init(){
   await loadCharacter();
   updateHeader();
   render();
-  if(state.version){
-    try {
-      await loadVersion(state.version);
-      render();
-      hydrateBackgroundData(state.version).then(() => render()).catch(console.warn);
-    } catch(e){console.warn("Cached data load failed",e);}
-  }
-  if(state.online) syncData(false).catch(console.warn);
+  // One synchronization path only: this prevents startup hydration and update checks
+  // from racing each other and leaving an apparently random subset of data cached.
+  if(state.version || state.online) syncData(false).catch(console.warn);
   if("serviceWorker" in navigator) {
     navigator.serviceWorker.register("./sw.js").then(reg=>reg.update()).catch(console.warn);
   }

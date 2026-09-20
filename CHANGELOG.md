@@ -1,4 +1,18 @@
+## v0.30.0
+
+- Reworked rules-data loading into staged batches with a visible progress overlay.
+- Initial synchronization now completes the 2024 player-facing cache before normal sheet views are enabled.
+- Interrupted/incomplete caches are detected and resumed rather than leaving individual features dependent on whichever files happened to finish downloading.
+- The extended cache action now means “Complete / repair rules cache” and uses the same batching/progress system.
+
 # Changelog
+
+## v0.29.0
+
+- Fixed the `bgMode is not defined` regression in the background ability editor by restoring the local mode/selection variables before rendering.
+- Extended cache now explicitly caches the 5etools item catalog (including weapons) and optional-feature catalog in addition to class files and spell sources.
+- Added visible progress to extended caching so a long cache operation no longer appears to do nothing.
+
 
 ## v0.28.0
 - Added explicit 2024 PHB Standard Array by Class assignments for the Standard Array button.
