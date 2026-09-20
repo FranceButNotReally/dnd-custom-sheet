@@ -2928,19 +2928,19 @@ function featureRechargeDetails(feature) {
   let shortRestore = "all", longRestore = "all";
   for (const sentence of sentences) {
     const hasRestRecovery = /(regain|regains|recover|recovers|restore|restores|restored|replenish|replenishes|replenished)/i.test(sentence);
-    const hasUseReset = /(?:use|uses) (?:this feature|it) again|use (?:this feature|it)\s+until|finish (?:a|an) (?:short|long) rest before (?:you )?(?:can )?use/i.test(sentence);
+    const hasUseReset = /(?:use|uses) (?:this feature|it) again|(?:can't|cannot) do so again|use (?:this feature|it)\s+until|finish (?:a|an) (?:short|long) rest before (?:you )?(?:can )?use/i.test(sentence);
     const hasPerRest = /(?:once|twice|three times|four times|five times|six times|\d+ times)\s+per\s+(short|long) rest/i.test(sentence);
     if (!hasRestRecovery && !hasUseReset && !hasPerRest) continue;
-    if (/short rest/i.test(sentence)) {
+    if (/short rest/i.test(sentence) || /short\s+or\s+long rest/i.test(sentence)) {
       short = true;
       if (/regain (?:one|1) (?:expended )?uses?/i.test(sentence) || /regain (?:one|1) of (?:your|its) expended uses?/i.test(sentence)) shortRestore = "one";
     }
-    if (/long rest/i.test(sentence)) long = true;
+    if (/long rest/i.test(sentence) || /short\s+or\s+long rest/i.test(sentence)) long = true;
   }
   // “Short or Long Rest before you can use it again” means the resource is
   // completely refreshed by either rest, unlike features that explicitly
   // regain one expended use on a Short Rest.
-  if (/short or long rest/i.test(text) && /(?:use|uses) (?:this feature|it) again/i.test(text)) {
+  if (/short\s+or\s+long rest/i.test(text) && /(?:use|uses) (?:this feature|it) again|(?:can't|cannot) do so again/i.test(text)) {
     short = long = true;
     shortRestore = longRestore = "all";
   }
@@ -2964,6 +2964,12 @@ function featureResourceSpecs(features, d, prefix) {
     // Some PHB resources are pools rather than a number of uses.
     if (normalizedName === "layonhands") {
       max = Math.max(0, 5 * Number(d?.level || 1));
+      details = { recharge: "long", shortRestore: "all", longRestore: "all" };
+    }
+    // These features are activated in connection with a Short Rest, but the
+    // feature itself is usable only once before a Long Rest. Do not mistake
+    // the trigger/restored spell slots or points for the feature's recharge.
+    if (normalizedName === "arcanerecovery" || normalizedName === "sorcerousrestoration") {
       details = { recharge: "long", shortRestore: "all", longRestore: "all" };
     }
 
