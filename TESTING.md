@@ -31,6 +31,11 @@ This layer catches changes in 5etools data shape as well as missing parser suppo
 
 The purpose is to make the remaining manual-rule-review surface visible. A new sheet-affecting construct should not silently appear without being classified.
 
+The PHB feat layer also has an exhaustive 77-feat contract. Persistent sheet
+effects and choices receive behavioral assertions; combat-only rules that need
+a target, trigger, or die roll remain available through the linked feat rules
+rather than being approximated as static bonuses.
+
 ### 4. Browser/UI integration
 
 This is the next layer to expand. These tests should use a real browser against the actual PWA and exercise the same paths a player uses: character creation, selection controls, equipment, spell selection, save/skill displays, notes, rests, and touch interaction.

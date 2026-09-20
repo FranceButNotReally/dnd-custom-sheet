@@ -37,6 +37,15 @@ test('all XPHB feats with structured ability choices are representable by the fe
   const feats = read('feats.json').feat.filter(x => x.source === 'XPHB');
   for (const feat of feats) {
     if (!feat.ability) continue;
+    if (a.isAbilityScoreImprovementFeat(feat)) {
+      const plus2 = a.featAbilitySpecs({ ...feat, _abilityMode:'plus2' });
+      const split = a.featAbilitySpecs({ ...feat, _abilityMode:'split' });
+      assert.equal(plus2.length, 1, 'ASI +2 pattern is not representable');
+      assert.equal(plus2[0].amount, 2);
+      assert.equal(split.length, 2, 'ASI +1/+1 pattern is not representable');
+      assert.ok(split.every(spec => spec.amount === 1));
+      continue;
+    }
     assert.ok(a.featAbilitySpecs(feat).length > 0, `No ability spec for feat ${feat.name}`);
   }
 });
@@ -49,10 +58,10 @@ test('all XPHB feats with structured save/skill/mixed/expertise/spell choices ar
     if (feat.skillToolLanguageProficiencies) assert.ok(a.featMixedChoiceSpecs(feat).length > 0, `No mixed choice spec for ${feat.name}`);
     if (feat.expertise) {
       const specs = a.featExpertiseSpecs(feat);
-      const universal = /anyProficientSkill/i.test(JSON.stringify(feat.expertise));
-      assert.ok(specs.length > 0 || universal, `No expertise spec for ${feat.name}`);
+      assert.ok(specs.length > 0, `No expertise spec for ${feat.name}`);
     }
     if (feat.additionalSpells) assert.ok(Array.isArray(a.featAdditionalSpellChoiceSpecs(feat)), `Additional-spell parser did not return an array for ${feat.name}`);
+    if ((feat.resist || []).some(entry => entry?.choose)) assert.ok(a.featDamageChoiceSpecs(feat).length > 0, `No resistance choice spec for ${feat.name}`);
   }
 });
 

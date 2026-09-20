@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — rules conformance expansion
+- Added all twelve level-19 Epic Boon feat slots and enforced feat level, ability, armor-training, spellcasting, and repeatability prerequisites in selectors.
+- Added persistent PHB feat effects for armor/weapon training, Speedy, Boon of Speed, Boon of Fortitude, Durable, War Caster, Medium Armor Master, and Weapon Master.
+- Added distinct damage-type and resistance choices for Elemental Adept and Boon of Energy Resistance, including repeatable-feat duplicate protection.
+- Added separate automatic resources for Lucky, Chef, Mage Slayer, Ritual Caster, Magic Initiate, Fey-Touched, Shadow-Touched, Telepathic, Boon of Fate, and Boon of Recovery.
+- Added a corpus-backed audit covering all 77 PHB feats while leaving target/trigger-dependent combat rules as linked references.
+- Repaired the ASI data contract so both explicit `+2` and `+1/+1` patterns are verified without introducing a hidden default.
+
 ## v0.37.0
 - Added structured species lineage/ancestry choice detection and character-creation selectors.
 - Added structured feat choice selectors for mixed skill/tool/language choices, expertise, saving throws, ability choices, and Magic Initiate-style spell-list/ability choices.
