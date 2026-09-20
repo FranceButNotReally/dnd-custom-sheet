@@ -8,23 +8,17 @@ This is a static PWA intended for GitHub Pages. Keep `.github/workflows/pages.ym
 
 ## Data
 
-The app checks the latest 5etools release, then synchronizes the complete detected 2024 player-facing rules library in staged batches. Core catalogs, both item catalog files (`items.json` and `items-base.json`), class files, and spell-source files are cached locally in IndexedDB. The character data is stored separately so rules-data updates do not overwrite characters.
-
-The synchronization path validates the equipment catalogue and can repair a stale/incomplete item cache before the library is marked ready.
+The app checks the latest 5etools release, loads the official 2024/revised player-relevant data it can identify, and caches that data locally. Character data is stored separately so rules-data updates do not overwrite characters.
 
 ## Current build
 
-Version 0.34.0
+Version 0.37.0
 
-## v0.34.0
 
-- Restored the known-good v0.28 item-catalog/index path while retaining the staged full-library cache architecture.
-- Added a validated, single-flight data fetch layer so incomplete cached files are rejected and concurrent requests for the same file share one download.
-- Added explicit equipment-catalog/index integrity checks before the library can be marked ready.
-- Added a raw-catalog fallback for exact XPHB item resolution, preserving starting-equipment references such as `dagger|xphb` and `quarterstaff|xphb`.
-- Added forgiving equipment search for common plurals and small touch-keyboard typos such as `daggers` and `quarterstuff`.
-- Added a dedicated equipment-data smoke test for catalog resolution, starting-equipment refs, fuzzy search, cache repair, and single-flight downloads.
+## v0.37.0
 
-## Earlier releases
+This build adds a rules-audit pass for structured character-creation choices and derived effects. Gnomish Cunning-style saving-throw advantages are now represented automatically, species lineage/ancestry choices are surfaced during creation, feat choices are no longer silently defaulted, and Notes dialogs use the same formatted-rules/linked-keyword treatment as other rules text. Equipment code remains on the v0.36 known-good implementation. Spell selection remains a separate follow-up.
 
-See `CHANGELOG.md` for the full development history.
+## v0.28.0
+
+This build completes the equipment/spell hydration pass, fixes Simple/Martial weapon proficiency normalization, makes legacy PHB references resolve against the current XPHB catalog, adds inventory filtering, supports three +1 background ability increases, removes redundant gaming-set placeholders, and applies the parchment character-sheet theme consistently across editor and management surfaces.

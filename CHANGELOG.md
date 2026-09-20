@@ -1,62 +1,15 @@
 # Changelog
 
-## v0.36.0
-
-- Reworked weapon/cantrip Notes buttons so they no longer repeat the row text.
-- Weapon Notes now explain applicable 2024 weapon-property shorthand, the full property effects, and the weapon's Weapon Mastery property with current selection status.
-- Cantrip Notes now explain casting time, range, duration, and V/S/M component shorthand.
-
-
-## v0.36.0
-
-- Fixed the equipment-cache regression caused by 5etools splitting ordinary/base equipment into `items-base.json`.
-- Core synchronization now batches both `items.json` and `items-base.json`, then merges their `item`/`baseitem` records into the application equipment catalog.
-- Equipment validation now checks the merged catalog, so Dagger, Quarterstaff, and other ordinary 2024 equipment are resolved from the same catalogue used by 5etools.
-- Download validation no longer incorrectly rejects a structurally valid `items.json` merely because ordinary equipment lives in `items-base.json`.
-- Bumped the app-shell asset query strings and service-worker cache to v360 to prevent an older JavaScript shell from being served as `?v=0330`.
-
-## v0.34.0
-
-- Restored the known-good v0.28 equipment catalog behavior rather than replacing it with a new item-filtering layer.
-- Kept the automatic staged full-library synchronization and all previously added character-sheet functionality.
-- Added validation of cached/downloaded item data before accepting `data/items.json`.
-- Added single-flight requests so simultaneous loaders cannot race on the same versioned data file.
-- Added explicit equipment-index validation before the rules library is considered ready.
-- Added exact raw-catalog fallback for XPHB item references, including `dagger|xphb` and `quarterstaff|xphb`.
-- Added forgiving equipment search for plurals and small spelling errors.
-- Added repeatable Node smoke tests covering the equipment data path and cache behavior.
-- Bumped the PWA shell cache to v340.
-
-## v0.33.0
-
-- Fixed a regression where the equipment catalog could be considered cached even when core 2024 items such as Dagger and Quarterstaff were missing or excluded from the item index.
-- Added explicit 2024 equipment catalog validation for Dagger, Quarterstaff, Mace, Shield, and Leather Armor.
-- Added fresh online repair of the item catalog when cached equipment data fails validation.
-- Rebuilt the item index using explicit 2024 core sources (XPHB/XDMG/XMM) as well as 2024-marked entries.
-- Kept the staged full-library synchronization model; no separate extended-cache action was added.
-
-## v0.32.0
-
-- Reworked rules-data loading into staged batches with a visible progress overlay.
-- Startup now waits for synchronization to finish before exposing the character sheet, and individual downloads retry transient failures automatically.
-- Initial synchronization now completes the 2024 player-facing cache before normal sheet views are enabled.
-- Interrupted/incomplete caches are detected and resumed rather than leaving individual features dependent on whichever files happened to finish downloading.
-- 
-# Changelog
-
-## v0.36.0
-
-- Fixed the equipment-cache regression caused by 5etools splitting ordinary/base equipment into `items-base.json`.
-- Core synchronization now batches both `items.json` and `items-base.json`, then merges their `item`/`baseitem` records into the application equipment catalog.
-- Equipment validation now checks the merged catalog, so Dagger, Quarterstaff, and other ordinary 2024 equipment are resolved from the same catalogue used by 5etools.
-- Download validation no longer incorrectly rejects a structurally valid `items.json` merely because ordinary equipment lives in `items-base.json`.
-- Bumped the app-shell asset query strings and service-worker cache to v360 to prevent an older JavaScript shell from being served as `?v=0330`.
-
-## v0.29.0
-
-- Fixed the `bgMode is not defined` regression in the background ability editor by restoring the local mode/selection variables before rendering.
-- The complete library is now synchronized through the same automatic staged process; there is no separate extended-cache operation.
-- Added visible progress to extended caching so a long cache operation no longer appears to do nothing.
+## v0.37.0
+- Added structured species lineage/ancestry choice detection and character-creation selectors.
+- Added structured feat choice selectors for mixed skill/tool/language choices, expertise, saving throws, ability choices, and Magic Initiate-style spell-list/ability choices.
+- Non-fixed feat choices no longer silently select the first option; they remain explicitly unselected until the player chooses.
+- Added derived saving-throw advantage handling for rules text such as Gnomish Cunning.
+- Added `ADV` indicators to affected saving throws without incorrectly treating Advantage as proficiency.
+- Refined weapon/cantrip Notes dialogs to use the same parchment rules-text presentation as other reference content and link recognized rules keywords such as Bonus Action, Disadvantage, and Prone.
+- Added regression smoke tests for Gnomish Cunning, lineage choices, feat choices, and Notes keyword linking.
+- Equipment data/indexing functions remain unchanged from v0.36.
+- Spell selection remains deferred to the separate spell pass.
 
 
 ## v0.28.0
@@ -64,7 +17,7 @@
 - Added Common plus two selectable non-rare Standard Languages to character creation.
 - Added class/background proficiency-overlap indicators, with overlapping background skills marked in class-skill choices.
 - Removed the redundant Rest & Recovery panel; rest controls remain in Resources.
-- The complete 2024 rules library is now synchronized automatically in staged batches; there is no separate extended-cache action.
+- Added an optional extended-cache action for all indexed class and spell-source files.
 - Added click-to-open notes for weapon/cantrip attack details.
 - Added long-press rules lookup for touch-device condition chips while preserving tap-to-toggle.
 - Added an in-app explanation of Equipped versus Wielding.

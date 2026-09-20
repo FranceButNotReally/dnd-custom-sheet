@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.36.0";
+const APP_VERSION = "0.37.0";
 
 const PATHS = {
   books: "data/books.json",
@@ -123,7 +123,7 @@ let dbPromise;
 
 function emptyCharacter() {
   return {
-    schema: 11,
+    schema: 15,
     id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     name: "New Character",
     player: "",
@@ -139,6 +139,10 @@ function emptyCharacter() {
     featAbilityChoices: {},
     featSaveChoices: {},
     featSkillChoices: {},
+    featMixedChoices: {},
+    featSpellChoices: {},
+    featExpertiseChoices: {},
+    speciesChoices: {},
     baseStats: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
     manualAbilityBonuses: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 },
     classSkillChoices: [],
@@ -201,7 +205,7 @@ function migrateCharacter(raw) {
   const base = emptyCharacter();
   if (!raw || typeof raw !== "object") return base;
   const c = { ...base, ...raw };
-  c.schema = 13;
+  c.schema = 15;
   c.baseStats = { ...base.baseStats, ...(raw.baseStats || raw.stats || {}) };
   c.xp = Math.max(0, Number(raw.xp || 0));
   c.manualAbilityBonuses = { ...base.manualAbilityBonuses, ...(raw.manualAbilityBonuses || {}) };
@@ -266,6 +270,10 @@ function migrateCharacter(raw) {
   c.featAbilityChoices = { ...(raw.featAbilityChoices || {}) };
   c.featSaveChoices = { ...(raw.featSaveChoices || {}) };
   c.featSkillChoices = { ...(raw.featSkillChoices || {}) };
+  c.featMixedChoices = { ...(raw.featMixedChoices || {}) };
+  c.featSpellChoices = { ...(raw.featSpellChoices || {}) };
+  c.featExpertiseChoices = { ...(raw.featExpertiseChoices || {}) };
+  c.speciesChoices = { ...(raw.speciesChoices || {}) };
   c.customSkillProficiencies = c.customSkillProficiencies.map(normalizeSkillKey).filter(Boolean);
   c.expertise = [...new Set(c.expertise || [])];
   c.heroicInspiration = Boolean(raw.heroicInspiration);
@@ -1420,27 +1428,144 @@ function featSkillSpecs(feat) {
   }
   return specs;
 }
+
+function featMixedChoiceSpecs(feat) {
+  const specs = [];
+  const groups = Array.isArray(feat?.skillToolLanguageProficiencies) ? feat.skillToolLanguageProficiencies : [];
+  for (const [index, entry] of groups.entries()) {
+    const choose = entry?.choose;
+    if (!choose) continue;
+    const from = Array.isArray(choose.from) ? choose.from.map(String) : [];
+    const count = Math.max(1, Number(choose.count || 1));
+    for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, key: `${feat?.name || "Feat"}|${feat?.source || ""}|mixed|${index}|${choiceIndex}` });
+  }
+  return specs;
+}
+function featExpertiseSpecs(feat) {
+  const specs = [];
+  const groups = Array.isArray(feat?.expertise) ? feat.expertise : [];
+  for (const [index, entry] of groups.entries()) {
+    const choose = entry?.choose;
+    if (!choose) continue;
+    const from = Array.isArray(choose.from) ? choose.from.map(normalizeSkillKey).filter(Boolean) : [];
+    const count = Math.max(1, Number(choose.count || 1));
+    for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, key: `${feat?.name || "Feat"}|${feat?.source || ""}|expertise|${index}|${choiceIndex}` });
+  }
+  return specs;
+}
+function featAdditionalSpellChoiceSpecs(feat) {
+  const specs = [];
+  const raw = feat?.additionalSpells;
+  const groups = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? Object.values(raw).filter(x => x && typeof x === "object") : [];
+  for (const [index, group] of groups.entries()) {
+    const names = [];
+    const add = value => {
+      if (value == null) return;
+      if (Array.isArray(value)) return value.forEach(add);
+      if (typeof value === "object") return add(value.name || value.value || value.class);
+      if (typeof value === "string" && value.trim() && !names.some(x => textNorm(x) === textNorm(value))) names.push(value.trim());
+    };
+    add(group?.names); add(group?.name); if (!names.length && group?.choose?.from) add(group.choose.from);
+    const abilityChoose = group?.ability?.choose;
+    const abilityFrom = Array.isArray(abilityChoose?.from) ? abilityChoose.from.map(normalizeAbilityKey).filter(Boolean) : Array.isArray(abilityChoose) ? abilityChoose.map(normalizeAbilityKey).filter(Boolean) : [];
+    if (names.length || abilityFrom.length) specs.push({ index, names, abilityFrom, key: `${feat?.name || "Feat"}|${feat?.source || ""}|spells|${index}` });
+  }
+  return specs;
+}
+function mixedChoiceOptions(spec) {
+  const out = [];
+  const add = (name, kind, value = name) => { if (!name) return; const key = `${kind}:${textNorm(value)}`; if (!out.some(x => x._key === key)) out.push({ name, kind, value, _key: key }); };
+  for (const tokenRaw of spec?.from || []) {
+    const token = String(tokenRaw || ""), low = token.toLowerCase();
+    if (low === "anyskill") for (const [key, [,name]] of Object.entries(SKILLS)) add(name, "Skill", key);
+    else if (low === "anytool" || low === "anytools") for (const name of TOOL_GENERIC_OPTIONS) add(name, "Tool", name);
+    else if (low === "anystandard" || low === "anylanguage") for (const lang of standardLanguageOptions()) add(lang.name, "Language", lang.name);
+    else {
+      const skill = normalizeSkillKey(token); if (skill && SKILLS[skill]) add(SKILLS[skill][1], "Skill", skill);
+      const tool = findOfficialItemByName(token, DATA_SOURCE) || findOfficialItemByName(token); if (tool) add(tool.name, "Tool", tool.name);
+      const lang = findLanguage(token); if (lang) add(lang.name, "Language", lang.name);
+    }
+  }
+  return out.sort((a,b) => `${a.kind} ${a.name}`.localeCompare(`${b.kind} ${b.name}`));
+}
+function speciesChoiceSpecs(species) {
+  const specs = [];
+  const root = species?.entries;
+  if (!root) return specs;
+  const choicePattern = /\b(?:choose|select)\b[^.]{0,160}\b(?:one|an option|option|following)\b/i;
+  const lineagePattern = /\b(?:lineage|lineages|ancestry|ancestries|legacy|legacies|heritage|heritages)\b/i;
+  const abilityChoicesFromText = text => /\bspellcasting ability\b/i.test(text) ? ABILITIES.filter(k => new RegExp(`\\b${ABILITY_NAMES[k]}\\b`, "i").test(text)) : [];
+  const cleanOption = item => {
+    if (typeof item === "string") return { name: stripTags(item), entries: [] };
+    if (!item || typeof item !== "object") return null;
+    return { name: stripTags(item.name || item.title || ""), entries: item.entries || item.entry || item.items || [], raw: item };
+  };
+  const register = (names, context) => {
+    const unique=[]; for (const opt of names) if (opt && opt.name && !unique.some(x => textNorm(x.name)===textNorm(opt.name))) unique.push(opt);
+    if (unique.length < 2 || unique.length > 12) return;
+    if (!(choicePattern.test(context) || lineagePattern.test(context))) return;
+    const key = `${species?.name || "Species"}|${species?.source || ""}|choice|${specs.length}`;
+    const abilityFrom = abilityChoicesFromText(context);
+    specs.push({ key, index: specs.length, options: unique, abilityFrom, label: lineagePattern.test(context) ? "Lineage / ancestry choice" : "Species choice" });
+  };
+  const walk = (node, context = "") => {
+    if (Array.isArray(node)) {
+      for (let i=0;i<node.length;i++) {
+        const siblingContext = `${context} ${node.slice(Math.max(0,i-2),i+1).map(plainTextFromEntries).join(" ")}`;
+        walk(node[i], siblingContext);
+      }
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+    const own = `${context} ${stripTags(node.name || node.title || "")} ${plainTextFromEntries(node.entries || node.entry || "")}`;
+    const type = String(node.type || "").toLowerCase();
+    if (type === "list" || type === "items") {
+      const items = Array.isArray(node.items) ? node.items : Array.isArray(node.entries) ? node.entries : [];
+      register(items.map(cleanOption), own);
+    } else if (type === "table") {
+      const rows = Array.isArray(node.rows) ? node.rows : [];
+      register(rows.map(r => cleanOption(Array.isArray(r) ? r[0] : r)), own);
+    }
+    for (const [k,v] of Object.entries(node)) if (!["name","title","type"].includes(k)) walk(v, own);
+  };
+  walk(root, species?.name || "Species");
+  const out=[]; for (const spec of specs) if (!out.some(x => x.options.length===spec.options.length && x.options.every((o,i)=>textNorm(o.name)===textNorm(spec.options[i].name)))) out.push(spec);
+  const fullText = stripTags(plainTextFromEntries(root));
+  const fullAbilityFrom = /\bspellcasting ability\b/i.test(fullText) ? ABILITIES.filter(k => new RegExp(`\\b${ABILITY_NAMES[k]}\\b`, "i").test(fullText)) : [];
+  if (fullAbilityFrom.length && out.length) for (const spec of out) if (!spec.abilityFrom.length) spec.abilityFrom = fullAbilityFrom.slice();
+  return out.slice(0,8);
+}
+function reconcileSpeciesChoices(c, species) {
+  c.speciesChoices = { ...(c.speciesChoices || {}) };
+  const specs = speciesChoiceSpecs(species);
+  const valid = new Set(specs.map(s => s.key));
+  for (const key of Object.keys(c.speciesChoices)) if (!valid.has(key)) delete c.speciesChoices[key];
+  for (const spec of specs) {
+    const chosen = c.speciesChoices[spec.key];
+    if (chosen && !spec.options.some(o => textNorm(o.name) === textNorm(chosen.value || chosen))) delete c.speciesChoices[spec.key];
+  }
+  return specs;
+}
+
 function reconcileFeatChoices(c, feats) {
   c.featAbilityChoices = { ...(c.featAbilityChoices || {}) };
   c.featSaveChoices = { ...(c.featSaveChoices || {}) };
   c.featSkillChoices = { ...(c.featSkillChoices || {}) };
+  c.featMixedChoices = { ...(c.featMixedChoices || {}) };
+  c.featSpellChoices = { ...(c.featSpellChoices || {}) };
+  c.featExpertiseChoices = { ...(c.featExpertiseChoices || {}) };
+  const validMixed = new Set(), validSpell = new Set(), validExpertise = new Set();
   for (const feat of feats || []) {
-    for (const spec of featAbilitySpecs(feat)) {
-      const key = featSpecKey(feat, spec);
-      if (spec.fixed) { c.featAbilityChoices[key] = spec.from[0]; continue; }
-      if (!spec.from.includes(c.featAbilityChoices[key])) c.featAbilityChoices[key] = spec.from[0] || null;
-    }
-    for (const spec of featSaveSpecs(feat)) {
-      const key = featSpecKey(feat, spec);
-      if (spec.fixed) { c.featSaveChoices[key] = spec.from[0]; continue; }
-      if (!spec.from.includes(c.featSaveChoices[key])) c.featSaveChoices[key] = spec.from[0] || null;
-    }
-    for (const spec of featSkillSpecs(feat)) {
-      const key = featSpecKey(feat, spec);
-      if (spec.fixed) { c.featSkillChoices[key] = spec.from[0]; continue; }
-      if (!spec.from.includes(c.featSkillChoices[key])) c.featSkillChoices[key] = spec.from[0] || null;
-    }
+    for (const spec of featAbilitySpecs(feat)) { const key=featSpecKey(feat,spec); if (spec.fixed) c.featAbilityChoices[key]=spec.from[0]; else if (!spec.from.includes(c.featAbilityChoices[key])) c.featAbilityChoices[key]=null; }
+    for (const spec of featSaveSpecs(feat)) { const key=featSpecKey(feat,spec); if (spec.fixed) c.featSaveChoices[key]=spec.from[0]; else if (!spec.from.includes(c.featSaveChoices[key])) c.featSaveChoices[key]=null; }
+    for (const spec of featSkillSpecs(feat)) { const key=featSpecKey(feat,spec); if (spec.fixed) c.featSkillChoices[key]=spec.from[0]; else if (!spec.from.includes(c.featSkillChoices[key])) c.featSkillChoices[key]=null; }
+    for (const spec of featMixedChoiceSpecs(feat)) validMixed.add(spec.key);
+    for (const spec of featAdditionalSpellChoiceSpecs(feat)) validSpell.add(spec.key);
+    for (const spec of featExpertiseSpecs(feat)) validExpertise.add(spec.key);
   }
+  for (const key of Object.keys(c.featMixedChoices)) if (!validMixed.has(key)) delete c.featMixedChoices[key];
+  for (const key of Object.keys(c.featSpellChoices)) if (!validSpell.has(key)) delete c.featSpellChoices[key];
+  for (const key of Object.keys(c.featExpertiseChoices)) if (!validExpertise.has(key)) delete c.featExpertiseChoices[key];
 }
 function canonicalLabel(value, kind = "") {
   const raw = decodeHtmlEntities(String(value || "")).trim();
@@ -2525,11 +2650,31 @@ function getUnarmoredDefenseFormula(classObj, level) {
   return null;
 }
 
+function applyTextualRulesEffects(text, effects, sourceName = "Feature") {
+  const raw = stripTags(String(text || ""));
+  if (!raw) return;
+  for (const match of raw.matchAll(/\bAdvantage\s+on\s+([^.!?;:]+?)\s+saving throws\b/gi)) {
+    const phrase = String(match[1] || "");
+    const abilities = ABILITIES.filter(key => new RegExp(`\\b${ABILITY_NAMES[key]}\\b`, "i").test(phrase));
+    for (const ability of abilities) effects.savingThrowAdvantages.add(ability);
+    if (abilities.length) effects.active.push(`${sourceName}: Advantage on ${abilities.map(a => ABILITY_NAMES[a]).join(", ")} saving throws`);
+  }
+}
+function applySelectedSpeciesOptionEffects(c, speciesObj, effects) {
+  for (const spec of speciesChoiceSpecs(speciesObj)) {
+    const selected = c.speciesChoices?.[spec.key]; if (!selected) continue;
+    const option = spec.options.find(o => textNorm(o.name) === textNorm(selected.value || selected));
+    if (!option) continue;
+    effects.active.push(`${speciesObj.name}: ${option.name}`);
+    applyTextualRulesEffects(option.entries, effects, `${speciesObj.name} · ${option.name}`);
+  }
+}
+
 function buildDerivedEffects(c, d, featObjs) {
   const effects = {
     acFormulas: [], acBonus: 0, acBonusWhileArmored: 0, acBonusWhileUnarmored: 0, hpPerLevel: 0, hpFlat: 0, speedBonus: 0, initiativeBonus: 0, d20Penalty: effectiveD20Penalty(c),
     passivePerceptionBonus: 0, passiveInvestigationBonus: 0, resistances: [], senses: [], active: [], flags: new Set(),
-    savingThrows: new Set(), skills: new Set(), expertise: new Set(), tools: [], languages: [], attackBonuses: {}, damageBonuses: {}
+    savingThrows: new Set(), savingThrowAdvantages: new Set(), skills: new Set(), expertise: new Set(), tools: [], languages: [], attackBonuses: {}, damageBonuses: {}
   };
   const allFeatures = [...(d.classFeatures || []), ...(d.subclassFeatures || [])];
   const speciesFeatures = (d.speciesObj?.entries || []).filter(x => x && x.name);
@@ -2540,6 +2685,7 @@ function buildDerivedEffects(c, d, featObjs) {
   // we only automate effects that can be represented reliably on a sheet.
   for (const feature of allFeatures) {
     const n = textNorm(feature.name);
+    applyTextualRulesEffects(feature.entries, effects, feature.name);
     if (n === "unarmoreddefense" && uad) effects.active.push(`${uad.label}`);
     if (n === "unarmoredmovement") {
       const bonus = classTableNumericValue(d.classObj, "unarmored movement", c.level);
@@ -2554,6 +2700,7 @@ function buildDerivedEffects(c, d, featObjs) {
   // Optional class features such as Fighting Styles and Eldritch Invocations.
   for (const feature of d.optionalFeatureObjects || []) {
     const n = textNorm(feature.name);
+    applyTextualRulesEffects(feature.entries, effects, feature.name);
     effects.active.push(`${feature.name}`);
     if (n === "defense") { effects.acBonusWhileArmored += 1; effects.active[effects.active.length - 1] += ": +1 AC while wearing armor"; }
     if (n === "archery") { effects.attackBonuses.ranged = (effects.attackBonuses.ranged || 0) + 2; effects.active[effects.active.length - 1] += ": +2 ranged attack rolls"; }
@@ -2566,6 +2713,7 @@ function buildDerivedEffects(c, d, featObjs) {
   // Species traits.
   for (const trait of speciesFeatures) {
     const n = textNorm(trait.name);
+    applyTextualRulesEffects(trait.entries, effects, trait.name);
     if (n === "dwarventoughness") {
       effects.hpPerLevel += 1;
       effects.active.push("Dwarven Toughness: +1 Hit Point per character level");
@@ -2575,9 +2723,11 @@ function buildDerivedEffects(c, d, featObjs) {
       effects.active.push("Dwarven Resilience: Resistance to Poison damage; Advantage on saves vs Poisoned");
     }
   }
+  applySelectedSpeciesOptionEffects(c, d.speciesObj, effects);
 
   for (const feat of featObjs || []) {
     const n = textNorm(feat.name);
+    applyTextualRulesEffects(feat.entries, effects, feat.name);
     if (n === "tough") { effects.hpPerLevel += 2; effects.active.push("Tough: +2 Hit Points per character level"); }
     if (n === "dualwielder") { effects.flags.add("dualWielder"); effects.active.push("Dual Wielder: +1 AC while wielding a qualifying weapon in each hand"); }
     if (n === "alert" && String(feat.source || "").toLowerCase() === DATA_SOURCE.toLowerCase()) { effects.initiativeBonus += d.pb; effects.active.push("Alert: add Proficiency Bonus to Initiative"); }
@@ -2597,6 +2747,14 @@ function buildDerivedEffects(c, d, featObjs) {
         else effects.skills.add(selected);
       }
     }
+    for (const spec of featMixedChoiceSpecs(feat)) {
+      const selected = c.featMixedChoices?.[spec.key]; if (!selected) continue;
+      const [kind, value] = String(selected).split(":");
+      if (kind === "Skill" && SKILLS[value]) effects.skills.add(value);
+      else if (kind === "Tool") effects.tools.push(value);
+      else if (kind === "Language") effects.languages.push(value);
+    }
+    for (const spec of featExpertiseSpecs(feat)) { const selected=c.featExpertiseChoices?.[spec.key]; if (selected) effects.expertise.add(selected); }
     for (const map of feat.skillProficiencies || []) for (const key of grantedSkillsFromMap([map])) effects.skills.add(key);
     for (const r of feat.resist || []) effects.resistances.push(canonicalLabel(stripTags(String(r))));
   }
@@ -2743,19 +2901,21 @@ function reconcileResources(c, specs) {
 async function deriveCharacter() {
   const c = state.character;
   const backgroundObj = findBackground(c.background?.name, c.background?.source || null);
+  const speciesObj = findSpecies(c.species?.name, c.species?.source || null);
   if (backgroundObj) reconcileBackgroundAbilityChoices(c, backgroundObj);
   else c.backgroundAbility = { mode: "split", plus2: null, plus1: null, plus1b: null, plus1c: null };
   const featObjs = selectedFeatObjects(c);
   reconcileFeatChoices(c, featObjs);
+  reconcileSpeciesChoices(c, speciesObj);
   const finalStats = calculateFinalStats(c, backgroundObj, featObjs);
   const mods = Object.fromEntries(ABILITIES.map(a => [a, abilityMod(finalStats[a])]));
   const d = {
     level: Number(c.level || 1), mods, stats: finalStats, baseStats: c.baseStats || c.stats || finalStats, pb: proficiencyBonus(c.level),
     classFile: null, classObj: null, subclassObj: null, subclassOptions: [],
     senseRefs: [],
-    speciesObj: findSpecies(c.species?.name, c.species?.source || null), backgroundObj,
+    speciesObj, backgroundObj,
     featObj: featObjs[0] || null, featObjs, classFeatures: [], subclassFeatures: [],
-    skillProficiencies: new Set(), skillChoiceSpec: { from: [], count: 0 }, savingThrowProficiencies: new Set(),
+    skillProficiencies: new Set(), skillChoiceSpec: { from: [], count: 0 }, savingThrowProficiencies: new Set(), savingThrowAdvantages: new Set(),
     unarmoredDefense: null, acBreakdown: [],
     effects: null, maxHp: 1, currentHp: Number(c.hpCurrent ?? 0), progressionFeatSlots: [], ac: Number(c.acOverride ?? (10 + mods.dex)), acAutomatic: c.acOverride == null,
     acReason: "10 + Dexterity modifier", d20Penalty: effectiveD20Penalty(c), speed: Number(c.speedOverride ?? dfltSpeed(findSpecies(c.species?.name, c.species?.source || null))),
@@ -2815,6 +2975,7 @@ async function deriveCharacter() {
   for (const s of d.speciesObj?.skillProficiencies ? grantedSkillsFromMap(d.speciesObj.skillProficiencies) : []) d.skillProficiencies.add(s);
   d.effects = buildDerivedEffects(c, d, featObjs);
   for (const save of d.effects.savingThrows) d.savingThrowProficiencies.add(save);
+  d.savingThrowAdvantages = new Set(d.effects.savingThrowAdvantages || []);
   d.activeEffects = [...(d.effects.active || [])];
   if (c.exhaustion) d.activeEffects.push(`Exhaustion ${c.exhaustion}: ${Math.abs(d.d20Penalty)} penalty to D20 Tests; -${5 * c.exhaustion} ft. Speed`);
   for (const value of d.effects.resistances || []) if (value && !d.resistances.includes(value)) d.resistances.push(value);
@@ -3163,6 +3324,19 @@ function spellNotePayload(spell) {
   };
 }
 
+function autoLinkNoteKeywords(text) {
+  const phrases = [
+    ["Constitution saving throw", "variantrule"], ["Proficiency Bonus", "variantrule"], ["Bonus Action", "variantrule"], ["Attack action", "variantrule"], ["Opportunity Attack", "variantrule"], ["Short Rest", "variantrule"], ["Long Rest", "variantrule"], ["Concentration", "variantrule"], ["Advantage", "variantrule"], ["Disadvantage", "variantrule"], ["Prone", "condition"], ["Speed", "variantrule"], ["Reaction", "variantrule"]
+  ];
+  return String(text || "").split(/(\{@[^}]*\})/g).map(chunk => {
+    if (chunk.startsWith("{@")) return chunk;
+    let out=chunk;
+    for (const [phrase,tag] of phrases) { const escaped=phrase.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"); out=out.replace(new RegExp(`(?<![A-Za-z])${escaped}(?![A-Za-z])`,"g"),`{@${tag} ${phrase}|${DATA_SOURCE}}`); }
+    return out;
+  }).join("");
+}
+function renderNoteText(text) { return renderInline(autoLinkNoteKeywords(String(text || ""))); }
+
 function customNotePayload(text, title = "Attack Notes") {
   const note = String(text || "").trim();
   return note ? { kind: "custom", title, text: note } : null;
@@ -3179,20 +3353,20 @@ function renderAttackDetails(notePayload) {
 function renderAttackNoteDialog(payload) {
   if (!payload) return;
   if (payload.kind === "custom") {
-    return openModal(payload.title || "Attack Notes", `<div class="rules-text formatted-rules"><p>${escapeHtml(payload.text || "")}</p></div>`);
+    return openModal(payload.title || "Attack Notes", `<div class="rules-text formatted-rules"><p>${renderNoteText(payload.text || "")}</p></div>`);
   }
   if (payload.kind === "weapon") {
-    const range = payload.range ? `<section class="note-section"><h3>Range</h3><p>${escapeHtml(payload.range)}</p></section>` : "";
-    const propertyRows = (payload.properties || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.label)} <small>(${escapeHtml(x.code)})</small></strong><span>${escapeHtml(x.description)}</span></div>`).join("");
-    const shorthand = (payload.shorthand || []).map(x => `<span class="note-chip"><b>${escapeHtml(x.code)}</b> = ${escapeHtml(x.label)}</span>`).join("");
-    const masteryRows = (payload.mastery || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.name)}</strong><span>${escapeHtml(x.description)}</span></div>`).join("");
+    const range = payload.range ? `<section class="note-section"><h3>Range</h3><p>${renderNoteText(payload.range)}</p></section>` : "";
+    const propertyRows = (payload.properties || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.label)} <small>(${escapeHtml(x.code)})</small></strong><span>${renderNoteText(x.description)}</span></div>`).join("");
+    const shorthand = (payload.shorthand || []).map(x => `<span class="note-chip"><b>${escapeHtml(x.code)}</b><span>${escapeHtml(x.label)}</span></span>`).join("");
+    const masteryRows = (payload.mastery || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.name)}</strong><span>${renderNoteText(x.description)}</span></div>`).join("");
     const masteryStatus = payload.mastery?.length ? `<p class="note-status">${payload.mastered ? "You currently have this weapon mastery selected." : "You do not currently have this weapon mastery selected."}</p>` : "";
-    return openModal(payload.title || "Weapon Notes", `${range}${propertyRows ? `<section class="note-section"><h3>Weapon Properties</h3>${propertyRows}</section>` : ""}${shorthand ? `<section class="note-section"><h3>Shorthand</h3><div class="note-chip-row">${shorthand}</div></section>` : ""}${masteryRows ? `<section class="note-section"><h3>Weapon Mastery</h3>${masteryRows}${masteryStatus}</section>` : ""}`);
+    return openModal(payload.title || "Weapon Notes", `<div class="rules-text formatted-rules note-dialog-content">${range}${propertyRows ? `<section class="note-section"><h3>Weapon Properties</h3>${propertyRows}</section>` : ""}${shorthand ? `<section class="note-section"><h3>Shorthand</h3><div class="note-chip-row">${shorthand}</div></section>` : ""}${masteryRows ? `<section class="note-section"><h3>Weapon Mastery</h3>${masteryRows}${masteryStatus}</section>` : ""}</div>`);
   }
   if (payload.kind === "spell") {
-    const facts = [["Casting Time", payload.castingTime], ["Range", payload.range], ["Duration", payload.duration]].filter(([,v]) => v).map(([k,v]) => `<div class="note-fact"><strong>${escapeHtml(k)}</strong><span>${escapeHtml(v)}</span></div>`).join("");
-    const components = (payload.components || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.label)}</strong><span>${escapeHtml(x.description)}</span></div>`).join("");
-    return openModal(payload.title || "Cantrip Notes", `${facts ? `<section class="note-section"><h3>Spell Basics</h3><div class="note-fact-grid">${facts}</div></section>` : ""}${components ? `<section class="note-section"><h3>Components</h3>${components}</section>` : ""}`);
+    const facts = [["Casting Time", payload.castingTime], ["Range", payload.range], ["Duration", payload.duration]].filter(([,v]) => v).map(([k,v]) => `<div class="note-fact"><strong>${escapeHtml(k)}</strong><span>${renderNoteText(v)}</span></div>`).join("");
+    const components = (payload.components || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.label)}</strong><span>${renderNoteText(x.description)}</span></div>`).join("");
+    return openModal(payload.title || "Cantrip Notes", `<div class="rules-text formatted-rules note-dialog-content">${facts ? `<section class="note-section"><h3>Spell Basics</h3><div class="note-fact-grid">${facts}</div></section>` : ""}${components ? `<section class="note-section"><h3>Components</h3>${components}</section>` : ""}</div>`);
   }
 }
 
@@ -3206,14 +3380,14 @@ async function renderSheet(app) {
   const classLine = [c.class?.name, c.subclass?.name].filter(Boolean).join(" · ");
   const identityLine = [c.background?.name, c.species?.name].filter(Boolean).join(" · ");
   const saves = ABILITIES.map(a => {
-    const prof = d.savingThrowProficiencies.has(a);
-    return `<div class="sheet-save-row"><span class="check-circle ${prof ? "on" : ""}"></span><span>${ABILITY_NAMES[a]} Save</span><strong>${formatMod(d.mods[a] + (prof ? d.pb : 0) + Number(d.d20Penalty || 0))}</strong></div>`;
+    const prof = d.savingThrowProficiencies.has(a), adv = d.savingThrowAdvantages?.has(a);
+    return `<div class="sheet-save-row"><span class="check-circle ${prof ? "on" : ""}"></span><span>${ABILITY_NAMES[a]} Save${adv ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${formatMod(d.mods[a] + (prof ? d.pb : 0) + Number(d.d20Penalty || 0))}</strong></div>`;
   }).join("");
   const skillsByAbility = Object.fromEntries(ABILITIES.map(a => [a, []]));
   for (const [key,[ability,name]] of Object.entries(SKILLS)) skillsByAbility[ability].push({ key, name, prof: d.skillProficiencies.has(key), exp: d.effectiveExpertise?.has(key) || false, bonus: d.mods[ability] + (d.skillProficiencies.has(key) ? d.pb : 0) + (d.effectiveExpertise?.has(key) ? d.pb : 0) + Number(d.d20Penalty || 0) });
   const abilityBoxes = ABILITIES.map(a => `<section class="ability-box">
       <div class="ability-head"><span>${ABILITY_LABELS[a]}</span><strong>${d.stats[a]}</strong><em>${formatMod(d.mods[a])}</em></div>
-      <div class="ability-save"><span class="check-circle ${d.savingThrowProficiencies.has(a) ? "on" : ""}"></span><b>Saving Throw</b><strong>${formatMod(d.mods[a] + (d.savingThrowProficiencies.has(a) ? d.pb : 0) + Number(d.d20Penalty || 0))}</strong></div>
+      <div class="ability-save"><span class="check-circle ${d.savingThrowProficiencies.has(a) ? "on" : ""}"></span><b>Saving Throw${d.savingThrowAdvantages?.has(a) ? ` <sup class="save-advantage">ADV</sup>` : ""}</b><strong>${formatMod(d.mods[a] + (d.savingThrowProficiencies.has(a) ? d.pb : 0) + Number(d.d20Penalty || 0))}</strong></div>
       <div class="skill-stack">${skillsByAbility[a].map(sk => `<div class="sheet-skill-row"><span class="check-circle ${sk.prof ? "on" : ""}"></span><span>${escapeHtml(sk.name)}${sk.exp ? " <sup>EX</sup>" : ""}</span><strong>${formatMod(sk.bonus)}</strong></div>`).join("")}</div>
     </section>`).join("");
   const featureRows = [...d.classFeatures.map(f => ({...f, kind:"Class"})), ...d.subclassFeatures.map(f => ({...f, kind:"Subclass"}))]
@@ -3299,16 +3473,36 @@ async function renderBuilder(app) {
   const availableOriginFeats = bgFeatRefs.length ? feats.filter(f => bgFeatRefs.some(ref => String(ref.name || ref).toLowerCase() === f.name.toLowerCase() && (!ref.source || String(ref.source).toLowerCase() === String(f.source).toLowerCase()))) : [];
   const featChoiceMarkup = d.featObjs.flatMap(feat => [
     ...featAbilitySpecs(feat).map(spec => {
-      const key=featRefKey(feat,spec.index);
-      return spec.fixed || !spec.from.length ? "" : `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Ability increase (+${spec.amount})<select data-feat-ability="${escapeHtml(key)}">${spec.from.map(a=>`<option value="${a}" ${c.featAbilityChoices?.[key]===a?"selected":""}>${ABILITY_NAMES[a]}</option>`).join("")}</select></label></div>`;
+      const key=featSpecKey(feat,spec);
+      if (spec.fixed || !spec.from.length) return "";
+      const selected = c.featAbilityChoices?.[key] || "";
+      return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Ability increase (+${spec.amount})<select data-feat-ability="${escapeHtml(key)}"><option value="">— Select —</option>${spec.from.map(a=>`<option value="${a}" ${selected===a?"selected":""}>${ABILITY_NAMES[a]}</option>`).join("")}</select></label></div>`;
     }),
     ...featSaveSpecs(feat).map(spec => {
-      const key=featRefKey(feat,spec.index);
-      return spec.fixed || !spec.from.length ? "" : `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Saving throw proficiency<select data-feat-save="${escapeHtml(key)}">${spec.from.map(a=>`<option value="${a}" ${c.featSaveChoices?.[key]===a?"selected":""}>${ABILITY_NAMES[a]}</option>`).join("")}</select></label></div>`;
+      const key=featSpecKey(feat,spec);
+      if (spec.fixed || !spec.from.length) return "";
+      const selected = c.featSaveChoices?.[key] || "";
+      return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Saving throw proficiency<select data-feat-save="${escapeHtml(key)}"><option value="">— Select —</option>${spec.from.map(a=>`<option value="${a}" ${selected===a?"selected":""}>${ABILITY_NAMES[a]}</option>`).join("")}</select></label></div>`;
     }),
     ...featSkillSpecs(feat).map(spec => {
-      const key=featRefKey(feat,spec.index);
-      return spec.fixed || !spec.from.length ? "" : `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Skill proficiency<select data-feat-skill="${escapeHtml(key)}">${spec.from.map(sk=>`<option value="${sk}" ${c.featSkillChoices?.[key]===sk?"selected":""}>${escapeHtml(SKILLS[sk]?.[1]||sk)}</option>`).join("")}</select></label></div>`;
+      const key=featSpecKey(feat,spec);
+      if (spec.fixed || !spec.from.length) return "";
+      const selected = c.featSkillChoices?.[key] || "";
+      return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Skill proficiency<select data-feat-skill="${escapeHtml(key)}"><option value="">— Select —</option>${spec.from.map(sk=>`<option value="${sk}" ${selected===sk?"selected":""}>${escapeHtml(SKILLS[sk]?.[1]||sk)}</option>`).join("")}</select></label></div>`;
+    }),
+    ...featMixedChoiceSpecs(feat).map(spec => {
+      const selected=c.featMixedChoices?.[spec.key]||"", options=mixedChoiceOptions(spec);
+      return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Choose skill/tool/language<select data-feat-mixed="${escapeHtml(spec.key)}"><option value="">— Select —</option>${options.map(o=>{const val=`${o.kind}:${o.value}`; return `<option value="${escapeHtml(val)}" ${selected===val?"selected":""}>${escapeHtml(o.kind)} · ${escapeHtml(o.name)}</option>`}).join("")}</select></label></div>`;
+    }),
+    ...featExpertiseSpecs(feat).map(spec => {
+      const selected=c.featExpertiseChoices?.[spec.key]||"";
+      return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Expertise<select data-feat-expertise="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.from.map(sk=>`<option value="${sk}" ${selected===sk?"selected":""}>${escapeHtml(SKILLS[sk]?.[1]||sk)}</option>`).join("")}</select></label></div>`;
+    }),
+    ...featAdditionalSpellChoiceSpecs(feat).flatMap(spec => {
+      const selected=c.featSpellChoices?.[spec.key]||{};
+      const list = spec.names.length ? `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Spell list<select data-feat-spell-list="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.names.map(name=>`<option value="${escapeHtml(name)}" ${String(selected.list||"").toLowerCase()===String(name).toLowerCase()?"selected":""}>${escapeHtml(name)}</option>`).join("")}</select></label></div>` : "";
+      const ability = spec.abilityFrom.length ? `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Spellcasting ability<select data-feat-spell-ability="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.abilityFrom.map(a=>`<option value="${a}" ${selected.ability===a?"selected":""}>${ABILITY_NAMES[a]}</option>`).join("")}</select></label></div>` : "";
+      return [list,ability].filter(Boolean);
     })
   ]).filter(Boolean).join("");
   const selectedAbility2 = c.backgroundAbility.plus2;
@@ -3329,6 +3523,13 @@ async function renderBuilder(app) {
   const standardLanguageValues = standardLanguageOptions();
   const refValue = (obj) => normalizeRefId(obj.name, obj.source);
   const selectRefOptions = (list, current) => list.map(x => `<option value="${escapeHtml(refValue(x))}" ${current?.name===x.name && current?.source===x.source?"selected":""}>${escapeHtml(x.name)}${x.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(x.source))}`:""}</option>`).join("");
+  const speciesChoiceSpecsNow = speciesChoiceSpecs(d.speciesObj);
+  const speciesChoiceMarkup = speciesChoiceSpecsNow.map(spec => {
+    const current=c.speciesChoices?.[spec.key]||{}; const selectedValue=current.value||current||"";
+    const optionSelect=`<label class="field">${escapeHtml(d.speciesObj?.name||"Species")} · ${escapeHtml(spec.label||"Choice")}<select data-species-choice="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.options.map(o=>`<option value="${escapeHtml(o.name)}" ${textNorm(selectedValue)===textNorm(o.name)?"selected":""}>${escapeHtml(o.name)}</option>`).join("")}</select></label>`;
+    const abilitySelect=spec.abilityFrom?.length?`<label class="field">${escapeHtml(d.speciesObj?.name||"Species")} · Spellcasting ability<select data-species-choice-ability="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.abilityFrom.map(a=>`<option value="${a}" ${current.ability===a?"selected":""}>${ABILITY_NAMES[a]}</option>`).join("")}</select></label>`:"";
+    return `<div class="choice-card"><div class="mini">${escapeHtml(spec.label||"Choose an option from this species.")}</div><div class="form-grid two">${optionSelect}${abilitySelect}</div></div>`;
+  }).join("");
   const manualList = (key) => (c[key] || []).map((x,i)=>`<span class="editable-chip">${escapeHtml(x)}<button data-action="remove-manual" data-list="${key}" data-index="${i}">×</button></span>`).join("") || `<span class="mini">None added manually.</span>`;
   const bgBonusFor = a => bgMode === "three" ? ([selectedAbility1, selectedAbility1b, selectedAbility1c].includes(a) ? "+1" : "") : (selectedAbility2===a?"+2":selectedAbility1===a?"+1":"");
   const autoBonusLines = `<div class="final-stat-preview">${ABILITIES.map(a => `<div><span>${ABILITY_LABELS[a]}</span><strong>${c.baseStats[a]}</strong><em>${bgBonusFor(a)}</em><b>${d.stats[a]}</b></div>`).join("")}</div>`;
@@ -3361,7 +3562,7 @@ async function renderBuilder(app) {
       <label class="field">Background<select data-builder="background"><option value="">— Select —</option>${selectRefOptions(backgrounds,c.background)}</select></label>
       <label class="field">Class<select data-builder="class"><option value="">— Select —</option>${classOptions.map(x=>`<option value="${escapeHtml(refValue(x))}" ${c.class?.name===x.name && c.class?.source===x.source?"selected":""}>${escapeHtml(x.name)}${x.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(x.source))}`:""}</option>`).join("")}</select></label>
       <label class="field">Subclass<select data-builder="subclass" id="subclassSelect" disabled><option value="">${c.class ? "Loading…" : "Choose a class first"}</option></select></label>
-    </div></section>
+    </div>${speciesChoiceMarkup ? `<div class="subhead">Species choices</div><div class="structured-choice-stack">${speciesChoiceMarkup}</div>` : ""}</section>
 
     <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Ability scores</div><div class="mini">Base scores are stored separately. The final values include background increases and any manual bonuses.</div></div><div class="quick-actions"><button class="button button-small" data-action="apply-standard-array">Standard array</button><button class="button button-small" data-action="apply-point-buy">27-point reset</button><span class="status-pill">Point buy: ${pointBuyTotal} / 27</span></div></div><div class="ability-editor">${ABILITIES.map(a=>`<label class="ability-editor-cell"><span>${ABILITY_LABELS[a]}</span><input type="number" min="1" max="30" data-stat="${a}" value="${c.baseStats[a]}"><small>Final ${d.stats[a]}</small></label>`).join("")}</div></section>
 
@@ -3371,6 +3572,7 @@ async function renderBuilder(app) {
     <div class="grid two compact-gap"><section class="card"><div class="section-head"><div><div class="section-title">Languages</div><div class="mini">Every character starts with Common and chooses two additional languages from the 2024 PHB Standard Languages table. Rare languages are excluded here; class, species, background, and feats can add more separately.</div></div><span class="status-pill">${standardLanguageChoices.filter(Boolean).length} / 2 selected</span></div><div class="language-choice-grid"><div class="language-fixed"><strong>Common</strong><span>Always known</span></div><label class="field">Standard language 1<select data-builder="standardLanguage1" data-standard-language="0"><option value="">— Select —</option>${standardLanguageValues.map(v=>`<option value="${escapeHtml(v.name)}" ${standardLanguageChoices[0]===v.name?"selected":""}>${escapeHtml(v.name)}</option>`).join("")}</select></label><label class="field">Standard language 2<select data-builder="standardLanguage2" data-standard-language="1"><option value="">— Select —</option>${standardLanguageValues.filter(v=>v.name!==standardLanguageChoices[0]).map(v=>`<option value="${escapeHtml(v.name)}" ${standardLanguageChoices[1]===v.name?"selected":""}>${escapeHtml(v.name)}</option>`).join("")}</select></label></div></section><section class="card"><div class="section-head"><div class="section-title">Class skill choices</div><span class="status-pill">${classSkillChoices.size} / ${maxClassSkills || 0}</span></div>${classOptionsSkills.length ? `<div class="skill-grid">${classOptionsSkills.map(key=>{ const overlap=bgSkills.has(key); const checked=classSkillChoices.has(key); return `<label class="skill-check ${overlap?"skill-overlap":""}"><input type="checkbox" data-class-skill="${key}" ${checked?"checked":""} ${overlap&&!checked?"disabled":""}><span>${escapeHtml(SKILLS[key]?.[1] || canonicalLabel(key))}</span>${overlap?`<small class="choice-warning">${checked?"Also from background · choose another":"Already from background"}</small>`:""}</label>`; }).join("")}</div>` : `<div class="empty">Choose a class to load its skill choices from 5etools.</div>`}<div class="section-title subhead">Skill expertise</div><div class="skill-grid">${Object.entries(SKILLS).map(([key,[,name]])=>`<label class="skill-check"><input type="checkbox" data-expertise="${key}" ${c.expertise.includes(key)?"checked":""}>${escapeHtml(name)}</label>`).join("")}</div></section><section class="card"><div class="section-title">Background</div>${bg ? `<div class="detail-list"><div><strong>Skills</strong><span>${escapeHtml(grantedSkillsFromMap(bg.skillProficiencies).map(k=>SKILLS[k]?.[1]||canonicalLabel(k)).join(", ")||"None")} ${proficiencyOverlap.skills.length ? `<small class="choice-warning">Class overlap: ${escapeHtml(proficiencyOverlap.skills.map(k=>SKILLS[k]?.[1]||k).join(", "))}</small>` : ""}</span></div><div><strong>Origin feat</strong><span>${escapeHtml(bgFeatRefs.map(x=>x.name || x).join(", ")||"Choice")}</span></div><div><strong>Tools</strong><span>${escapeHtml(backgroundProficiencies.tools.join(", ")||"None")}</span></div><div><strong>Languages</strong><span>${escapeHtml(backgroundProficiencies.languages.join(", ")||"None")}</span></div></div>` : `<div class="empty">Choose a background.</div>`}</section></div>
 ${startingEquipmentMarkup}
     <section class="card compact-gap"><div class="section-title">Origin feat</div><div class="form-grid two"><label class="field">Feat<select data-builder="feat"><option value="">— Choose —</option>${availableOriginFeats.map(x=>`<option value="${escapeHtml(refValue(x))}" ${c.feat?.name===x.name&&c.feat?.source===x.source?"selected":""}>${escapeHtml(x.name)} · ${escapeHtml(x.source)}</option>`).join("")}</select></label><div>${d.featObj ? `<button class="feature feature-block" data-action="feat-detail" data-name="${encodeURIComponent(`${d.featObj.name}|${d.featObj.source}`)}"><strong>${escapeHtml(d.featObj.name)}</strong>${renderRichEntries((d.featObj.entries||[]).slice(0,2))}</button>` : `<div class="empty">Choose a feat to keep a rules reference on the character.</div>`}</div></div>${featChoiceMarkup}
+    ${featChoiceMarkup ? `<div class="structured-choice-stack"><div class="subhead" style="margin-top:12px">Feat choices</div>${featChoiceMarkup}</div>` : ""}
     <div class="subhead" style="margin-top:12px">Additional feats</div><div class="mini" style="margin-bottom:6px">Additional feats are stored separately from the background's Origin Feat. Their structured choices and supported mechanical effects are included in the sheet.</div><div class="chips">${(c.additionalFeats||[]).map((feat,i)=>`<span class="editable-chip">${escapeHtml(feat.name)}<button data-action="remove-additional-feat" data-index="${i}" title="Remove feat">×</button></span>`).join("") || `<span class="mini">None added.</span>`}</div><div class="manual-add" style="margin-top:8px"><select id="additionalFeatPicker"><option value="">Choose a feat…</option>${feats.filter(f=>Number(f.prerequisite?.[0]?.level || 0) <= Number(c.level || 1)).map(f=>`<option value="${escapeHtml(refValue(f))}">${escapeHtml(f.name)} · ${escapeHtml(f.source)}</option>`).join("")}</select><button class="button button-small" data-action="add-additional-feat">Add feat</button></div></section>
 
     <div class="grid two compact-gap"><section class="card"><div class="section-title">Proficiencies & languages</div><div class="proficiency-summary"><div><strong>Armor</strong><span>${escapeHtml(d.proficiencies.armor.join(", ")||"None")}</span></div><div><strong>Weapons</strong><span>${escapeHtml(d.proficiencies.weapons.join(", ")||"None")}</span></div><div><strong>Tools</strong><span>${escapeHtml(d.proficiencies.tools.join(", ")||"None")}</span></div><div><strong>Languages</strong><span>${escapeHtml(d.proficiencies.languages.join(", ")||"None")}</span></div></div>${(proficiencyOverlap.skills.length||proficiencyOverlap.tools.length||proficiencyOverlap.languages.length) ? `<div class="proficiency-overlap"><strong>Duplicate proficiencies</strong><span>${proficiencyOverlap.skills.length?`Skills: ${escapeHtml(proficiencyOverlap.skills.map(k=>SKILLS[k]?.[1]||k).join(", "))}. `:""}${proficiencyOverlap.tools.length?`Tools: ${escapeHtml(proficiencyOverlap.tools.join(", "))}. `:""}${proficiencyOverlap.languages.length?`Languages: ${escapeHtml(proficiencyOverlap.languages.join(", "))}. `:""}These are granted by both class and background.</span></div>` : ""}</section><section class="card"><div class="section-title">Automatic proficiency choices</div><div class="mini">These selections fill 5etools choices such as any standard language or any artisan tool. They remain part of character state and are reflected on the sheet.</div>${proficiencyChoicesMarkup}</section></div>
@@ -3724,7 +3926,7 @@ function bindEvents() {
             return renderAttackNoteDialog(payload);
           } catch {
             const note = el.dataset.note || "";
-            if (note) return openModal(el.dataset.noteTitle || "Notes", `<div class="rules-text formatted-rules"><p>${escapeHtml(note)}</p></div>`);
+            if (note) return openModal(el.dataset.noteTitle || "Notes", `<div class="rules-text formatted-rules"><p>${renderNoteText(note)}</p></div>`);
           }
         }
         if (action === "feature") { const f = findFeatureByButton(el); if (f) return openFeatureModal(f); }
@@ -3835,6 +4037,12 @@ function bindEvents() {
   document.querySelectorAll("[data-feat-ability]").forEach(el => el.onchange = async () => { state.character.featAbilityChoices[el.dataset.featAbility] = el.value; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-save]").forEach(el => el.onchange = async () => { state.character.featSaveChoices[el.dataset.featSave] = el.value; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-skill]").forEach(el => el.onchange = async () => { state.character.featSkillChoices[el.dataset.featSkill] = el.value; await saveCharacter(); render(); });
+  document.querySelectorAll("[data-feat-mixed]").forEach(el => el.onchange = async () => { const key=el.dataset.featMixed; if (el.value) state.character.featMixedChoices[key]=el.value; else delete state.character.featMixedChoices[key]; await saveCharacter(); render(); });
+  document.querySelectorAll("[data-feat-expertise]").forEach(el => el.onchange = async () => { const key=el.dataset.featExpertise; if (el.value) state.character.featExpertiseChoices[key]=el.value; else delete state.character.featExpertiseChoices[key]; await saveCharacter(); render(); });
+  document.querySelectorAll("[data-feat-spell-list]").forEach(el => el.onchange = async () => { const key=el.dataset.featSpellList; const cur=state.character.featSpellChoices[key]||{}; state.character.featSpellChoices[key]=el.value?{...cur,list:el.value}:{...cur}; if(!el.value) delete state.character.featSpellChoices[key].list; await saveCharacter(); render(); });
+  document.querySelectorAll("[data-feat-spell-ability]").forEach(el => el.onchange = async () => { const key=el.dataset.featSpellAbility; const cur=state.character.featSpellChoices[key]||{}; state.character.featSpellChoices[key]=el.value?{...cur,ability:el.value}:{...cur}; if(!el.value) delete state.character.featSpellChoices[key].ability; await saveCharacter(); render(); });
+  document.querySelectorAll("[data-species-choice]").forEach(el => el.onchange = async () => { const key=el.dataset.speciesChoice; const cur=state.character.speciesChoices[key]||{}; if(el.value) state.character.speciesChoices[key]={...cur,value:el.value}; else delete state.character.speciesChoices[key]; await saveCharacter(); render(); });
+  document.querySelectorAll("[data-species-choice-ability]").forEach(el => el.onchange = async () => { const key=el.dataset.speciesChoiceAbility; const cur=state.character.speciesChoices[key]||{}; if(el.value) state.character.speciesChoices[key]={...cur,ability:el.value}; else { const next={...cur}; delete next.ability; if(next.value) state.character.speciesChoices[key]=next; else delete state.character.speciesChoices[key]; } await saveCharacter(); render(); });
   document.querySelectorAll("[data-class-skill]").forEach(el => el.onchange = async () => { const arr=state.character.classSkillChoices; toggleArray(arr,normalizeSkillKey(el.dataset.classSkill),el.checked); const max=state.lastDerived?.skillChoiceSpec?.count||0; if(arr.length>max){arr.splice(arr.indexOf(normalizeSkillKey(el.dataset.classSkill)),1);el.checked=false;showToast(`Choose only ${max} class skills.`);return;} await saveCharacter(); render(); });
   document.querySelectorAll("[data-custom-skill]").forEach(el => el.onchange = async () => { toggleArray(state.character.customSkillProficiencies, normalizeSkillKey(el.dataset.customSkill), el.checked); await saveCharacter(); render(); });
   document.querySelectorAll("[data-expertise]").forEach(el => el.onchange = async () => { toggleArray(state.character.expertise, normalizeSkillKey(el.dataset.expertise), el.checked); await saveCharacter(); render(); });
@@ -3971,6 +4179,8 @@ async function readBuilder() {
   if (get("tempHp")) c.tempHp = Math.max(0, Number(get("tempHp").value || 0));
   if (get("senses")) c.senses = get("senses").value.split(",").map(x=>x.trim()).filter(Boolean);
   if (get("notes")) c.notes = get("notes").value;
+  for (const el of document.querySelectorAll("[data-species-choice]")) { const key=el.dataset.speciesChoice; const cur=c.speciesChoices?.[key]||{}; if (el.value) c.speciesChoices[key]={...cur,value:el.value}; else delete c.speciesChoices[key]; }
+  for (const el of document.querySelectorAll("[data-species-choice-ability]")) { const key=el.dataset.speciesChoiceAbility; const cur=c.speciesChoices?.[key]||{}; if (el.value) c.speciesChoices[key]={...cur,ability:el.value}; else if (cur.value) { delete cur.ability; c.speciesChoices[key]=cur; } else delete c.speciesChoices[key]; }
   await saveCharacter();
 }
 

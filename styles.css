@@ -905,3 +905,34 @@ body { min-height: 100vh; }
   .cache-progress-root { padding: 12px; }
   .cache-progress-card { padding: 18px; }
 }
+
+
+/* v0.37 — structured rules choices, save advantages, and unified Notes UI */
+.structured-choice-stack { display:grid; gap:8px; margin-top:10px; }
+.choice-card { padding:10px; border:1px solid #b8ac99; border-radius:6px; background:#f4ecde; }
+.choice-card .mini { margin-bottom:7px; }
+.save-advantage { margin-left:4px; padding:1px 4px; border:1px solid #a89b87; border-radius:3px; background:#eee3d1; color:#5b5145; font-size:.56em; letter-spacing:.04em; vertical-align:middle; }
+.sheet-note-link { display:inline-flex; align-items:center; justify-content:center; min-width:44px; min-height:32px; padding:4px 9px; border:1px solid #9e927f; border-radius:4px; background:#f4ecdf; color:#332e28; font:700 .68rem Georgia,"Times New Roman",serif; letter-spacing:.02em; }
+.sheet-note-link:hover, .sheet-note-link:focus-visible { background:#e9decd; border-color:#6f6253; color:#1f1b17; outline:none; }
+.note-section { margin-top:12px; padding-top:11px; border-top:1px solid #c4b8a6; }
+.note-section:first-child { margin-top:0; padding-top:0; border-top:0; }
+.note-section h3 { margin:0 0 7px; font:700 .78rem Georgia,"Times New Roman",serif; color:#40382f; }
+.note-section p { margin:0; color:#514a41; line-height:1.48; }
+.note-definition { display:grid; grid-template-columns:minmax(8.5rem,auto) 1fr; gap:10px; padding:7px 0; border-bottom:1px solid rgba(142,128,109,.28); }
+.note-definition:last-child { border-bottom:0; }
+.note-definition strong { color:#3f382f; font:700 .72rem Georgia,"Times New Roman",serif; }
+.note-definition span { color:#514a41; font-size:.72rem; line-height:1.45; }
+.note-fact-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(135px,1fr)); gap:7px; }
+.note-fact { padding:8px 9px; border:1px solid #c1b6a4; border-radius:5px; background:#f6efe3; }
+.note-fact strong { display:block; margin-bottom:3px; color:#71665b; font-size:.6rem; letter-spacing:.05em; text-transform:uppercase; }
+.note-fact span { color:#463f36; font-size:.72rem; line-height:1.4; }
+.note-status { margin:8px 0 0; padding:7px 8px; border-left:3px solid #a08f78; background:#eee4d4; color:#62584b; font-size:.66rem; line-height:1.4; }
+@media (max-width:560px) { .note-definition { grid-template-columns:1fr; gap:3px; } }
+
+/* v0.37.0 — notes use the same parchment/rules typography as other sheet text */
+.note-dialog-content { color:#2b2823 !important; }
+.note-dialog-content .note-section h3 { font-size:.78rem; letter-spacing:.02em; }
+.note-dialog-content .note-definition span, .note-dialog-content .note-fact span { font-size:.8rem; line-height:1.55; }
+.note-dialog-content .rules-ref-link { font-weight:700; }
+.feat-choice-row .field select, .choice-card .field select { min-height:42px; }
+.choice-warning { display:block; margin-top:4px; font-size:.68rem; line-height:1.25; color:#7b3f22; font-weight:700; }
