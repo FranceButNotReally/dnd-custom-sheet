@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.27.3";
+const APP_VERSION = "0.27.4";
 
 const PATHS = {
   books: "data/books.json",
@@ -623,26 +623,43 @@ function officialWeaponCatalog() {
   return weapons.filter(it => masteryObjects(it).length > 0);
 }
 
+function normalizeItemLookupName(value) {
+  return String(value || "")
+    .replace(/\{@item\s+([^|}]+)(?:\|[^}]*)?\}/gi, "$1")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 function itemFromCatalog(name, source=null) {
   const raw = String(name||'').trim();
-  const src = source ? String(source).toLowerCase() : null;
+  const lookup = normalizeItemLookupName(raw);
+  const src = source ? String(source).trim().toLowerCase() : null;
   const index = state.data.itemIndex || new Map();
   const weaponIndex = state.data.weaponIndex || new Map();
+  const all = [...new Map([...index.values(), ...weaponIndex.values()].map(x => [`${String(x.name||'').toLowerCase()}|${String(x.source||'').toLowerCase()}`, x])).values()];
+  // First use the canonical lowercase name+source key. This deliberately treats
+  // Dagger|XPHB, dagger|xphb and Dagger|xphb as the same reference.
   if (src) {
-    const exact = index.get(`${raw.toLowerCase()}|${src}`) || weaponIndex.get(`${raw.toLowerCase()}|${src}`);
+    const exact = index.get(`${lookup}|${src}`) || weaponIndex.get(`${lookup}|${src}`);
     if (exact) return exact;
-    // 2014/legacy references can point at a reprinted 2024 weapon.
-    for (const candidate of [...index.values(), ...weaponIndex.values()]) {
-      if (String(candidate.name||'').toLowerCase() !== raw.toLowerCase()) continue;
-      if (String(candidate.source||'').toLowerCase() === src) return candidate;
-      if (candidate.baseItem && String(candidate.baseItem).toLowerCase() === `${raw}|${src}`.toLowerCase()) return candidate;
-    }
+    const sameSource = all.find(x => normalizeItemLookupName(x.name) === lookup && String(x.source||'').trim().toLowerCase() === src);
+    if (sameSource) return sameSource;
   }
-  for (const candidate of [raw, canonicalLabel(raw, 'item')]) {
-    const hit = [...index.values()].find(x => String(x.name||'').toLowerCase() === String(candidate).toLowerCase() && (!src || String(x.source||'').toLowerCase() === src));
+  const labels = [raw, canonicalLabel(raw, "item")];
+  for (const candidate of labels) {
+    const key = normalizeItemLookupName(candidate);
+    const hit = all.find(x => normalizeItemLookupName(x.name) === key && (!src || String(x.source||'').trim().toLowerCase() === src));
     if (hit) return hit;
-    const weaponHit = [...weaponIndex.values()].find(x => String(x.name||'').toLowerCase() === String(candidate).toLowerCase() && (!src || String(x.source||'').toLowerCase() === src));
-    if (weaponHit) return weaponHit;
+  }
+  // Legacy references sometimes point at the old source while the physical
+  // 2024 item is reprinted under XPHB. Prefer a same-name official weapon/item.
+  if (lookup) {
+    const baseHit = all.find(x => normalizeItemLookupName(x.name) === lookup);
+    if (baseHit) return baseHit;
+    const baseRef = `${lookup}|${src || ""}`;
+    const reprint = all.find(x => normalizeItemLookupName(x.baseItem) === baseRef);
+    if (reprint) return reprint;
   }
   return null;
 }
