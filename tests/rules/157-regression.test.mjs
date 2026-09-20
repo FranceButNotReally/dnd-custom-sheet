@@ -425,9 +425,11 @@ add('mixed feat parser creates one choice per count', () => {
   const feat={name:'Skilled',source:'XPHB',skillToolLanguageProficiencies:[{choose:{from:['anySkill','anyTool'],count:2}}]};
   assert.equal(a.featMixedChoiceSpecs(feat).length,2);
 });
-add('expertise feat parser creates selectable expertise choices', () => {
-  const feat={name:'Expertise',source:'XPHB',expertise:[{choose:{from:['arcana','stealth'],count:1}}]};
-  assert.deepEqual(a.featExpertiseSpecs(feat)[0].from.sort(),['arcana','stealth']);
+add('expertise feat parser supports any proficient skill choices', () => {
+  const feat={name:'Boon of Skill',source:'XPHB',expertise:[{choose:{from:['anyProficientSkill'],count:1}}]};
+  const spec=a.featExpertiseSpecs(feat)[0];
+  assert.equal(spec.anyProficientSkill,true);
+  assert.equal(spec.from.length,Object.keys(a.SKILLS).length);
 });
 add('additional spell choice parser captures spell lists and abilities', () => {
   const feat={name:'Magic Initiate',source:'XPHB',additionalSpells:[{names:['Cleric','Druid','Wizard'],ability:{choose:{from:['wisdom','intelligence','charisma']}}}]};
