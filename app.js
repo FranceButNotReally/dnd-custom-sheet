@@ -1447,9 +1447,10 @@ function featExpertiseSpecs(feat) {
   for (const [index, entry] of groups.entries()) {
     const choose = entry?.choose;
     if (!choose) continue;
-    const from = Array.isArray(choose.from) ? choose.from.map(normalizeSkillKey).filter(Boolean) : [];
+    const rawFrom = Array.isArray(choose.from) ? choose.from.map(String) : [];
+    const from = rawFrom.some(x => /^anyProficientSkill$/i.test(x)) ? Object.keys(SKILLS) : rawFrom.map(normalizeSkillKey).filter(Boolean);
     const count = Math.max(1, Number(choose.count || 1));
-    for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, key: `${feat?.name || "Feat"}|${feat?.source || ""}|expertise|${index}|${choiceIndex}` });
+    for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, anyProficientSkill: rawFrom.some(x => /^anyProficientSkill$/i.test(x)), key: `${feat?.name || "Feat"}|${feat?.source || ""}|expertise|${index}|${choiceIndex}` });
   }
   return specs;
 }
