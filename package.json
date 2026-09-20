@@ -1,0 +1,16 @@
+{
+  "name": "dnd-2024-5etools-pwa",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test tests/unit/*.test.mjs tests/rules/*.test.mjs",
+    "test:unit": "node --test tests/unit/*.test.mjs tests/rules/*.test.mjs",
+    "test:data": "node tests/data/fetch-5etools.mjs && node tests/data/data-contract.test.mjs",
+    "test:coverage": "node tests/rules/coverage-report.mjs && node tests/rules/corpus-audit.mjs",
+    "test:ci": "npm run test:unit && npm run test:data && npm run test:coverage"
+  },
+  "version": "0.37.0"
+}
