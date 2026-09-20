@@ -1,3 +1,25 @@
+## v0.25.0
+
+- Fixed structured starting-equipment resolution by loading 2024 item data before applying equipment choices.
+- Fixed Equipment rendering so weapon/item references and Equip/Wield controls resolve against cached item data.
+- Expanded special-sense discovery/caching for Darkvision, Blindsight, Tremorsense, and Truesight, including prose and direct `senses` structures.
+- Normalized gaming-set labels such as `Dragonchess Set` to `Dragonchess` and suppresses redundant `Choose a Gaming Set` entries when a concrete choice is present.
+- Kept conditions hover-only on the sheet.
+- Tightened HP action sizing for narrow layouts.
+- Long Rest now restores all spent Hit Dice per the 2024 rules.
+- Refined the character-sheet visual styling and interaction surfaces.
+
+
+## v0.24.0
+- Fixed overlapping Hit Point controls with responsive grid layout.
+- Removed redundant condition info controls; conditions retain hover behavior.
+- Added persistent special-sense cache fallbacks and character-sheet sense display.
+- Made automatic limited-use resources visible on the character sheet; Rage is derived from class-table uses when necessary.
+- Improved starting-equipment resolution and weapon visibility/equip state.
+- Spell links now use the shared reference/hover system without nested interactive controls; spell view forces XPHB hydration on entry.
+- Tool-choice labels display concise names such as Dragonchess while retaining canonical 5etools item references.
+- Weapon Mastery uses the base XPHB weapon set only, deduplicated and presented as a compact selector.
+- Applied the character-sheet visual language consistently across the app surfaces.
 ## 0.22.0
 
 - Fixed 2024 optional-feature progression handling for class data that uses `optionalfeatureProgression` and `featureType`, notably Warlock Eldritch Invocations.
