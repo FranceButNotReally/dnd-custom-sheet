@@ -1,14 +1,3 @@
-## v0.33.0
-
-The 5etools data layer now uses staged caching with a visible progress bar. Core catalogs, class files, and official spell sources are downloaded/cached in small groups rather than all at once. Normal character views are enabled only after the local rules library is complete, and interrupted caches are resumed automatically by the same synchronization path.
-
-
-
-- Reworked rules-data loading into staged batches with a visible progress overlay.
-- Startup now waits for synchronization to finish before exposing the character sheet, and individual downloads retry transient failures automatically.
-- Initial synchronization now completes the 2024 player-facing cache before normal sheet views are enabled.
-- Interrupted/incomplete caches are detected and resumed rather than leaving individual features dependent on whichever files happened to finish downloading.
-- 
 # D&D 2024 5etools Character Sheet PWA
 
 Tablet-first D&D 2024 character builder and sheet backed by versioned 5etools data.
@@ -19,13 +8,23 @@ This is a static PWA intended for GitHub Pages. Keep `.github/workflows/pages.ym
 
 ## Data
 
-The app checks the latest 5etools release, loads the official 2024/revised player-relevant data it can identify, and caches that data locally. Character data is stored separately so rules-data updates do not overwrite characters.
+The app checks the latest 5etools release, then synchronizes the complete detected 2024 player-facing rules library in staged batches. Core catalogs, class files, and spell-source files are cached locally in IndexedDB. The character data is stored separately so rules-data updates do not overwrite characters.
+
+The synchronization path validates the equipment catalogue and can repair a stale/incomplete item cache before the library is marked ready.
 
 ## Current build
 
-Version 0.25.0
+Version 0.34.0
 
+## v0.34.0
 
-## v0.29.0
+- Restored the known-good v0.28 item-catalog/index path while retaining the staged full-library cache architecture.
+- Added a validated, single-flight data fetch layer so incomplete cached files are rejected and concurrent requests for the same file share one download.
+- Added explicit equipment-catalog/index integrity checks before the library can be marked ready.
+- Added a raw-catalog fallback for exact XPHB item resolution, preserving starting-equipment references such as `dagger|xphb` and `quarterstaff|xphb`.
+- Added forgiving equipment search for common plurals and small touch-keyboard typos such as `daggers` and `quarterstuff`.
+- Added a dedicated equipment-data smoke test for catalog resolution, starting-equipment refs, fuzzy search, cache repair, and single-flight downloads.
 
-This build completes the equipment/spell hydration pass, fixes Simple/Martial weapon proficiency normalization, makes legacy PHB references resolve against the current XPHB catalog, adds inventory filtering, supports three +1 background ability increases, removes redundant gaming-set placeholders, and applies the parchment character-sheet theme consistently across editor and management surfaces.
+## Earlier releases
+
+See `CHANGELOG.md` for the full development history.

@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.33.0";
+const APP_VERSION = "0.34.0";
 
 const PATHS = {
   books: "data/books.json",
@@ -324,6 +324,15 @@ async function idbDeletePrefix(store, prefix) {
 function dataKey(version, path) { return `${version}::${path}`; }
 async function cachedData(version, path) { return idbGet("data", dataKey(version, path)); }
 async function cacheData(version, path, json) { return idbPut("data", dataKey(version, path), json); }
+async function deleteCachedData(version, path) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("data", "readwrite");
+    tx.objectStore("data").delete(dataKey(version, path));
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
 
 async function loadCharacter() {
   let currentId = await idbGet("kv", "currentCharacterId");
@@ -419,24 +428,45 @@ async function getLatestReleaseTag(forceCheck = false) {
   return release.tag_name;
 }
 
+const dataFetchesInFlight = new Map();
+
+function isUsableCachedData(path, json) {
+  if (json == null || typeof json !== "object") return false;
+  if (path === PATHS.items) return hasRequired2024Equipment(json);
+  if (path === PATHS.classIndex) return json && typeof json === "object" && Object.keys(json).length > 0;
+  if (path === PATHS.spellIndex) return json && typeof json === "object" && Object.keys(json).length > 0;
+  return true;
+}
+
 async function fetch5eData(version, path) {
-  const cached = await cachedData(version, path);
-  if (cached !== null) return cached;
-  const url = `${RAW_ROOT}/${encodeURIComponent(version)}/${path}`;
-  let lastError = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const json = await fetchJson(url, { timeoutMs: 45000 });
-      await cacheData(version, path, json);
-      return json;
-    } catch (error) {
-      lastError = error;
-      const transient = /^(408|429|5\d\d)\b/.test(String(error?.message || "")) || error?.name === "AbortError" || error instanceof TypeError;
-      if (!transient || attempt === 2) throw error;
-      await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+  const requestKey = dataKey(version, path);
+  if (dataFetchesInFlight.has(requestKey)) return dataFetchesInFlight.get(requestKey);
+  const request = (async () => {
+    const cached = await cachedData(version, path);
+    if (cached !== null) {
+      if (isUsableCachedData(path, cached)) return cached;
+      // Never let an incomplete/stale catalog poison the staged cache.
+      await deleteCachedData(version, path);
     }
-  }
-  throw lastError || new Error(`Unable to load ${path}`);
+    const url = `${RAW_ROOT}/${encodeURIComponent(version)}/${path}`;
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const json = await fetchJson(url, { timeoutMs: path === PATHS.items ? 60000 : 45000 });
+        if (!isUsableCachedData(path, json)) throw new Error(`Downloaded ${path} is structurally incomplete.`);
+        await cacheData(version, path, json);
+        return json;
+      } catch (error) {
+        lastError = error;
+        const transient = /^(408|429|5\d\d)\b/.test(String(error?.message || "")) || error?.name === "AbortError" || error instanceof TypeError;
+        if (!transient || attempt === 2) throw error;
+        await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+      }
+    }
+    throw lastError || new Error(`Unable to load ${path}`);
+  })();
+  dataFetchesInFlight.set(requestKey, request);
+  try { return await request; } finally { dataFetchesInFlight.delete(requestKey); }
 }
 
 function sourceLabel(source) {
@@ -451,16 +481,6 @@ function isOfficial2024Entity(entity, sourceSet = state.data.officialSources) {
     entity.basicRules2024 ||
     entity.srd52
   ));
-}
-
-function isCore2024Item(item) {
-  const source = String(item?.source || "").toUpperCase();
-  return source === "XPHB" || source === "XDMG" || source === "XMM" || Boolean(item?.basicRules2024 || item?.srd52);
-}
-
-function officialItemEntries(json, sourceSet = state.data.officialSources) {
-  if (!Array.isArray(json?.item)) return [];
-  return json.item.filter(item => isOfficial2024Entity(item, sourceSet) || isCore2024Item(item));
 }
 
 function officialEntries(json, prop) {
@@ -580,13 +600,7 @@ function officialSpellSourcesForData(core) {
 
 async function cacheAllLibraryData(version, core = null) {
   const loadedCore = core || await loadCoreData(version);
-  if (!hasRequired2024Equipment(loadedCore.items)) {
-    if (!state.online) throw new Error("The cached 2024 equipment catalog is incomplete while offline.");
-    setCacheProgress({label: "Repairing equipment catalog", detail: "The cached item file is missing core 2024 weapons; downloading a fresh copy…", done: 0, total: 1, phase: "Equipment"});
-    loadedCore.items = await refreshItemsData(version);
-    loadedCore.itemIndex = new Map();
-    for (const item of officialItemEntries(loadedCore.items)) loadedCore.itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
-  }
+  await ensureEquipmentCatalogReady(loadedCore);
   const classEntries = Object.entries(loadedCore.classIndex || {});
   const spellSources = officialSpellSourcesForData(loadedCore);
   const total = CORE_CACHE_PATHS.length + classEntries.length + spellSources.length;
@@ -621,10 +635,7 @@ async function loadCoreData(version) {
   const officialSources = new Set(sourceMeta.map(x => x.source));
   const referenceCache = new Map();
   for (const sense of SPECIAL_SENSES) referenceCache.set(referenceCacheKey("sense", sense, DATA_SOURCE), SPECIAL_SENSE_FALLBACKS[sense]);
-  const itemIndex = new Map();
-  for (const item of officialItemEntries({ item: Array.isArray(items?.item) ? items.item : [] }, officialSources)) {
-    itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
-  }
+  const itemIndex = buildItemIndex(items, officialSources);
   return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, itemIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
 }
 
@@ -674,6 +685,7 @@ async function loadVersion(version) {
   state.libraryReady = false;
   const core = await loadCoreData(version);
   state.data = core;
+  await ensureEquipmentCatalogReady(state.data);
   return core;
 }
 
@@ -780,32 +792,75 @@ function hasRequired2024Equipment(items) {
 }
 
 async function refreshItemsData(version) {
-  const url = `${RAW_ROOT}/${encodeURIComponent(version)}/${PATHS.items}`;
-  const fresh = await fetchJson(url, { timeoutMs: 60000 });
+  await deleteCachedData(version, PATHS.items);
+  const fresh = await fetch5eData(version, PATHS.items);
   if (!hasRequired2024Equipment(fresh)) throw new Error("The downloaded 2024 equipment catalog is missing required core items.");
-  await cacheData(version, PATHS.items, fresh);
   state.data.items = fresh;
-  state.data.itemIndex = new Map();
-  officialItemCatalog();
+  state.data.itemIndex = buildItemIndex(fresh, state.data.officialSources);
   return fresh;
+}
+
+function buildItemIndex(items, sourceSet = state.data.officialSources) {
+  const index = new Map();
+  const list = Array.isArray(items?.item) ? items.item : [];
+  for (const item of list) {
+    const source = String(item?.source || "").toUpperCase();
+    if (!item?.name) continue;
+    // Restore the known-good v0.28 behavior, with an explicit XPHB safety net.
+    if (isOfficial2024Entity(item, sourceSet) || source === DATA_SOURCE) {
+      index.set(`${String(item.name).toLowerCase()}|${String(item.source || "").toLowerCase()}`, item);
+    }
+  }
+  return index;
+}
+
+function equipmentCatalogDiagnostics(items, sourceSet = state.data.officialSources) {
+  const list = Array.isArray(items?.item) ? items.item : [];
+  const index = buildItemIndex(items, sourceSet);
+  const required = ["dagger", "quarterstaff", "mace", "shield", "leather armor"];
+  const missing = required.filter(name => !index.has(`${name}|xphb`));
+  return { rawCount: list.length, indexCount: index.size, missing };
+}
+
+function rebuildItemIndex() {
+  state.data.itemIndex = buildItemIndex(state.data.items);
+  const diag = equipmentCatalogDiagnostics(state.data.items);
+  if (diag.missing.length) throw new Error(`2024 equipment index is incomplete: missing ${diag.missing.join(", ")}.`);
+  return diag;
+}
+
+async function ensureEquipmentCatalogReady(core = state.data) {
+  if (!core?.items || !hasRequired2024Equipment(core.items)) {
+    if (!state.online) throw new Error("The cached equipment catalog is incomplete; reconnect to repair it.");
+    setCacheProgress({label: "Repairing equipment catalog", detail: "Refreshing the complete 2024 item catalog…", done: 0, total: 1, phase: "Equipment"});
+    const fresh = await refreshItemsData(state.version);
+    core.items = fresh;
+  }
+  const diag = equipmentCatalogDiagnostics(core.items, core.officialSources);
+  if (diag.missing.length) {
+    if (!state.online) throw new Error(`The cached equipment index is incomplete: ${diag.missing.join(", ")}.`);
+    setCacheProgress({label: "Repairing equipment catalog", detail: `Refreshing item index (${diag.missing.join(", ")})…`, done: 0, total: 1, phase: "Equipment"});
+    const fresh = await refreshItemsData(state.version);
+    core.items = fresh;
+  }
+  core.itemIndex = buildItemIndex(core.items, core.officialSources);
+  const finalDiag = equipmentCatalogDiagnostics(core.items, core.officialSources);
+  if (finalDiag.missing.length) throw new Error(`2024 equipment index remains incomplete: ${finalDiag.missing.join(", ")}.`);
+  return finalDiag;
 }
 
 async function getItemsData() {
   if (!state.data.items) state.data.items = await fetch5eData(state.version, PATHS.items);
-  if (!hasRequired2024Equipment(state.data.items)) {
-    if (!state.online) throw new Error("The cached equipment catalog is incomplete; reconnect to repair it.");
-    await refreshItemsData(state.version);
-  }
-  officialItemCatalog();
+  await ensureEquipmentCatalogReady(state.data);
+  rebuildItemIndex();
   return state.data.items;
 }
 
 function officialItemCatalog() {
-  const entries = officialItemEntries(state.data.items);
-  if (!state.data.itemIndex) state.data.itemIndex = new Map();
-  if (state.data.itemIndex.size !== entries.length || !state.data.itemIndex.has("dagger|xphb") || !state.data.itemIndex.has("quarterstaff|xphb")) {
-    state.data.itemIndex.clear();
-    for (const item of entries) state.data.itemIndex.set(`${String(item.name||'').toLowerCase()}|${String(item.source||'').toLowerCase()}`, item);
+  const entries = Array.isArray(state.data.items?.item) ? state.data.items.item.filter(item => isOfficial2024Entity(item) || String(item?.source || "").toUpperCase() === DATA_SOURCE) : [];
+  if (!state.data.itemIndex) state.data.itemIndex = buildItemIndex(state.data.items);
+  if (!state.data.itemIndex.has("dagger|xphb") || !state.data.itemIndex.has("quarterstaff|xphb")) {
+    state.data.itemIndex = buildItemIndex(state.data.items);
   }
   return entries;
 }
@@ -825,6 +880,14 @@ function itemFromCatalog(name, source=null) {
   for (const candidate of [raw, canonicalLabel(raw, 'item')]) {
     const hit = [...index.values()].find(x => String(x.name||'').toLowerCase() === String(candidate).toLowerCase() && (!src || String(x.source||'').toLowerCase() === src));
     if (hit) return hit;
+  }
+  // Last-resort exact lookup against the raw 5etools catalog. This keeps the
+  // resolver independent from derived indexes and is especially important for
+  // XPHB starting-equipment refs such as dagger|xphb.
+  const rawItems = Array.isArray(state.data.items?.item) ? state.data.items.item : [];
+  for (const candidate of [raw, canonicalLabel(raw, 'item')]) {
+    const hit = rawItems.find(x => String(x?.name || '').toLowerCase() === String(candidate).toLowerCase() && (!src || String(x?.source || '').toLowerCase() === src));
+    if (hit && (isOfficial2024Entity(hit) || String(hit.source || '').toUpperCase() === DATA_SOURCE)) return hit;
   }
   return null;
 }
@@ -3289,8 +3352,47 @@ function spellById(id) {
   return getLoadedSpells().find(s => s.name?.toLowerCase() === String(name || "").toLowerCase() && (!source || s.source?.toLowerCase() === source.toLowerCase())) || null;
 }
 
+function searchEditDistance(a, b) {
+  const x = String(a || "").toLowerCase();
+  const y = String(b || "").toLowerCase();
+  if (x === y) return 0;
+  if (!x) return y.length;
+  if (!y) return x.length;
+  const row = Array.from({ length: y.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= x.length; i++) {
+    let prev = row[0];
+    row[0] = i;
+    for (let j = 1; j <= y.length; j++) {
+      const saved = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (x[i - 1] === y[j - 1] ? 0 : 1));
+      prev = saved;
+    }
+  }
+  return row[y.length];
+}
+
+function matchesSearchText(value, query) {
+  const text = String(value || "").trim().toLowerCase();
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return true;
+  if (text.includes(q)) return true;
+  // Be forgiving of the common plural form and small touch-keyboard typos.
+  const singular = q.endsWith("s") && q.length > 3 ? q.slice(0, -1) : q;
+  if (singular !== q && text.includes(singular)) return true;
+  if (q.length >= 5) {
+    const tokens = text.split(/[^a-z0-9]+/).filter(Boolean);
+    if (tokens.some(token => token.length >= 5 && Math.abs(token.length - q.length) <= 2 && searchEditDistance(token, q) <= 2)) return true;
+  }
+  return false;
+}
+
 async function renderEquipment(app) {
-  try { await getItemsData(); officialItemCatalog(); } catch (e) { console.warn("Equipment catalog hydration failed", e); }
+  try { await getItemsData(); officialItemCatalog(); } catch (e) {
+    console.error("Equipment catalog hydration failed", e);
+    app.innerHTML = `${pageHeader("EQUIPMENT", `${escapeHtml(state.character.name || "Character")} · Equipment`, "The 2024 equipment catalog could not be prepared.", `<button class="button" data-action="sheet">Character</button>`)}<section class="card empty-state"><div class="empty-icon">!</div><h2>Equipment data unavailable</h2><p>${escapeHtml(e?.message || String(e))}</p><button class="button button-primary" data-action="sync">Repair rules data</button></section>`;
+    bindEvents();
+    return;
+  }
   const items = state.character.inventory || [];
   app.innerHTML = `${pageHeader("EQUIPMENT", `${escapeHtml(state.character.name || "Character")} · Equipment`, "Items are resolved against the cached 2024 5etools equipment catalog.", `<button class="button" data-action="sheet">Character</button><button class="button button-primary" data-action="item-picker">Add item</button>`)}
   <section class="card"><div class="equipment-total-value">Total currency value: <strong>${formatCurrencyValue(currencyToCp(state.character.currency))}</strong></div><div class="equipment-state-legend"><strong>Equipped</strong> = worn or otherwise active for equipment effects and Armor Class. <strong>Wielding</strong> = a weapon is currently held and counts for attacks and weapon-dependent effects. Wielding a weapon automatically equips it; a weapon can stay equipped without being wielded.</div><div class="currency-grid">${["pp","gp","ep","sp","cp"].map(k=>`<label class="field"><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" min="0" step="1" value="${Number(state.character.currency?.[k] || 0)}"></label>`).join("")}</div>
@@ -3310,8 +3412,8 @@ async function renderEquipment(app) {
     const cat = document.querySelector("#equipmentCategory")?.value || "all";
     const equippedOnly = Boolean(document.querySelector("#equipmentEquipped")?.checked);
     const list = items.map((it,index)=>({it,index})).filter(({it}) => {
-      const label = String(it.displayName || it.name || "").toLowerCase();
-      return (!q || label.includes(q)) && (cat === "all" || categoryOf(it) === cat) && (!equippedOnly || it.equipped);
+      const label = String(it.displayName || it.name || "");
+      return matchesSearchText(label, q) && (cat === "all" || categoryOf(it) === cat) && (!equippedOnly || it.equipped);
     });
     const root = document.querySelector("#equipmentRows"); if (!root) return;
     root.innerHTML = list.length ? list.map(({it,index})=>{
@@ -3833,7 +3935,7 @@ async function openItemPicker() {
       const q = (document.querySelector("#itemSearch")?.value || "").toLowerCase().trim();
       const cat = document.querySelector("#itemCategory")?.value || "all";
       const attune = Boolean(document.querySelector("#itemAttune")?.checked);
-      const list = items.filter(i => (!q || i.name.toLowerCase().includes(q)) && (cat === "all" || categoryOf(i) === cat) && (!attune || Boolean(i.reqAttune))).slice(0,500);
+      const list = items.filter(i => matchesSearchText(i.name, q) && (cat === "all" || categoryOf(i) === cat) && (!attune || Boolean(i.reqAttune))).slice(0,500);
       const root = document.querySelector("#itemResults"); if(!root)return;
       root.innerHTML = list.map((it,i)=>`<div class="spell-row"><div>${renderReferenceTag("item", `${it.name}|${it.source}|${it.name}`)}<div class="spell-meta">${escapeHtml(it.type || "Item")}${it.rarity && String(it.rarity).toLowerCase() !== "none" ? ` · ${escapeHtml(String(it.rarity))}` : ""}</div></div><button class="button button-small button-primary" data-add-item="${i}">Add</button></div>`).join("")||`<div class="empty">No matching equipment.</div>`;
       bindRuleReferenceLinks(root);

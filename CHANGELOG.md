@@ -1,4 +1,18 @@
-# v0.33.0
+# Changelog
+
+## v0.34.0
+
+- Restored the known-good v0.28 equipment catalog behavior rather than replacing it with a new item-filtering layer.
+- Kept the automatic staged full-library synchronization and all previously added character-sheet functionality.
+- Added validation of cached/downloaded item data before accepting `data/items.json`.
+- Added single-flight requests so simultaneous loaders cannot race on the same versioned data file.
+- Added explicit equipment-index validation before the rules library is considered ready.
+- Added exact raw-catalog fallback for XPHB item references, including `dagger|xphb` and `quarterstaff|xphb`.
+- Added forgiving equipment search for plurals and small spelling errors.
+- Added repeatable Node smoke tests covering the equipment data path and cache behavior.
+- Bumped the PWA shell cache to v340.
+
+## v0.33.0
 
 - Fixed a regression where the equipment catalog could be considered cached even when core 2024 items such as Dagger and Quarterstaff were missing or excluded from the item index.
 - Added explicit 2024 equipment catalog validation for Dagger, Quarterstaff, Mace, Shield, and Leather Armor.
