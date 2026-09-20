@@ -1530,7 +1530,6 @@ function speciesChoiceSpecs(species) {
     const unique=[]; for (const opt of names) if (opt && opt.name && !unique.some(x => textNorm(x.name)===textNorm(opt.name))) unique.push(opt);
     if (unique.length < 2 || unique.length > 30) return;
     if (!(choicePattern.test(context) || lineagePattern.test(context))) return;
-    if (transientChoicePattern.test(context)) return;
     const key = `${species?.name || "Species"}|${species?.source || ""}|choice|${specs.length}`;
     const abilityFrom = abilityChoicesFromText(context);
     specs.push({ key, index: specs.length, options: unique, abilityFrom, kind, label: lineagePattern.test(context) ? "Lineage / ancestry choice" : kind === "skill" ? "Skill choice" : kind === "feat" ? "Origin feat choice" : "Species choice" });
@@ -2747,9 +2746,10 @@ function applySelectedSpeciesOptionEffects(c, speciesObj, effects) {
       const skill = option.value || normalizeSkillKey(option.name);
       if (skill && SKILLS[skill]) effects.skills.add(skill);
     }
-    if (textNorm(speciesObj.name) === "dragonborn" && /draconic ancestry/i.test(spec.label || "")) {
+    if (textNorm(speciesObj.name) === "dragonborn") {
+      const damageTypes = new Set(["Acid","Cold","Fire","Lightning","Poison"]);
       const damageType = String(option.entries?.[0] || "").trim();
-      if (damageType && !effects.resistances.includes(damageType)) effects.resistances.push(damageType);
+      if (damageTypes.has(damageType) && !effects.resistances.includes(damageType)) effects.resistances.push(damageType);
     }
     applyTextualRulesEffects(option.entries, effects, `${speciesObj.name} · ${option.name}`);
   }
