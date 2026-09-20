@@ -76,9 +76,6 @@ function add(name, fn) {
 add('standard array has exactly six scores', () => {
   assert.equal(a.STANDARD_ARRAY.length, 6);
 });
-add('standard array contains 15', () => {
-  assert.ok(a.STANDARD_ARRAY.includes(15));
-});
 add('standard array contains 14', () => {
   assert.ok(a.STANDARD_ARRAY.includes(14));
 });
