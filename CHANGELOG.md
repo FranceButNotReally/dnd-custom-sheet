@@ -78,3 +78,6 @@
 - Added item-backed tool and language selectors.
 - Added exhaustion penalties to d20 tests and speed.
 - Bumped PWA shell cache to v14.
+
+## v0.27.5
+- Added an Equipment Cache Diagnostic on Data & App showing cached item/weapon counts and exact starting-equipment reference resolution.

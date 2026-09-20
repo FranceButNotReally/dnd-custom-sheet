@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.27.4";
+const APP_VERSION = "0.27.5";
 
 const PATHS = {
   books: "data/books.json",
@@ -3123,6 +3123,32 @@ async function renderEquipment(app) {
   rerender();
 }
 
+async function startingEquipmentDiagnostics() {
+  const result = { groups: [], references: [], resolved: [], unresolved: [], itemCount: 0, weaponCount: 0 };
+  try {
+    await getItemsData();
+    const items = officialItemCatalog();
+    result.itemCount = items.length;
+    result.weaponCount = items.filter(it => Boolean(it?.weaponCategory)).length;
+  } catch (e) { result.itemError = String(e?.message || e); }
+  try {
+    const clsName = state.character?.class?.name || state.character?.className || "";
+    const cls = clsName ? await getClassDetails(clsName) : null;
+    const obj = cls?.class?.find(x => isOfficial2024Entity(x) && String(x.name).toLowerCase() === clsName.toLowerCase()) || cls?.class?.find(isOfficial2024Entity);
+    const groups = normalizeStartingEquipmentGroups(obj || {});
+    result.groups = groups.map(g => ({ group: g.group, options: g.options.map(o => ({ key:o.key, label:o.label, items:o.items })) }));
+    for (const g of groups) for (const o of g.options) for (const term of o.items) {
+      if (term.type !== "item") continue;
+      const {name, source} = splitRefId(term.ref);
+      const found = findOfficialItemByName(name, source) || findOfficialItemByName(name);
+      const row = { group:g.group, option:o.key, ref:term.ref, name, source:source||"", resolved:!!found, canonical:found ? `${found.name}|${found.source}` : null, weapon:!!found?.weaponCategory };
+      result.references.push(row);
+      if (found) result.resolved.push(row); else result.unresolved.push(row);
+    }
+  } catch (e) { result.classError = String(e?.message || e); }
+  return result;
+}
+
 async function renderDataView(app) {
   const counts = {
     classes: Object.keys(state.data.classIndex || {}).length,
@@ -3136,8 +3162,13 @@ async function renderDataView(app) {
     rules: officialEntries(state.data.variantrules, "variantrule").length,
   };
   const chars = await getCharacters();
+  const equipDiag = await startingEquipmentDiagnostics();
+  const diagRows = equipDiag.references.length
+    ? equipDiag.references.map(x => `<tr><td>${escapeHtml(String(x.group))}/${escapeHtml(x.option)}</td><td><code>${escapeHtml(x.ref)}</code></td><td>${x.resolved ? `<strong>Resolved</strong><br><span class="mini">${escapeHtml(x.canonical || "")}${x.weapon ? " · weapon" : ""}</span>` : `<strong class="danger-text">UNRESOLVED</strong>`}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="empty">No item references were found for the selected class.</td></tr>`;
   app.innerHTML = `${pageHeader("DATA & APP", "5etools synchronization", `App ${APP_VERSION} · all detected 2024 official player-facing sources are included.`, `<button class="button button-primary" data-action="sync">Check for updates</button>`)}
     <section class="card"><div class="data-row"><div><strong>Rules data</strong><span>Versioned 5etools release cached locally on this tablet</span></div><strong>${escapeHtml(state.version || "Not synced")}</strong></div><div class="data-row"><div><strong>Detected official 2024-era sources</strong><span>Discovered from 5etools source metadata and 2024 entity markers</span></div><strong>${state.data.sourceMeta?.length || 0}</strong></div><div class="data-row"><div><strong>Last successful sync</strong><span>Stored locally</span></div><strong>${state.lastSync ? escapeHtml(new Date(state.lastSync).toLocaleString()) : "—"}</strong></div><div class="data-row"><div><strong>Connectivity</strong><span>Internet is only needed to check/download newer rules data</span></div><strong>${state.online ? "Online" : "Offline"}</strong></div></section>
+    <section class="card compact-gap"><div class="section-title">Equipment cache diagnostic</div><div class="grid three compact-gap"><div class="data-row"><div><strong>Cached items</strong><span>Official item entries currently indexed</span></div><strong>${equipDiag.itemCount || 0}</strong></div><div class="data-row"><div><strong>Cached weapons</strong><span>Items with weapon data</span></div><strong>${equipDiag.weaponCount || 0}</strong></div><div class="data-row"><div><strong>Starting refs</strong><span>References found in the selected class</span></div><strong>${equipDiag.references.length}</strong></div></div><p class="mini">Selected class: ${escapeHtml(state.character?.class?.name || "None")}. Resolved ${equipDiag.resolved.length}; unresolved ${equipDiag.unresolved.length}.</p>${equipDiag.itemError || equipDiag.classError ? `<p class="danger-text">${escapeHtml(equipDiag.itemError || equipDiag.classError)}</p>` : ""}<div class="table-wrap"><table class="data-table"><thead><tr><th>Group</th><th>5etools reference</th><th>Resolution</th></tr></thead><tbody>${diagRows}</tbody></table></div></section>
     <section class="card compact-gap"><div class="section-title">Detected 2024-era official sources</div><div class="source-chip-grid">${(state.data.sourceMeta || []).map(x=>`<div class="source-chip"><strong>${escapeHtml(x.name)}</strong><span>${escapeHtml(x.source)}${x.published?` · ${escapeHtml(x.published)}`:""}</span></div>`).join("")}</div></section>
     <div class="grid three compact-gap">${Object.entries(counts).map(([k,v])=>metric(k, v == null ? "Not loaded" : v)).join("")}</div>
     <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Characters on this device</div><div class="mini">Character state is independent of 5etools rules data.</div></div><button class="button button-small button-primary" data-action="new-character">New character</button></div><div class="character-list">${chars.map(ch=>`<div class="character-row ${ch.id===state.character.id?"current":""}"><button class="character-select" data-action="switch-character" data-id="${ch.id}"><strong>${escapeHtml(ch.name)}</strong><span>${escapeHtml([ch.species?.name,ch.class?.name,ch.subclass?.name,`Level ${ch.level}`].filter(Boolean).join(" · "))}</span></button>${ch.id!==state.character.id?`<button class="icon-button" data-action="delete-character" data-id="${ch.id}">×</button>`:""}</div>`).join("")}</div></section>
