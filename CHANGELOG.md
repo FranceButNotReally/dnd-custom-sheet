@@ -1,4 +1,4 @@
-# v0.27.1 — equipment, spells, filters, and editor polish
+# v0.27.2 — equipment, spells, filters, and editor polish
 
 - Fixed equipment hydration and weapon equip/wield resolution.
 - Added robust Simple/Martial weapon proficiency token handling for Weapon Mastery.

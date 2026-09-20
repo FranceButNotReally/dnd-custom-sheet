@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.27.1";
+const APP_VERSION = "0.27.2";
 
 const PATHS = {
   books: "data/books.json",
