@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.27.6";
+const APP_VERSION = "0.27.7";
 
 const PATHS = {
   books: "data/books.json",
@@ -15,6 +15,7 @@ const PATHS = {
   optionalfeatures: "data/optionalfeatures.json",
   spellIndex: "data/spells/index.json",
   items: "data/items.json",
+  itemsBase: "data/items-base.json",
   conditionsdiseases: "data/conditionsdiseases.json",
   variantrules: "data/variantrules.json",
   actions: "data/actions.json",
@@ -62,7 +63,7 @@ const state = {
   version: null,
   lastSync: null,
   lastReleaseCheck: null,
-  data: { books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null, optionalfeatures: null, spells: null, spellIndex: null, items: null, itemIndex: new Map(), legacyItemIndex: new Map(), weaponIndex: new Map(), conditionsdiseases: null, variantrules: null, actions: null, classFiles: new Map(), spellFiles: new Map(), referenceCache: new Map(), officialSources: new Set(), sourceMeta: [] },
+  data: { books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null, optionalfeatures: null, spells: null, spellIndex: null, items: null, itemsBase: null, itemIndex: new Map(), legacyItemIndex: new Map(), weaponIndex: new Map(), conditionsdiseases: null, variantrules: null, actions: null, classFiles: new Map(), spellFiles: new Map(), referenceCache: new Map(), officialSources: new Set(), sourceMeta: [] },
   character: null,
   deferredInstallPrompt: null,
   spellPickerTab: "prepared",
@@ -440,7 +441,7 @@ function buildOfficialSourceMeta(books) {
 }
 
 async function loadCoreData(version) {
-  const [books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spellIndex, conditionsdiseases, variantrules, actions, items] = await Promise.all([
+  const [books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spellIndex, conditionsdiseases, variantrules, actions, items, itemsBase] = await Promise.all([
     fetch5eData(version, PATHS.books),
     fetch5eData(version, PATHS.classIndex),
     fetch5eData(version, PATHS.races),
@@ -453,12 +454,13 @@ async function loadCoreData(version) {
     fetch5eData(version, PATHS.variantrules),
     fetch5eData(version, PATHS.actions),
     fetch5eData(version, PATHS.items),
+    fetch5eData(version, PATHS.itemsBase),
   ]);
   const sourceMeta = buildOfficialSourceMeta(books);
   const officialSources = new Set(sourceMeta.map(x => x.source));
   const referenceCache = new Map();
   for (const sense of SPECIAL_SENSES) referenceCache.set(referenceCacheKey("sense", sense, DATA_SOURCE), SPECIAL_SENSE_FALLBACKS[sense]);
-  const allItems = Array.isArray(items?.item) ? items.item : [];
+  const allItems = [...(Array.isArray(items?.item) ? items.item : []), ...(Array.isArray(itemsBase?.baseitem) ? itemsBase.baseitem : [])];
   const itemIndex = new Map();
   const legacyItemIndex = new Map();
   for (const item of allItems) {
@@ -468,7 +470,7 @@ async function loadCoreData(version) {
   }
   const weaponIndex = new Map();
   for (const item of itemIndex.values()) if (item?.weaponCategory) weaponIndex.set(`${String(item.name||"").toLowerCase()}|${String(item.source||"").toLowerCase()}`, item);
-  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, itemIndex, legacyItemIndex, weaponIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
+  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items, itemsBase, itemIndex, legacyItemIndex, weaponIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
 }
 
 async function loadSpellSource(version, source) {
@@ -602,26 +604,36 @@ async function getClassDetails(className) {
 
 async function getItemsData() {
   if (!state.data.items) state.data.items = await fetch5eData(state.version, PATHS.items);
+  if (!state.data.itemsBase) state.data.itemsBase = await fetch5eData(state.version, PATHS.itemsBase);
   officialItemCatalog();
   hydrateWeaponIndex();
   return state.data.items;
 }
 
 function officialItemCatalog() {
-  const entries = officialEntries(state.data.items, "item");
+  // 5etools splits ordinary/base equipment (including the mundane weapons)
+  // into items-base.json, while items.json contains the broader item corpus.
+  // Both are part of the equipment catalog and must be indexed together.
+  const entries = [
+    ...officialEntries(state.data.items, "item"),
+    ...officialEntries(state.data.itemsBase, "baseitem"),
+  ];
   if (!state.data.itemIndex) state.data.itemIndex = new Map();
-  if (state.data.itemIndex.size !== entries.length) {
-    state.data.itemIndex.clear();
-    for (const item of entries) state.data.itemIndex.set(`${String(item.name||'').trim().toLowerCase()}|${String(item.source||'').trim().toLowerCase()}`, item);
+  state.data.itemIndex.clear();
+  for (const item of entries) {
+    const key = `${String(item.name||'').trim().toLowerCase()}|${String(item.source||'').trim().toLowerCase()}`;
+    state.data.itemIndex.set(key, item);
   }
   if (!state.data.legacyItemIndex) state.data.legacyItemIndex = new Map();
-  const allItems = Array.isArray(state.data.items?.item) ? state.data.items.item : [];
-  if (!state.data.legacyItemIndex.size) {
-    for (const item of allItems) {
-      if (isOfficial2024Entity(item)) continue;
-      if (!item?.source) continue;
-      state.data.legacyItemIndex.set(`${String(item.name||'').trim().toLowerCase()}|${String(item.source||'').trim().toLowerCase()}`, item);
-    }
+  state.data.legacyItemIndex.clear();
+  const allItems = [
+    ...(Array.isArray(state.data.items?.item) ? state.data.items.item : []),
+    ...(Array.isArray(state.data.itemsBase?.baseitem) ? state.data.itemsBase.baseitem : []),
+  ];
+  for (const item of allItems) {
+    if (isOfficial2024Entity(item)) continue;
+    if (!item?.source) continue;
+    state.data.legacyItemIndex.set(`${String(item.name||'').trim().toLowerCase()}|${String(item.source||'').trim().toLowerCase()}`, item);
   }
   return entries;
 }
