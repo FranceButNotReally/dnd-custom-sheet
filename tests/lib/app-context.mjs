@@ -41,7 +41,7 @@ export function loadAppTestContext() {
     'classSpellSlots', 'classCantrips', 'classPrepared', 'classKnownSpells', 'hitDieFaces', 'defaultMaxHp',
     'featAbilitySpecs', 'featSaveSpecs', 'featSkillSpecs', 'featMixedChoiceSpecs', 'featExpertiseSpecs',
     'featAdditionalSpellChoiceSpecs', 'mixedChoiceOptions', 'speciesChoiceSpecs', 'reconcileSpeciesChoices',
-    'reconcileFeatChoices', 'backgroundAbilitySpec', 'reconcileBackgroundAbilityChoices', 'calculateFinalStats',
+    'reconcileFeatChoices', 'backgroundAbilitySpec', 'reconcileBackgroundAbilityChoices', 'backgroundFeatNames', 'calculateFinalStats',
     'proficiencyChoiceSpecs', 'proficiencyOverlaps', 'hasWeaponProficiency', 'weaponAbility', 'weaponFlags',
     'hasArmorTraining', 'classTableNumericValue', 'getUnarmoredDefenseFormula', 'applyTextualRulesEffects',
     'applySelectedSpeciesOptionEffects', 'buildDerivedEffects', 'featureRechargeDetails', 'featureResourceSpecs',
