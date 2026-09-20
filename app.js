@@ -3,7 +3,7 @@ const GITHUB_RELEASE_URL = `https://api.github.com/repos/${REPO}/releases/latest
 const RAW_ROOT = `https://raw.githubusercontent.com/${REPO}`;
 const DATA_SOURCE = "XPHB";
 const CORE_2024_DATE = "2024-09-17";
-const APP_VERSION = "0.27.7";
+const APP_VERSION = "0.27.8";
 
 const PATHS = {
   books: "data/books.json",
@@ -465,7 +465,7 @@ async function loadCoreData(version) {
   const legacyItemIndex = new Map();
   for (const item of allItems) {
     const key = `${String(item.name||'').trim().toLowerCase()}|${String(item.source||'').trim().toLowerCase()}`;
-    if (isOfficial2024Entity(item, officialSources)) itemIndex.set(key, item);
+    if (String(item?.source || "").trim().toLowerCase() === String(DATA_SOURCE).toLowerCase() || isOfficial2024Entity(item, officialSources)) itemIndex.set(key, item);
     else if (item?.source) legacyItemIndex.set(key, item);
   }
   const weaponIndex = new Map();
@@ -617,6 +617,10 @@ function officialItemCatalog() {
   const entries = [
     ...officialEntries(state.data.items, "item"),
     ...officialEntries(state.data.itemsBase, "baseitem"),
+    // XPHB is the canonical 2024 equipment source. Keep it even if source
+    // metadata is incomplete or a mirror release omits it from books.json.
+    ...(Array.isArray(state.data.items?.item) ? state.data.items.item.filter(x => String(x?.source || "").trim().toLowerCase() === String(DATA_SOURCE).toLowerCase()) : []),
+    ...(Array.isArray(state.data.itemsBase?.baseitem) ? state.data.itemsBase.baseitem.filter(x => String(x?.source || "").trim().toLowerCase() === String(DATA_SOURCE).toLowerCase()) : []),
   ];
   if (!state.data.itemIndex) state.data.itemIndex = new Map();
   state.data.itemIndex.clear();
@@ -679,6 +683,17 @@ function itemFromCatalog(name, source=null) {
     const hit = all.find(x => normalizeItemLookupName(x.name) === key && (!src || String(x.source||'').trim().toLowerCase() === src));
     if (hit) return hit;
   }
+  // Last-resort direct scan of the loaded base-equipment tables. This deliberately
+  // bypasses source metadata/index filtering: a class reference such as
+  // greataxe|xphb must resolve if the XPHB base item is present in items-base.json.
+  if (lookup && src === String(DATA_SOURCE).toLowerCase()) {
+    const direct = [
+      ...(Array.isArray(state.data.itemsBase?.baseitem) ? state.data.itemsBase.baseitem : []),
+      ...(Array.isArray(state.data.items?.item) ? state.data.items.item : []),
+    ].find(x => normalizeItemLookupName(x?.name) === lookup && String(x?.source || '').trim().toLowerCase() === src);
+    if (direct) return direct;
+  }
+
   // Legacy references sometimes point at the old source while the physical
   // 2024 item is reprinted under XPHB. Prefer a same-name official weapon/item.
   if (lookup) {

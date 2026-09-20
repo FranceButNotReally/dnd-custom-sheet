@@ -1,3 +1,9 @@
+## v0.27.8
+
+- Fixed XPHB base-equipment resolution so `greataxe|xphb`, `handaxe|xphb`, and other mundane 2024 equipment references resolve directly from `items-base.json`.
+- XPHB equipment indexing no longer depends on source metadata being present in `books.json`.
+- Added a direct loaded-table fallback for exact XPHB item references.
+
 # v0.27.2 — equipment, spells, filters, and editor polish
 
 - Fixed equipment hydration and weapon equip/wield resolution.
