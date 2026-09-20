@@ -2835,9 +2835,10 @@ function buildDerivedEffects(c, d, featObjs) {
   const effects = {
     acFormulas: [], acBonus: 0, acBonusWhileArmored: 0, acBonusWhileUnarmored: 0, hpPerLevel: 0, hpFlat: 0, speedBonus: 0, speedMinimum: 0, initiativeBonus: 0, initiativeAdvantage: false, savingThrowBonus: 0, unproficientSkillBonus: 0, d20Penalty: effectiveD20Penalty(c),
     passivePerceptionBonus: 0, passiveInvestigationBonus: 0, resistances: [], senses: [], active: [], flags: new Set(),
-    savingThrows: new Set(), savingThrowAdvantages: new Set(), skills: new Set(), expertise: new Set(), tools: [], languages: [], attackBonuses: {}, damageBonuses: {}
+    savingThrows: new Set(), savingThrowAdvantages: new Set(), skills: new Set(), expertise: new Set(), tools: [], languages: [],
+    armorProficiencies: [], weaponProficiencies: [], skillBonuses: {}, cantripBonus: 0, attackBonuses: {}, damageBonuses: {}
   };
-  const allFeatures = [...(d.classFeatures || []), ...(d.subclassFeatures || [])];
+  const allFeatures = [...(d.classFeatures || []), ...(d.classFeatureOptionObjects || []), ...(d.subclassFeatures || [])];
   const speciesFeatures = (d.speciesObj?.entries || []).filter(x => x && x.name);
   const uad = getUnarmoredDefenseFormula(d.classObj, c.level);
   if (uad) effects.acFormulas.push(uad);
@@ -2867,6 +2868,34 @@ function buildDerivedEffects(c, d, featObjs) {
     if (n === "jackofalltrades") {
       effects.unproficientSkillBonus = Math.max(effects.unproficientSkillBonus, Math.floor(Number(d.pb || 0) / 2));
       effects.active.push(`Jack of All Trades: +${effects.unproficientSkillBonus} to unproficient skill checks`);
+    }
+    if (n === "protector") {
+      effects.weaponProficiencies.push("Martial Weapons");
+      effects.armorProficiencies.push("Heavy Armor");
+      effects.active.push("Protector: Martial Weapons and Heavy Armor training");
+    }
+    if (n === "warden") {
+      effects.weaponProficiencies.push("Martial Weapons");
+      effects.armorProficiencies.push("Medium Armor");
+      effects.active.push("Warden: Martial Weapons and Medium Armor training");
+    }
+    if (n === "thaumaturge") {
+      const bonus = Math.max(1, Number(d.mods?.wis || 0));
+      effects.cantripBonus += 1;
+      effects.skillBonuses.arcana = Math.max(Number(effects.skillBonuses.arcana || 0), bonus);
+      effects.skillBonuses.religion = Math.max(Number(effects.skillBonuses.religion || 0), bonus);
+      effects.active.push(`Thaumaturge: +1 Cleric cantrip; +${bonus} Arcana and Religion`);
+    }
+    if (n === "magician") {
+      const bonus = Math.max(1, Number(d.mods?.wis || 0));
+      effects.cantripBonus += 1;
+      effects.skillBonuses.arcana = Math.max(Number(effects.skillBonuses.arcana || 0), bonus);
+      effects.skillBonuses.nature = Math.max(Number(effects.skillBonuses.nature || 0), bonus);
+      effects.active.push(`Magician: +1 Druid cantrip; +${bonus} Arcana and Nature`);
+    }
+    if (["divinestrike","potentspellcasting","primalstrike"].includes(n)) {
+      effects.flags.add(n);
+      effects.active.push(`${feature.name}: selected class feature option`);
     }
   }
   if (d.classObj && ["barbarian", "monk"].includes(textNorm(d.classObj.name)) && !hasNamedFeature(allFeatures, "Unarmored Defense")) {
@@ -3135,12 +3164,16 @@ async function deriveCharacter() {
     d.subclassObj = d.subclassOptions.find(s => s.name.toLowerCase() === String(c.subclass?.name || "").toLowerCase() && (!c.subclass?.source || s.source === c.subclass.source)) || null;
     d.classFeatures = getClassFeatures(d.classFile, d.classObj, c.level);
     d.subclassFeatures = getSubclassFeatures(d.classFile, d.subclassObj, c.level);
+    d.classFeatureChoiceSpecs = classFeatureChoiceSpecs(d.classFile, d.classObj, c.level);
+    reconcileClassFeatureChoices(c, d.classFeatureChoiceSpecs);
+    d.classFeatureOptionObjects = selectedClassFeatureOptionObjects(c, d.classFeatureChoiceSpecs);
     d.optionalFeatureSpecs = optionalFeatureProgression(d.classObj, c.level);
     d.progressionFeatSlots = progressionFeatSlots(d.classObj, c.level);
     d.optionalFeatureObjects = selectedOptionalFeatureObjects(c, d.classObj, c.level);
     d.autoResourceSpecs = [
       ...featureResourceSpecs(d.classFeatures, d, "classfeature"),
       ...classTableResourceSpecs(d.classObj, d.classFeatures, d),
+      ...featureResourceSpecs(d.classFeatureOptionObjects, d, "classfeatureoption"),
       ...featureResourceSpecs(d.subclassFeatures, d, "subclassfeature"),
       ...featureResourceSpecs(d.featObjs, d, "feat"),
       ...featureResourceSpecs(d.optionalFeatureObjects, d, "optionalfeature")
@@ -3159,6 +3192,10 @@ async function deriveCharacter() {
     d.spellcastingAbility = d.classObj?.spellcastingAbility || null;
     d.spellSlots = classSpellSlots(d.classObj, c.level);
     d.cantrips = classCantrips(d.classObj, c.level);
+    if (Number.isFinite(Number(d.cantrips))) {
+      const extraCantrips = (d.classFeatureOptionObjects || []).filter(f => ["thaumaturge","magician"].includes(textNorm(f.name))).length;
+      d.cantrips += extraCantrips;
+    }
     d.maxPrepared = classPrepared(d.classObj, c.level, mods);
     d.knownSpells = classKnownSpells(d.classObj, c.level);
     if (Number.isFinite(Number(d.cantrips)) && c.cantrips.length > d.cantrips) c.cantrips = c.cantrips.slice(0, d.cantrips);
@@ -3216,6 +3253,8 @@ async function deriveCharacter() {
   const specialSenseNames = new Set(SPECIAL_SENSES.map(textNorm));
   d.senses = d.senses.filter(value => !specialSenseNames.has(textNorm(String(value).replace(/\s+\d+\s*ft\.?$/i, ""))));
   d.proficiencies = parseProficiencyDisplay(d.classObj, d.backgroundObj, d.speciesObj, featObjs);
+  d.proficiencies.armor = dedupeLabels([...(d.proficiencies.armor || []), ...(d.effects.armorProficiencies || [])]);
+  d.proficiencies.weapons = dedupeLabels([...(d.proficiencies.weapons || []), ...(d.effects.weaponProficiencies || [])]);
   try {
     const acResult = calcAutoAc(c, mods, await getItemsData(), d.effects, d.proficiencies, d.stats);
     d.heavyArmorWorn = Boolean(acResult.wearingHeavyArmor);
@@ -3589,7 +3628,7 @@ async function renderSheet(app) {
     return `<div class="sheet-save-row"><span class="check-circle ${prof ? "on" : ""}"></span><span>${ABILITY_NAMES[a]} Save${adv ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${formatMod(d.mods[a] + (prof ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>`;
   }).join("");
   const skillsByAbility = Object.fromEntries(ABILITIES.map(a => [a, []]));
-  for (const [key,[ability,name]] of Object.entries(SKILLS)) skillsByAbility[ability].push({ key, name, prof: d.skillProficiencies.has(key), exp: d.effectiveExpertise?.has(key) || false, bonus: d.mods[ability] + (d.skillProficiencies.has(key) ? d.pb : Number(d.effects?.unproficientSkillBonus || 0)) + (d.effectiveExpertise?.has(key) ? d.pb : 0) + Number(d.d20Penalty || 0) });
+  for (const [key,[ability,name]] of Object.entries(SKILLS)) skillsByAbility[ability].push({ key, name, prof: d.skillProficiencies.has(key), exp: d.effectiveExpertise?.has(key) || false, bonus: d.mods[ability] + (d.skillProficiencies.has(key) ? d.pb : Number(d.effects?.unproficientSkillBonus || 0)) + (d.effectiveExpertise?.has(key) ? d.pb : 0) + Number(d.effects?.skillBonuses?.[key] || 0) + Number(d.d20Penalty || 0) });
   const abilityBoxes = ABILITIES.map(a => `<section class="ability-box">
       <div class="ability-head"><span>${ABILITY_LABELS[a]}</span><strong>${d.stats[a]}</strong><em>${formatMod(d.mods[a])}</em></div>
       <div class="ability-save"><span class="check-circle ${d.savingThrowProficiencies.has(a) ? "on" : ""}"></span><b>Saving Throw${d.savingThrowAdvantages?.has(a) ? ` <sup class="save-advantage">ADV</sup>` : ""}</b><strong>${formatMod(d.mods[a] + (d.savingThrowProficiencies.has(a) ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>
