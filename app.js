@@ -1556,10 +1556,10 @@ function featAbilitySpecs(feat) {
   const specs = [];
   if (isAbilityScoreImprovementFeat(feat)) {
     const mode = feat?._abilityMode;
-    if (mode === "plus2") return [{ index: 0, choiceIndex: 0, from: [...ABILITIES], amount: 2, asiMode: mode }];
+    if (mode === "plus2") return [{ index: 0, choiceIndex: 0, from: [...ABILITIES], amount: 2, max: 20, asiMode: mode }];
     if (mode === "split") return [
-      { index: 1, choiceIndex: 0, from: [...ABILITIES], amount: 1, asiMode: mode },
-      { index: 1, choiceIndex: 1, from: [...ABILITIES], amount: 1, asiMode: mode },
+      { index: 1, choiceIndex: 0, from: [...ABILITIES], amount: 1, max: 20, asiMode: mode },
+      { index: 1, choiceIndex: 1, from: [...ABILITIES], amount: 1, max: 20, asiMode: mode },
     ];
     return specs;
   }
@@ -1567,19 +1567,19 @@ function featAbilitySpecs(feat) {
     if (entry?.choose?.weighted) {
       const from = entry.choose.weighted.from || [];
       const weights = entry.choose.weighted.weights || [];
-      weights.forEach((amount, choiceIndex) => specs.push({ index, choiceIndex, from: from.map(normalizeAbilityKey).filter(Boolean), amount: Number(amount) || 1 }));
+      weights.forEach((amount, choiceIndex) => specs.push({ index, choiceIndex, from: from.map(normalizeAbilityKey).filter(Boolean), amount: Number(amount) || 1, max: Number(entry.max ?? entry.choose?.max ?? 20) }));
       continue;
     }
     if (entry?.choose) {
       const from = Array.isArray(entry.choose.from) ? entry.choose.from : (Array.isArray(entry.choose) ? entry.choose : []);
       const count = Math.max(1, Number(entry.choose.count || 1));
       const amount = Number(entry.choose.amount ?? entry.amount ?? 1);
-      for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from: from.map(normalizeAbilityKey).filter(Boolean), amount });
+      for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from: from.map(normalizeAbilityKey).filter(Boolean), amount, max: Number(entry.max ?? entry.choose?.max ?? 20) });
       continue;
     }
     for (const [ability, value] of Object.entries(entry || {})) {
       const key = normalizeAbilityKey(ability);
-      if (key && Number(value) !== 0 && Number.isFinite(Number(value))) specs.push({ index, choiceIndex: 0, from: [key], amount: Number(value), fixed: true });
+      if (key && Number(value) !== 0 && Number.isFinite(Number(value))) specs.push({ index, choiceIndex: 0, from: [key], amount: Number(value), max: Number(entry.max ?? 20), fixed: true });
     }
   }
   return specs;
@@ -2409,7 +2409,7 @@ function calculateFinalStats(c, bg, featObjs = selectedFeatObjects(c)) {
       const key = featSpecKey(feat, spec);
       const selected = c.featAbilityChoices?.[key];
       const ability = spec.fixed ? spec.from[0] : selected;
-      if (ability && ABILITIES.includes(ability)) stats[ability] = Math.min(30, Number(stats[ability]) + Number(spec.amount || 0));
+      if (ability && ABILITIES.includes(ability)) stats[ability] = Math.min(Number(spec.max || 20), Number(stats[ability]) + Number(spec.amount || 0));
     }
   }
   for (const a of ABILITIES) stats[a] = Math.min(30, Number(stats[a]) + Number(c.manualAbilityBonuses?.[a] || 0));
