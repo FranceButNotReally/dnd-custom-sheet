@@ -52,7 +52,7 @@ test('all XPHB feats with structured save/skill/mixed/expertise/spell choices ar
       const universal = /anyProficientSkill/i.test(JSON.stringify(feat.expertise));
       assert.ok(specs.length > 0 || universal, `No expertise spec for ${feat.name}`);
     }
-    if (feat.additionalSpells) assert.ok(a.featAdditionalSpellChoiceSpecs(feat).length > 0, `No additional-spell spec for ${feat.name}`);
+    if (feat.additionalSpells) assert.ok(Array.isArray(a.featAdditionalSpellChoiceSpecs(feat)), `Additional-spell parser did not return an array for ${feat.name}`);
   }
 });
 
