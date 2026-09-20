@@ -2138,7 +2138,8 @@ function calculateFinalStats(c, bg, featObjs = selectedFeatObjects(c)) {
   for (const feat of featObjs || []) {
     for (const spec of featAbilitySpecs(feat)) {
       const key = featSpecKey(feat, spec);
-      const ability = c.featAbilityChoices?.[key] || spec.from[0];
+      const selected = c.featAbilityChoices?.[key];
+      const ability = spec.fixed ? spec.from[0] : selected;
       if (ability && ABILITIES.includes(ability)) stats[ability] = Math.min(30, Number(stats[ability]) + Number(spec.amount || 0));
     }
   }
