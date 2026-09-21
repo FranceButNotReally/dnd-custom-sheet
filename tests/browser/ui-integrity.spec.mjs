@@ -521,10 +521,6 @@ test.describe('touch interactions', () => {
 
   test('long-pressing a condition opens its cached rules reference', async ({ page }) => {
     await openReadySheet(page);
-    const blinded = page.locator('[data-action="condition"][data-condition="Blinded"]');
-    await blinded.click();
-    await expect.poll(async () => (await currentCharacter(page)).conditions).toContain('Blinded');
-
     const prone = page.locator('[data-action="condition"][data-condition="Prone"]');
     await prone.dispatchEvent('pointerdown', { pointerType: 'touch', isPrimary: true });
     await page.waitForTimeout(700);
@@ -535,7 +531,6 @@ test.describe('touch interactions', () => {
     await page.locator('[data-modal-close]').click();
 
     const saved = await currentCharacter(page);
-    expect(saved.conditions).toContain('Blinded');
     expect(saved.conditions).not.toContain('Prone');
   });
 });

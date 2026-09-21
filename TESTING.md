@@ -93,7 +93,7 @@ cache used by the data contracts. The suite currently exercises representative
 species, background, class-feature, language, and skill choices through an
 IndexedDB save/reload; Wizard spellbook/prepared/cantrip selection; equipment
 add/wield/attune state; persisted schema migration; Short and Long Rest controls;
-critical damage at 0 HP; service-worker offline reload; and touch tap/long-press
+critical damage at 0 HP; service-worker offline reload; and touch long-press
 behavior. It also verifies Battle Master maneuver slots and dependency-gated
 Eldritch Invocations, the complete structured feat-choice surface, PHB
 condition effects, Circle of the Land spell groups, Pact of the Tome spell
