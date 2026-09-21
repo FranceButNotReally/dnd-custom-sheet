@@ -165,7 +165,7 @@ test('legacy character migrations are persisted, not only applied in memory', as
   await expect(page.locator('.sheet-brandline h1')).toHaveText('Legacy Sentinel');
 
   const migrated = await currentCharacter(page);
-  expect(migrated.schema).toBe(17);
+  expect(migrated.schema).toBe(18);
   expect(migrated.knownSpells).toEqual([]);
   expect(migrated.preparedSpells).toEqual(expect.arrayContaining(['Bless|XPHB', 'Cure Wounds|XPHB']));
   expect(migrated.deathSaves).toEqual({ success: 0, failure: 0 });
@@ -354,6 +354,70 @@ test('subclass progressions and invocation prerequisites work through the builde
   await page.reload();
   const saved = await currentCharacter(page);
   expect(Object.values(saved.optionalFeatureChoices).map(value => value.name)).toEqual(expect.arrayContaining(['Pact of the Blade', 'Thirsting Blade']));
+});
+
+test('subclass spell groups, Pact of the Tome, and invocation targets persist through the builder', async ({ page }) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page, {
+    name: 'Choice Sentinel',
+    level: 10,
+    class: { name: 'Druid', source: 'XPHB' },
+    subclass: { name: 'Circle of the Land', source: 'XPHB' },
+    classFeatureChoices: {},
+    featureSpellChoices: {},
+    featureFeatChoices: {},
+    optionalFeatureChoices: {},
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Builder' }).click();
+
+  const landChoice = page.locator('label.field', { hasText: 'Circle of the Land spell group' }).locator('select');
+  await expect(landChoice).toBeVisible();
+  await landChoice.selectOption({ label: 'Polar Land' });
+  await expect.poll(async () => Object.values((await currentCharacter(page)).classFeatureChoices || {}).map(value => value.name)).toContain('Polar Land');
+
+  await updateCurrentCharacter(page, {
+    level: 5,
+    class: { name: 'Warlock', source: 'XPHB' },
+    subclass: { name: 'Fiend Patron', source: 'XPHB' },
+    cantrips: ['Eldritch Blast|XPHB'],
+    classFeatureChoices: {},
+    featureSpellChoices: {},
+    featureFeatChoices: {},
+    optionalFeatureChoices: {},
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Builder' }).click();
+
+  let optionalSlots = page.locator('[data-optional-feature]');
+  await optionalSlots.first().selectOption({ label: 'Pact of the Tome' });
+  optionalSlots = page.locator('[data-optional-feature]');
+  await optionalSlots.nth(1).selectOption({ label: 'Agonizing Blast' });
+  optionalSlots = page.locator('[data-optional-feature]');
+  await optionalSlots.nth(2).selectOption({ label: 'Lessons of the First Ones' });
+  const lessonFeat = page.locator('label.field', { hasText: 'Lessons of the First Ones · Origin feat' }).locator('select');
+  await expect(lessonFeat).toBeVisible();
+  await lessonFeat.selectOption({ label: 'Alert' });
+
+  for (const [label, optionLabel] of [
+    ['Pact of the Tome cantrip 1', 'Guidance · Cantrip'], ['Pact of the Tome cantrip 2', 'Light · Cantrip'], ['Pact of the Tome cantrip 3', 'Mage Hand · Cantrip'],
+    ['Pact of the Tome ritual 1', 'Alarm · Level 1'], ['Pact of the Tome ritual 2', 'Detect Magic · Level 1'],
+    ['Agonizing Blast target cantrip', 'Eldritch Blast · Cantrip'],
+  ]) {
+    const select = page.locator('label.field', { hasText: label }).locator('select');
+    await expect(select).toBeVisible();
+    await select.selectOption({ label: optionLabel });
+  }
+
+  let saved = await currentCharacter(page);
+  const selectedSpells = Object.values(saved.featureSpellChoices || {}).flatMap(record => Object.values(record.picks || {}).flat());
+  expect(selectedSpells).toEqual(expect.arrayContaining(['Guidance|XPHB','Light|XPHB','Mage Hand|XPHB','Alarm|XPHB','Detect Magic|XPHB','Eldritch Blast|XPHB']));
+  expect(Object.values(saved.featureFeatChoices || {})).toContainEqual({ name:'Alert', source:'XPHB' });
+
+  await page.reload();
+  saved = await currentCharacter(page);
+  expect(Object.keys(saved.featureSpellChoices || {})).toHaveLength(2);
+  expect(Object.values(saved.featureFeatChoices || {})).toContainEqual({ name:'Alert', source:'XPHB' });
 });
 
 test('a synchronized installation reloads its shell and rules data offline', async ({ page, context }) => {

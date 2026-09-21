@@ -177,9 +177,9 @@ test('selected feat spell picks combine with fixed granted spells without duplic
   assert.deepEqual([...a.featGrantedSpellRefs([f],character,4)],['misty step|xphb','Bless|XPHB']);
 });
 
-test('schema-17 migration moves legacy known spells into prepared spells once',()=>{
+test('current schema migration moves legacy known spells into prepared spells once',()=>{
   const migrated=a.migrateCharacter({schema:16,knownSpells:['Cure Wounds|XPHB'],preparedSpells:['Bless|XPHB']});
-  assert.equal(migrated.schema,17);
+  assert.equal(migrated.schema,18);
   assert.deepEqual([...migrated.preparedSpells],['Bless|XPHB','Cure Wounds|XPHB']);
   assert.deepEqual([...migrated.knownSpells],[]);
 });

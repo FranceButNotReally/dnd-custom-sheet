@@ -124,7 +124,7 @@ let dbPromise;
 
 function emptyCharacter() {
   return {
-    schema: 17,
+    schema: 18,
     id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     name: "New Character",
     player: "",
@@ -181,6 +181,8 @@ function emptyCharacter() {
     optionalFeatureChoices: {},
     classFeatureChoices: {},
     classProficiencyChoices: {},
+    featureSpellChoices: {},
+    featureFeatChoices: {},
     weaponMasteries: [],
     startingEquipment: { class: null, background: null },
     progressionFeats: {},
@@ -210,7 +212,7 @@ function migrateCharacter(raw) {
   const base = emptyCharacter();
   if (!raw || typeof raw !== "object") return base;
   const c = { ...base, ...raw };
-  c.schema = 17;
+  c.schema = 18;
   c.baseStats = { ...base.baseStats, ...(raw.baseStats || raw.stats || {}) };
   c.xp = Math.max(0, Number(raw.xp || 0));
   c.manualAbilityBonuses = { ...base.manualAbilityBonuses, ...(raw.manualAbilityBonuses || {}) };
@@ -259,6 +261,8 @@ function migrateCharacter(raw) {
   c.optionalFeatureChoices = { ...(raw.optionalFeatureChoices || {}) };
   c.classFeatureChoices = { ...(raw.classFeatureChoices || {}) };
   c.classProficiencyChoices = { ...(raw.classProficiencyChoices || {}) };
+  c.featureSpellChoices = { ...(raw.featureSpellChoices || {}) };
+  c.featureFeatChoices = { ...(raw.featureFeatChoices || {}) };
   c.weaponMasteries = Array.isArray(raw.weaponMasteries) ? raw.weaponMasteries : [];
   c.startingEquipment = { ...base.startingEquipment, ...(raw.startingEquipment || {}) };
   if (Number(raw.schema || 0) < 11) {
@@ -1124,6 +1128,78 @@ function selectedClassFeatureOptionObjects(c, specs) {
   return out;
 }
 
+function preSubclassSavingThrowProficiencies(c, classObj, featObjs = []) {
+  const out = new Set();
+  for (const value of classObj?.proficiency || []) {
+    const ability = normalizeAbilityKey(value);
+    if (ability) out.add(ability);
+  }
+  for (const feat of featObjs || []) for (const spec of featSaveSpecs(feat)) {
+    const selected = spec.fixed ? spec.from[0] : c?.featSaveChoices?.[featSpecKey(feat, spec)];
+    const ability = normalizeAbilityKey(selected);
+    if (ability && spec.from.includes(ability)) out.add(ability);
+  }
+  return out;
+}
+
+function subclassFeatureChoiceSpecs(classObj, subclassObj, features, existingSaves = new Set()) {
+  const specs = [];
+  const add = (feature, kind, options, label = feature?.name) => {
+    const unique = [];
+    for (const option of options || []) {
+      const value = typeof option === "string" ? { name: option, source: feature?.source || DATA_SOURCE } : option;
+      if (value?.name && !unique.some(item => textNorm(item.name) === textNorm(value.name))) unique.push(value);
+    }
+    if (unique.length < 2) return;
+    specs.push({
+      key: `${classObj?.name || "Class"}|${classObj?.source || DATA_SOURCE}|subclass-choice|${feature?.name || kind}|${feature?.level || getSubclassUnlockLevel(classObj)}|${kind}`,
+      name: label,
+      level: Number(feature?.level || getSubclassUnlockLevel(classObj) || 1),
+      kind,
+      options: unique,
+      feature,
+    });
+  };
+
+  const namedSpellGroups = (subclassObj?.additionalSpells || []).filter(group => group?.name);
+  if (namedSpellGroups.length > 1) {
+    const feature = (features || []).find(item => textNorm(item?.name).includes("spells")) || { name:`${subclassObj.name} Spells`, level:getSubclassUnlockLevel(classObj), source:subclassObj.source };
+    add(feature, "additional-spell-group", namedSpellGroups.map(group => ({ name:group.name, source:subclassObj.source || DATA_SOURCE, spellGroup:group })), `${subclassObj.name} spell group`);
+  }
+
+  for (const feature of features || []) {
+    const name = textNorm(feature?.name);
+    const subclass = textNorm(feature?.subclassShortName || subclassObj?.shortName);
+    const namedEntries = (Array.isArray(feature?.entries) ? feature.entries : []).filter(entry => entry?.type === "entries" && entry?.name).map(entry => ({ name:entry.name, source:feature.source || DATA_SOURCE, entry }));
+    if (subclass === "wildheart" && ["rageofthewilds","aspectofthewilds","powerofthewilds"].includes(name)) {
+      add(feature, "named-option", namedEntries);
+    }
+    if (name === "fiendishresilience") {
+      add(feature, "damage-resistance", ["Acid","Bludgeoning","Cold","Fire","Lightning","Necrotic","Piercing","Poison","Psychic","Radiant","Slashing","Thunder"]);
+    }
+    if (name === "ironmind" && existingSaves.has("wis")) {
+      add(feature, "saving-throw", [
+        { name:"Intelligence", value:"int", source:feature.source || DATA_SOURCE },
+        { name:"Charisma", value:"cha", source:feature.source || DATA_SOURCE },
+      ], "Iron Mind fallback saving throw");
+    }
+  }
+  return specs;
+}
+
+function selectedClassFeatureChoiceOption(c, specs, featureName) {
+  const spec = (specs || []).find(item => textNorm(item?.feature?.name || item?.name) === textNorm(featureName));
+  const selected = spec ? c?.classFeatureChoices?.[spec.key] : null;
+  const name = selected?.name || selected;
+  return spec?.options?.find(option => textNorm(option.name) === textNorm(name)) || null;
+}
+
+function selectedAdditionalSpellGroupName(c, specs) {
+  const spec = (specs || []).find(item => item.kind === "additional-spell-group");
+  const selected = spec ? c?.classFeatureChoices?.[spec.key] : null;
+  return selected?.name || selected || null;
+}
+
 function classFeatureProficiencyChoiceSpecs(classObj, features) {
   const specs = [];
   const className = textNorm(classObj?.name);
@@ -1354,7 +1430,7 @@ function featCanSelectForSlot(feat, d, c, slot) {
   const hasSpecialStylePrerequisite = (feat?.prerequisite || []).some(option => option?.otherSummary || option?.feature?.some?.(name => textNorm(name) === "fightingstyle"));
   if (!(fightingStyleSlot && hasSpecialStylePrerequisite) && !featPrerequisiteMet(feat, d)) return false;
   if (feat?.repeatable) return true;
-  const refs = [c?.feat, ...(c?.additionalFeats || []), ...Object.entries(c?.progressionFeats || {}).filter(([key]) => key !== slot?.key).map(([,ref]) => ref)].filter(Boolean);
+  const refs = [c?.feat, ...(c?.additionalFeats || []), ...Object.entries(c?.progressionFeats || {}).filter(([key]) => key !== slot?.key).map(([,ref]) => ref), ...Object.values(c?.featureFeatChoices || {})].filter(Boolean);
   return !refs.some(ref => textNorm(ref?.name) === textNorm(feat?.name) && String(ref?.source || DATA_SOURCE).toLowerCase() === String(feat?.source || DATA_SOURCE).toLowerCase());
 }
 
@@ -1427,6 +1503,34 @@ function selectedOptionalFeatureObjects(c, specs) {
     if (found) out.push({ ...found, _choiceKey: spec.key });
   }
   return out;
+}
+
+function optionalFeatureFeatChoiceSpecs(features) {
+  const originFeats = officialEntries(state.data.feats, "feat").filter(feat => featCategoryMatches(feat, ["O"])).sort((a,b)=>a.name.localeCompare(b.name));
+  return (features || []).filter(feature => textNorm(feature?.name) === "lessonsofthefirstones").map(feature => ({
+    key:`${feature._choiceKey || normalizeRefId(feature.name, feature.source)}|origin-feat`,
+    name:feature.name,
+    options:originFeats,
+  }));
+}
+
+function reconcileFeatureFeatChoices(c, specs) {
+  c.featureFeatChoices = { ...(c.featureFeatChoices || {}) };
+  const valid = new Map((specs || []).map(spec => [spec.key, spec]));
+  for (const key of Object.keys(c.featureFeatChoices)) if (!valid.has(key)) delete c.featureFeatChoices[key];
+  const occupied = new Set([c?.feat, ...(c?.additionalFeats || []), ...Object.values(c?.progressionFeats || {})]
+    .filter(Boolean).map(ref => `${textNorm(ref.name)}|${String(ref.source || DATA_SOURCE).toLowerCase()}`));
+  for (const spec of specs || []) {
+    const ref = c.featureFeatChoices[spec.key];
+    if (!ref) continue;
+    const feat = findFeat(ref.name, ref.source || null);
+    const identity = feat ? `${textNorm(feat.name)}|${String(feat.source || DATA_SOURCE).toLowerCase()}` : "";
+    if (!feat || !featCategoryMatches(feat, ["O"]) || occupied.has(identity)) {
+      delete c.featureFeatChoices[spec.key];
+      continue;
+    }
+    occupied.add(identity);
+  }
 }
 
 function weaponMasteryCount(classObj, level, featObjs = []) {
@@ -1686,7 +1790,8 @@ function selectedFeatObjects(c) {
   if (c?.feat) candidates.push({ ref: c.feat, instanceKey: "origin", label: "Origin feat" });
   for (const [i, ref] of (Array.isArray(c?.additionalFeats) ? c.additionalFeats : []).entries()) candidates.push({ ref, instanceKey: `additional-${i + 1}`, label: `Additional feat ${i + 1}` });
   for (const [slotKey, ref] of Object.entries(c?.progressionFeats || {})) candidates.push({ ref, instanceKey: `progression-${slotKey}`, label: slotKey });
-  if (Array.isArray(c?.feats) && !c?.additionalFeats?.length && !Object.keys(c?.progressionFeats || {}).length) {
+  for (const [slotKey, ref] of Object.entries(c?.featureFeatChoices || {})) candidates.push({ ref, instanceKey: `feature-${slotKey}`, label: "Lessons of the First Ones" });
+  if (Array.isArray(c?.feats) && !c?.additionalFeats?.length && !Object.keys(c?.progressionFeats || {}).length && !Object.keys(c?.featureFeatChoices || {}).length) {
     c.feats.slice(1).forEach((ref,i)=>candidates.push({ ref, instanceKey: `legacy-${i + 1}`, label: `Legacy feat ${i + 1}` }));
   }
 
@@ -2593,7 +2698,7 @@ function normalizeSpellRef(value, fallbackSource = DATA_SOURCE) {
   const source = String(rawSource || fallbackSource).split("#")[0].trim() || fallbackSource;
   return `${name}|${source}`;
 }
-function fixedAdditionalSpellRefs(entity, level, kind) {
+function fixedAdditionalSpellRefs(entity, level, kind, selectedGroupName = null) {
   const out = [];
   const add = value => {
     if (typeof value === "string") {
@@ -2606,8 +2711,8 @@ function fixedAdditionalSpellRefs(entity, level, kind) {
   };
   for (const group of Array.isArray(entity?.additionalSpells) ? entity.additionalSpells : []) {
     // Named groups are mutually exclusive choices (for example Circle of the
-    // Land terrain). Do not grant every branch while that class choice is unset.
-    if (group?.name) continue;
+    // Land terrain). Only grant the currently selected branch.
+    if (group?.name && textNorm(group.name) !== textNorm(selectedGroupName)) continue;
     const schedule = group?.[kind];
     if (!schedule || typeof schedule !== "object") continue;
     for (const [unlockRaw, value] of Object.entries(schedule)) {
@@ -2616,6 +2721,161 @@ function fixedAdditionalSpellRefs(entity, level, kind) {
     }
   }
   return out;
+}
+
+function classFeatureSpellChoiceSpecs(classObj, features, level) {
+  const specs = [];
+  const maxLevel = (() => {
+    const slots = classSpellSlots(classObj, level);
+    for (let i = slots.length - 1; i >= 0; i--) if (Number(slots[i] || 0) > 0) return i + 1;
+    return 0;
+  })();
+  for (const feature of features || []) {
+    const name = textNorm(feature?.name);
+    const key = `${classObj?.name || "Class"}|${classObj?.source || DATA_SOURCE}|feature-spells|${feature.name}|${feature.level}`;
+    if (name === "magicaldiscoveries" && maxLevel > 0) {
+      specs.push({
+        key, name:feature.name, level:Number(feature.level || 0),
+        choices:[{ key:`${key}|discoveries`, count:2, grant:"prepared", label:"Cleric, Druid, or Wizard spell", filter:{ levels:Array.from({length:maxLevel + 1}, (_, i) => i), classes:["Cleric","Druid","Wizard"], schools:[], ritual:false } }],
+      });
+    }
+    const school = ({ abjurationsavant:"A", divinationsavant:"D", evocationsavant:"V", illusionsavant:"I" })[name];
+    if (school && maxLevel >= 2) {
+      const choices = [{ key:`${key}|initial`, count:2, grant:"spellbook", label:`${feature.name} spell`, filter:{ levels:[0,1,2], classes:["Wizard"], schools:[school], ritual:false } }];
+      for (let spellLevel = 3; spellLevel <= maxLevel; spellLevel++) choices.push({
+        key:`${key}|slot-${spellLevel}`, count:1, grant:"spellbook", label:`${feature.name} spell (slot level ${spellLevel})`,
+        filter:{ levels:Array.from({length:spellLevel + 1}, (_, i) => i), classes:["Wizard"], schools:[school], ritual:false },
+      });
+      specs.push({ key, name:feature.name, level:Number(feature.level || 0), choices });
+    }
+  }
+  return specs;
+}
+
+function optionalFeatureSpellChoiceSpecs(features, c, d) {
+  const specs = [];
+  const priorGrantedCantrips = Object.values(c?.featureSpellChoices || {}).flatMap(record => Object.entries(record?.picks || {})
+    .filter(([choiceKey]) => choiceKey.includes("|pact-tome|known|"))
+    .flatMap(([, refs]) => refs));
+  const selectedCantrips = dedupeSpellRefs([...(c?.cantrips || []), ...(d?.alwaysKnownSpells || []), ...priorGrantedCantrips]);
+  for (const feature of features || []) {
+    const key = `${feature._choiceKey || normalizeRefId(feature.name, feature.source)}|feature-spells`;
+    const choices = [];
+    for (const prerequisite of Array.isArray(feature?.prerequisite) ? feature.prerequisite : []) {
+      for (const spellRequirement of Array.isArray(prerequisite?.spell) ? prerequisite.spell : []) {
+        if (typeof spellRequirement?.choose !== "string") continue;
+        const normalized = textNorm(feature.name);
+        choices.push({
+          key:`${key}|target|${choices.length}`, count:1, grant:"target", label:`${feature.name} target cantrip`,
+          filter:parseSpellChoiceFilter(spellRequirement.choose), candidateRefs:selectedCantrips,
+          requireDamage:["agonizingblast","eldritchspear"].includes(normalized),
+          requireAttack:normalized === "repellingblast",
+          requireRange10:normalized === "eldritchspear",
+          exclusiveGroup:`invocation-target|${normalized}`,
+        });
+      }
+    }
+    if (textNorm(feature.name) === "pactofthetome") {
+      const excludedRefs = dedupeSpellRefs([...(c?.cantrips || []), ...(c?.preparedSpells || []), ...(c?.spellbook || [])]);
+      const collect = (value, kind) => {
+        if (Array.isArray(value)) return value.forEach(child => collect(child, kind));
+        if (!value || typeof value !== "object") return;
+        if (typeof value.choose === "string") {
+          choices.push({
+            key:`${key}|pact-tome|${kind}|${choices.length}`, count:Math.max(1, Number(value.count || 1)), grant:kind,
+            label:kind === "known" ? "Pact of the Tome cantrip" : "Pact of the Tome ritual",
+            filter:parseSpellChoiceFilter(value.choose), excludedRefs,
+          });
+          return;
+        }
+        for (const child of Object.values(value)) collect(child, kind);
+      };
+      for (const group of Array.isArray(feature.additionalSpells) ? feature.additionalSpells : []) {
+        collect(group?.known, "known");
+        collect(group?.prepared, "prepared");
+      }
+    }
+    if (choices.length) specs.push({ key, name:feature.name, level:Number(d?.level || c?.level || 1), choices });
+  }
+  return specs;
+}
+
+function featureSpellChoiceOptions(choice, spells = getLoadedSpells(), lookup = state.data.spellSourceLookup) {
+  const candidates = Array.isArray(choice?.candidateRefs) ? spellRefSet(choice.candidateRefs) : null;
+  const excluded = spellRefSet(choice?.excludedRefs || []);
+  return (spells || []).filter(spell => {
+    if (!isOfficial2024Entity(spell) || !spellMatchesChoiceFilter(spell, choice?.filter, lookup)) return false;
+    const ref = `${spell.name}|${spell.source}`.toLowerCase();
+    if (candidates && !candidates.has(ref)) return false;
+    if (excluded.has(ref)) return false;
+    if (choice?.requireDamage && !(Array.isArray(spell.damageInflict) && spell.damageInflict.length)) return false;
+    if (choice?.requireAttack && !(Array.isArray(spell.spellAttack) && spell.spellAttack.length)) return false;
+    if (choice?.requireRange10) {
+      const distance = spell.range?.distance;
+      if (spell.range?.type !== "point" || distance?.type !== "feet" || Number(distance.amount || 0) < 10) return false;
+    }
+    return true;
+  }).sort((a,b)=>Number(a.level)-Number(b.level)||a.name.localeCompare(b.name));
+}
+
+function reconcileFeatureSpellChoices(c, specs) {
+  c.featureSpellChoices = { ...(c.featureSpellChoices || {}) };
+  const validSpecs = new Map((specs || []).map(spec => [spec.key, spec]));
+  for (const key of Object.keys(c.featureSpellChoices)) if (!validSpecs.has(key)) delete c.featureSpellChoices[key];
+  const usedByGroup = new Map();
+  for (const spec of specs || []) {
+    const current = c.featureSpellChoices[spec.key];
+    const selected = current && typeof current === "object" ? { picks:{ ...(current.picks || {}) } } : { picks:{} };
+    const validChoices = new Set(spec.choices.map(choice => choice.key));
+    for (const key of Object.keys(selected.picks)) if (!validChoices.has(key)) delete selected.picks[key];
+    if (getLoadedSpells().length && state.data.spellSourceLookup) {
+      for (const choice of spec.choices) {
+        const group = choice.exclusiveGroup || spec.key;
+        if (!usedByGroup.has(group)) usedByGroup.set(group, new Set());
+        const used = usedByGroup.get(group);
+        const eligible = new Set(featureSpellChoiceOptions(choice).map(spell => `${spell.name}|${spell.source}`.toLowerCase()));
+        const picks = dedupeSpellRefs(selected.picks[choice.key] || []).filter(ref => eligible.has(ref.toLowerCase()) && !used.has(ref.toLowerCase())).slice(0, choice.count);
+        picks.forEach(ref => used.add(ref.toLowerCase()));
+        if (picks.length) selected.picks[choice.key] = picks;
+        else delete selected.picks[choice.key];
+      }
+    }
+    c.featureSpellChoices[spec.key] = selected;
+  }
+}
+
+function featureGrantedSpellRefs(c, specs, grants) {
+  const wanted = new Set(Array.isArray(grants) ? grants : [grants]);
+  const refs = [];
+  for (const spec of specs || []) {
+    const selected = c?.featureSpellChoices?.[spec.key]?.picks || {};
+    for (const choice of spec.choices || []) if (wanted.has(choice.grant)) refs.push(...(selected[choice.key] || []));
+  }
+  return dedupeSpellRefs(refs);
+}
+
+function renderFeatureSpellChoiceRows(spec, c, allSpecs = [spec]) {
+  const selected = c?.featureSpellChoices?.[spec.key]?.picks || {};
+  const rows = [];
+  const allUsed = new Set(Object.values(selected).flat().map(ref => String(ref).toLowerCase()));
+  for (const choice of spec.choices || []) {
+    const current = selected[choice.key] || [];
+    const options = featureSpellChoiceOptions(choice);
+    const groupUsed = new Set();
+    if (choice.exclusiveGroup) for (const otherSpec of allSpecs || []) for (const otherChoice of otherSpec.choices || []) {
+      if (otherChoice.exclusiveGroup !== choice.exclusiveGroup || (otherSpec.key === spec.key && otherChoice.key === choice.key)) continue;
+      for (const ref of c?.featureSpellChoices?.[otherSpec.key]?.picks?.[otherChoice.key] || []) groupUsed.add(String(ref).toLowerCase());
+    }
+    for (let index = 0; index < choice.count; index++) {
+      const chosen = current[index] || "";
+      const available = options.filter(spell => {
+        const ref = `${spell.name}|${spell.source}`.toLowerCase();
+        return ref === chosen.toLowerCase() || (!allUsed.has(ref) && !groupUsed.has(ref));
+      });
+      rows.push(`<div class="feat-choice-row"><label class="field">${escapeHtml(choice.label || spec.name)}${choice.count > 1 ? ` ${index + 1}` : ""}<select data-feature-spell-pick="${escapeHtml(spec.key)}" data-feature-spell-choice="${escapeHtml(choice.key)}" data-feature-spell-index="${index}"><option value="">— Select —</option>${available.map(spell=>{const ref=`${spell.name}|${spell.source}`;return `<option value="${escapeHtml(ref)}" ${chosen.toLowerCase()===ref.toLowerCase()?"selected":""}>${escapeHtml(spell.name)}${Number(spell.level)>0?` · Level ${spell.level}`:" · Cantrip"}</option>`}).join("")}</select></label></div>`);
+    }
+  }
+  return rows.join("");
 }
 function hitDieFaces(classObj) { return Number(classObj?.hd?.faces || 8); }
 function defaultMaxHp(classObj, level, conMod, override) {
@@ -3421,12 +3681,24 @@ function applySelectedSpeciesOptionEffects(c, speciesObj, effects) {
   }
 }
 
+function applyDarkvisionBonus(senseRefs, bonus) {
+  const amount = Math.max(0, Number(bonus || 0));
+  const refs = [...(senseRefs || [])];
+  if (!amount) return refs;
+  const existing = refs.filter(ref => textNorm(ref?.name) === "darkvision").reduce((max, ref) => {
+    const match = String(ref?.label || "").match(/(\d+)\s*ft\.?/i);
+    return Math.max(max, Number(match?.[1] || 0));
+  }, 0);
+  refs.push({ tag:"sense", name:"Darkvision", source:DATA_SOURCE, label:`Darkvision ${existing + amount} ft.` });
+  return refs;
+}
+
 function buildDerivedEffects(c, d, featObjs) {
   const effects = {
     acFormulas: [], acBonus: 0, acBonusWhileArmored: 0, acBonusWhileUnarmored: 0, hpPerLevel: 0, hpFlat: 0, speedBonus: 0, speedMinimum: 0, initiativeBonus: 0, initiativeAdvantage: false, savingThrowBonus: 0, unproficientSkillBonus: 0, d20Penalty: effectiveD20Penalty(c),
     passivePerceptionBonus: 0, passiveInvestigationBonus: 0, resistances: [], senses: [], active: [], flags: new Set(),
     savingThrows: new Set(), savingThrowAdvantages: new Set(), deathSaveAdvantage: false, concentrationSaveAdvantage: false, skills: new Set(), expertise: new Set(), tools: [], languages: [],
-    armorProficiencies: [], weaponProficiencies: [], skillBonuses: {}, cantripBonus: 0, attackBonuses: {}, damageBonuses: {}
+    armorProficiencies: [], weaponProficiencies: [], skillBonuses: {}, cantripBonus: 0, attackBonuses: {}, damageBonuses: {}, movementModes: {}, darkvisionBonus: 0
   };
   const allFeatures = [...(d.classFeatures || []), ...(d.classFeatureOptionObjects || []), ...(d.subclassFeatures || [])];
   const speciesFeatures = (d.speciesObj?.entries || []).filter(x => x && x.name);
@@ -3437,6 +3709,7 @@ function buildDerivedEffects(c, d, featObjs) {
   // we only automate effects that can be represented reliably on a sheet.
   for (const feature of allFeatures) {
     const n = textNorm(feature.name);
+    const selectedFeatureOption = selectedClassFeatureChoiceOption(c, d.classFeatureChoiceSpecs, feature.name);
     if (n === "unarmoreddefense" && uad) effects.active.push(`${uad.label}`);
     if (n === "unarmoreddefense" && textNorm(feature.subclassShortName) === "dance") {
       effects.acFormulas.push({ base: 10, abilities: ["dex", "cha"], allowShield: false, label: "Dazzling Footwork (10 + DEX + CHA)" });
@@ -3462,7 +3735,18 @@ function buildDerivedEffects(c, d, featObjs) {
       effects.savingThrows.add("cha");
       effects.active.push("Slippery Mind: Wisdom and Charisma saving throw proficiency");
     }
-    if (n === "ironmind") { effects.savingThrows.add("wis"); effects.active.push("Iron Mind: Wisdom saving throw proficiency"); }
+    if (n === "ironmind") {
+      if (d.preFeatureSavingThrowProficiencies?.has?.("wis")) {
+        const fallback = normalizeAbilityKey(selectedFeatureOption?.value || selectedFeatureOption?.name);
+        if (["int","cha"].includes(fallback)) {
+          effects.savingThrows.add(fallback);
+          effects.active.push(`Iron Mind: ${ABILITY_NAMES[fallback]} saving throw proficiency`);
+        }
+      } else {
+        effects.savingThrows.add("wis");
+        effects.active.push("Iron Mind: Wisdom saving throw proficiency");
+      }
+    }
     if (n === "jackofalltrades") {
       effects.unproficientSkillBonus = Math.max(effects.unproficientSkillBonus, Math.floor(Number(d.pb || 0) / 2));
       effects.active.push(`Jack of All Trades: +${effects.unproficientSkillBonus} to unproficient skill checks`);
@@ -3521,7 +3805,7 @@ function buildDerivedEffects(c, d, featObjs) {
       effects.active.push("Draconic Resilience: +1 Hit Point per Sorcerer level; AC 10 + DEX + CHA while unarmored");
     }
     if (n === "umbralsight") {
-      effects.senses.push("Darkvision 60 ft.");
+      effects.darkvisionBonus = Math.max(effects.darkvisionBonus, 60);
       effects.active.push("Umbral Sight: Darkvision 60 ft. or +60 ft. to existing Darkvision");
     }
     if (n === "darkvision" && textNorm(feature.subclassShortName) === "shadow") {
@@ -3539,6 +3823,27 @@ function buildDerivedEffects(c, d, featObjs) {
     if (n === "avatarofbattle") {
       for (const type of ["Bludgeoning", "Piercing", "Slashing"]) if (!effects.resistances.includes(type)) effects.resistances.push(type);
       effects.active.push("Avatar of Battle: Resistance to Bludgeoning, Piercing, and Slashing damage");
+    }
+    if (n === "aspectofthewilds" && selectedFeatureOption) {
+      const option = textNorm(selectedFeatureOption.name);
+      if (option === "owl") effects.darkvisionBonus = Math.max(effects.darkvisionBonus, 60);
+      if (option === "panther") effects.movementModes.climb = "speed";
+      if (option === "salmon") effects.movementModes.swim = "speed";
+      effects.active.push(`Aspect of the Wilds: ${selectedFeatureOption.name}`);
+    }
+    if (["rageofthewilds","powerofthewilds"].includes(n) && selectedFeatureOption) {
+      effects.active.push(`${feature.name}: ${selectedFeatureOption.name} (while Rage is active)`);
+    }
+    if (n === "fiendishresilience" && selectedFeatureOption) {
+      const resistance = canonicalLabel(selectedFeatureOption.name);
+      if (resistance && resistance !== "Force" && !effects.resistances.includes(resistance)) effects.resistances.push(resistance);
+      effects.active.push(`Fiendish Resilience: Resistance to ${resistance} damage`);
+    }
+    if (n === "naturesward") {
+      const land = selectedAdditionalSpellGroupName(c, d.classFeatureChoiceSpecs);
+      const resistance = ({ aridland:"Fire", polarland:"Cold", temperateland:"Lightning", tropicalland:"Poison" })[textNorm(land)];
+      if (resistance && !effects.resistances.includes(resistance)) effects.resistances.push(resistance);
+      if (resistance) effects.active.push(`Nature's Ward: Resistance to ${resistance} damage`);
     }
     if (["divinestrike","potentspellcasting","primalstrike"].includes(n)) {
       effects.flags.add(n);
@@ -3865,7 +4170,7 @@ async function deriveCharacter() {
   const speciesObj = findSpecies(c.species?.name, c.species?.source || null);
   if (backgroundObj) reconcileBackgroundAbilityChoices(c, backgroundObj);
   else c.backgroundAbility = { mode: "split", plus2: null, plus1: null, plus1b: null, plus1c: null };
-  const featObjs = selectedFeatObjects(c);
+  let featObjs = selectedFeatObjects(c);
   reconcileFeatChoices(c, featObjs);
   reconcileSpeciesChoices(c, speciesObj);
   const finalStats = calculateFinalStats(c, backgroundObj, featObjs);
@@ -3881,7 +4186,7 @@ async function deriveCharacter() {
     effects: null, maxHp: 1, currentHp: Number(c.hpCurrent ?? 0), progressionFeatSlots: [], ac: Number(c.acOverride ?? (10 + mods.dex)), acAutomatic: c.acOverride == null,
     acReason: "10 + Dexterity modifier", d20Penalty: effectiveD20Penalty(c), speed: Number(c.speedOverride ?? dfltSpeed(findSpecies(c.species?.name, c.species?.source || null))),
     size: sizeLabel(findSpecies(c.species?.name, c.species?.source || null)?.size), spellcastingAbility: null, spellcastingSource: null, spellSlots: [],
-    maxPrepared: null, knownSpells: null, cantrips: null, alwaysPreparedSpells: [], alwaysKnownSpells: [], featSpellRefs: [], inventoryWeight: 0, carryingCapacity: carryingCapacity(finalStats), passivePerception: 10 + mods.wis,
+    maxPrepared: null, knownSpells: null, cantrips: null, alwaysPreparedSpells: [], alwaysKnownSpells: [], alwaysSpellbookSpells: [], featSpellRefs: [], featureSpellChoiceSpecs: [], inventoryWeight: 0, carryingCapacity: carryingCapacity(finalStats), passivePerception: 10 + mods.wis,
     passiveInvestigation: 10 + mods.int, proficiencies: { armor: [], weapons: [], tools: [], languages: [] },
     resistances: [], senses: [], sourceSummary: state.data.sourceMeta || []
   };
@@ -3894,7 +4199,11 @@ async function deriveCharacter() {
     d.subclassObj = d.subclassOptions.find(s => s.name.toLowerCase() === String(c.subclass?.name || "").toLowerCase() && (!c.subclass?.source || s.source === c.subclass.source)) || null;
     d.classFeatures = getClassFeatures(d.classFile, d.classObj, c.level);
     d.subclassFeatures = getSubclassFeatures(d.classFile, d.subclassObj, c.level);
-    d.classFeatureChoiceSpecs = classFeatureChoiceSpecs(d.classFile, d.classObj, c.level);
+    d.preFeatureSavingThrowProficiencies = preSubclassSavingThrowProficiencies(c, d.classObj, featObjs);
+    d.classFeatureChoiceSpecs = [
+      ...classFeatureChoiceSpecs(d.classFile, d.classObj, c.level),
+      ...subclassFeatureChoiceSpecs(d.classObj, d.subclassObj, d.subclassFeatures, d.preFeatureSavingThrowProficiencies),
+    ];
     reconcileClassFeatureChoices(c, d.classFeatureChoiceSpecs);
     d.classFeatureOptionObjects = selectedClassFeatureOptionObjects(c, d.classFeatureChoiceSpecs);
     d.classProficiencyChoiceSpecs = classFeatureProficiencyChoiceSpecs(d.classObj, [...d.classFeatures, ...d.subclassFeatures]);
@@ -3903,6 +4212,22 @@ async function deriveCharacter() {
     reconcileOptionalFeatureChoices(c, d.optionalFeatureSpecs, c.level);
     d.progressionFeatSlots = progressionFeatSlots(d.classObj, c.level, d.subclassObj);
     d.optionalFeatureObjects = selectedOptionalFeatureObjects(c, d.optionalFeatureSpecs);
+    d.featureFeatChoiceSpecs = optionalFeatureFeatChoiceSpecs(d.optionalFeatureObjects);
+    reconcileFeatureFeatChoices(c, d.featureFeatChoiceSpecs);
+    featObjs = selectedFeatObjects(c);
+    reconcileFeatChoices(c, featObjs);
+    d.featObjs = featObjs;
+    d.featObj = featObjs[0] || null;
+    d.spellcastingSource = spellcastingSource(d);
+    d.spellcastingAbility = d.spellcastingSource?.spellcastingAbility || null;
+    d.spellSlots = classSpellSlots(d.spellcastingSource, c.level);
+    d.cantrips = classCantrips(d.spellcastingSource, c.level);
+    d.maxPrepared = classPrepared(d.spellcastingSource, c.level, mods);
+    d.knownSpells = classKnownSpells(d.spellcastingSource, c.level);
+    d.classFeatureSpellChoiceSpecs = classFeatureSpellChoiceSpecs(d.classObj, d.subclassFeatures, c.level);
+    d.optionalFeatureSpellChoiceSpecs = optionalFeatureSpellChoiceSpecs(d.optionalFeatureObjects, c, d);
+    d.featureSpellChoiceSpecs = [...d.classFeatureSpellChoiceSpecs, ...d.optionalFeatureSpellChoiceSpecs];
+    reconcileFeatureSpellChoices(c, d.featureSpellChoiceSpecs);
     d.autoResourceSpecs = [
       ...featureResourceSpecs(d.classFeatures, d, "classfeature"),
       ...classTableResourceSpecs(d.classObj, d.classFeatures, d),
@@ -3922,30 +4247,40 @@ async function deriveCharacter() {
       } catch {}
     }
     d.skillChoiceSpec = skillChoiceSpec(d.classObj);
-    d.spellcastingSource = spellcastingSource(d);
-    d.spellcastingAbility = d.spellcastingSource?.spellcastingAbility || null;
-    d.spellSlots = classSpellSlots(d.spellcastingSource, c.level);
-    d.cantrips = classCantrips(d.spellcastingSource, c.level);
     if (Number.isFinite(Number(d.cantrips))) {
       const extraCantrips = (d.classFeatureOptionObjects || []).filter(f => ["thaumaturge","magician"].includes(textNorm(f.name))).length;
       d.cantrips += extraCantrips;
     }
-    d.maxPrepared = classPrepared(d.spellcastingSource, c.level, mods);
-    d.knownSpells = classKnownSpells(d.spellcastingSource, c.level);
+    const selectedSpellGroup = selectedAdditionalSpellGroupName(c, d.classFeatureChoiceSpecs);
+    const optionalPrepared = d.optionalFeatureObjects.flatMap(feature => [
+      ...fixedAdditionalSpellRefs(feature, c.level, "prepared"),
+      ...fixedAdditionalSpellRefs(feature, c.level, "innate"),
+    ]);
+    const optionalKnown = d.optionalFeatureObjects.flatMap(feature => fixedAdditionalSpellRefs(feature, c.level, "known"));
     d.alwaysPreparedSpells = [...new Set([
       ...fixedAdditionalSpellRefs(d.classObj, c.level, "prepared"),
-      ...fixedAdditionalSpellRefs(d.subclassObj, c.level, "prepared")
+      ...fixedAdditionalSpellRefs(d.subclassObj, c.level, "prepared", selectedSpellGroup),
+      ...optionalPrepared,
+      ...featureGrantedSpellRefs(c, d.featureSpellChoiceSpecs, ["prepared","innate"]),
     ])];
     d.alwaysKnownSpells = [...new Set([
       ...fixedAdditionalSpellRefs(d.classObj, c.level, "known"),
-      ...fixedAdditionalSpellRefs(d.subclassObj, c.level, "known")
+      ...fixedAdditionalSpellRefs(d.subclassObj, c.level, "known", selectedSpellGroup),
+      ...optionalKnown,
+      ...featureGrantedSpellRefs(c, d.featureSpellChoiceSpecs, "known"),
     ])];
+    d.alwaysSpellbookSpells = featureGrantedSpellRefs(c, d.featureSpellChoiceSpecs, "spellbook");
     if (Number.isFinite(Number(d.cantrips)) && c.cantrips.length > d.cantrips) c.cantrips = c.cantrips.slice(0, d.cantrips);
     if (Number.isFinite(Number(d.maxPrepared)) && c.preparedSpells.length > d.maxPrepared) c.preparedSpells = c.preparedSpells.slice(0, d.maxPrepared);
     if (Number.isFinite(Number(d.knownSpells)) && c.knownSpells.length > d.knownSpells) c.knownSpells = c.knownSpells.slice(0, d.knownSpells);
-    for (const save of d.classObj?.proficiency || []) { const key = normalizeAbilityKey(save); if (key) d.savingThrowProficiencies.add(key); }
+    for (const save of d.preFeatureSavingThrowProficiencies) d.savingThrowProficiencies.add(save);
   } else {
     reconcileResources(c, []);
+    reconcileFeatureSpellChoices(c, []);
+    reconcileFeatureFeatChoices(c, []);
+    featObjs = selectedFeatObjects(c);
+    d.featObjs = featObjs;
+    d.featObj = featObjs[0] || null;
   }
   d.featSpellRefs = featGrantedSpellRefs(featObjs, c, c.level);
   // Build base proficiencies before feature effects so choice-based effects (e.g. 2024 Observant)
@@ -3970,6 +4305,7 @@ async function deriveCharacter() {
   }
   const optionalSenseData = (d.optionalFeatureObjects || []).map(feature => ({ name:feature.name, senses:feature.senses }));
   for (const ref of collectSenseRefs([d.speciesObj?.entries || [], optionalSenseData, featObjs || []])) d.senseRefs.push(ref);
+  d.senseRefs = applyDarkvisionBonus(d.senseRefs, d.effects.darkvisionBonus);
   for (const sense of d.effects.senses || []) {
     const parsed = String(sense).match(/^(Blindsight|Darkvision|Tremorsense|Truesight)(?:\s+(.*))?$/i);
     if (parsed) d.senseRefs.push({ tag: "sense", name: parsed[1], source: DATA_SOURCE, label: parsed[2] ? `${parsed[1]} ${parsed[2]}` : parsed[1] });
@@ -4040,6 +4376,10 @@ async function deriveCharacter() {
   const fastMovementBonus = d.effects.flags.has("fastMovement") && !d.heavyArmorWorn ? 10 : 0;
   const rovingBonus = d.effects.flags.has("roving") && !d.heavyArmorWorn ? 10 : 0;
   d.speed = Number(c.speedOverride ?? Math.max(0, Math.max(dfltSpeed(d.speciesObj) + Number(d.effects.speedBonus || 0), Number(d.effects.speedMinimum || 0)) + fastMovementBonus + rovingBonus - 5 * Number(c.exhaustion || 0) - Number(d.armorSpeedPenalty || 0)));
+  d.movementModes = {
+    climb: d.effects.movementModes?.climb === "speed" || d.effects.flags.has("roving") ? d.speed : null,
+    swim: d.effects.movementModes?.swim === "speed" || d.effects.flags.has("roving") ? d.speed : null,
+  };
   const baseMaxHp = defaultMaxHp(d.classObj, c.level, mods.con, c.hpMaxOverride);
   const hpPerLevelBonus = Number(d.effects.hpPerLevel || 0) * Number(c.level || 1) + Number(d.effects.hpFlat || 0);
   d.maxHp = c.hpMaxOverride == null ? baseMaxHp + hpPerLevelBonus : baseMaxHp;
@@ -4381,7 +4721,7 @@ function renderAttackNoteDialog(payload) {
 async function renderSheet(app) {
   const c = state.character;
   const d = await deriveCharacter();
-  const selectedSpellRefs = [...(c.cantrips || []), ...(c.preparedSpells || []), ...(c.spellbook || []), ...(d.alwaysPreparedSpells || []), ...(d.alwaysKnownSpells || []), ...(d.featSpellRefs || [])];
+  const selectedSpellRefs = [...(c.cantrips || []), ...(c.preparedSpells || []), ...(c.spellbook || []), ...(d.alwaysPreparedSpells || []), ...(d.alwaysKnownSpells || []), ...(d.alwaysSpellbookSpells || []), ...(d.featSpellRefs || [])];
   if (selectedSpellRefs.length) await Promise.all(selectedSpellRefs.map(getSpellById));
   const attackRows = await getAttackRows(d);
   const currentDeathState = deathState(c,d.maxHp);
@@ -4411,7 +4751,7 @@ async function renderSheet(app) {
   const inspiration = c.heroicInspiration ? "★" : "☆";
   const slots = Array.from({length: 9}, (_,i) => d.spellSlots[i] ? `<div class="spell-slot-box"><strong>${i+1}</strong>${pipBar(d.spellSlots[i], countSlotUsed(c,i+1), "slot", {level:i+1})}</div>` : "").filter(Boolean).join("");
   const preparedRefs = dedupeSpellRefs([...(c.preparedSpells || []), ...(d.alwaysPreparedSpells || []), ...(d.featSpellRefs || [])]);
-  const cantripRefs = dedupeSpellRefs([...(c.cantrips || []), ...(d.alwaysKnownSpells || []), ...(d.featSpellRefs || [])]);
+  const cantripRefs = dedupeSpellRefs([...(c.cantrips || []), ...(d.alwaysKnownSpells || []), ...(d.alwaysPreparedSpells || []), ...(d.featSpellRefs || [])]);
   const prepared = (await Promise.all(preparedRefs.map(getSpellById))).filter(s=>s&&Number(s.level)>0).sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
   const cantrips = (await Promise.all(cantripRefs.map(getSpellById))).filter(s=>s&&Number(s.level)===0).sort((a,b)=>a.name.localeCompare(b.name));
   const languages = d.proficiencies.languages.length ? d.proficiencies.languages : ["None recorded"];
@@ -4428,7 +4768,7 @@ async function renderSheet(app) {
       <div class="identity-stat-box"><span>Hit Dice</span><strong>${Math.max(0,Number(c.level||1)-Number(c.hitDiceUsed||0))}d${hitDieFaces(d.classObj)}</strong><small>${c.hitDiceUsed} spent · spend during Short Rest</small></div>
       <div class="identity-stat-box"><span>Death Saves${d.effects?.deathSaveAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${c.deathSaves.success} ✓ · ${c.deathSaves.failure} ✕</strong><small>${escapeHtml(deathStateLabel)}${currentDeathState === "dying" ? ` · <button data-action="death" data-type="success">Success</button> <button data-action="death" data-type="failure">Failure</button>` : ""}</small></div>
     </div>
-    <div class="sheet-metrics"><div><span>Initiative${d.effects?.initiativeAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}${d.armorTrainingPenalty ? ` <sup class="save-advantage">DIS</sup>` : ""}</span><strong>${formatMod(d.mods.dex + Number(d.effects?.initiativeBonus || 0) + Number(d.d20Penalty || 0))}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong></div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—"}</strong></div></div>${d.activeEffects?.length || d.optionalFeatureObjects?.length || d.weaponMasteryCount ? `<section class="sheet-panel derived-effects-panel"><div class="sheet-panel-title">Active Rules Effects</div><div class="active-effect-list">${d.activeEffects.map(x=>`<span class="active-effect-chip">${escapeHtml(x)}</span>`).join("")}${d.optionalFeatureObjects.map(x=>`<button class="active-effect-chip effect-link" data-action="optional-feature-detail" data-name="${encodeURIComponent(`${x.name}|${x.source}`)}">${escapeHtml(x.name)}</button>`).join("")}${d.weaponMasteryCount ? `<span class="active-effect-chip">Weapon Mastery ${Math.min(selectedWeaponMasteryRefs(c).length,d.weaponMasteryCount)}/${d.weaponMasteryCount}</span>` : ""}</div></section>` : ""}
+    <div class="sheet-metrics"><div><span>Initiative${d.effects?.initiativeAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}${d.armorTrainingPenalty ? ` <sup class="save-advantage">DIS</sup>` : ""}</span><strong>${formatMod(d.mods.dex + Number(d.effects?.initiativeBonus || 0) + Number(d.d20Penalty || 0))}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong>${d.movementModes?.climb ? `<small>Climb ${d.movementModes.climb} ft.</small>` : ""}${d.movementModes?.swim ? `<small>Swim ${d.movementModes.swim} ft.</small>` : ""}</div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—"}</strong></div></div>${d.activeEffects?.length || d.optionalFeatureObjects?.length || d.weaponMasteryCount ? `<section class="sheet-panel derived-effects-panel"><div class="sheet-panel-title">Active Rules Effects</div><div class="active-effect-list">${d.activeEffects.map(x=>`<span class="active-effect-chip">${escapeHtml(x)}</span>`).join("")}${d.optionalFeatureObjects.map(x=>`<button class="active-effect-chip effect-link" data-action="optional-feature-detail" data-name="${encodeURIComponent(`${x.name}|${x.source}`)}">${escapeHtml(x.name)}</button>`).join("")}${d.weaponMasteryCount ? `<span class="active-effect-chip">Weapon Mastery ${Math.min(selectedWeaponMasteryRefs(c).length,d.weaponMasteryCount)}/${d.weaponMasteryCount}</span>` : ""}</div></section>` : ""}
     <div class="sheet-grid-main"><div class="ability-column">${abilityBoxes}</div><div class="sheet-right-column">
       <section class="sheet-panel"><div class="sheet-panel-title">Weapons & Damage Cantrips <button class="sheet-mini-btn" data-action="manage-attacks">Manage</button></div><div class="weapon-table head"><span>Name</span><span>Atk</span><span>Damage</span><span>Notes</span></div>${attackHtml}</section>
       ${d.weaponMasteryCount ? `<section class="sheet-panel"><div class="sheet-panel-title">Weapon Masteries</div><div class="selection-count">${selectedWeaponMasteryRefs(c).length} / ${d.weaponMasteryCount}</div>${selectedWeaponMasteryRefs(c).map(ref => { const item = findOfficialItemByName(splitRefId(ref).name, splitRefId(ref).source); return item ? `<div class="mastery-sheet-row"><span>${renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`)}</span><span>${masteryObjects(item).map(x=>renderWeaponMasteryLink(x.name)).join(", ") || "—"}</span></div>` : `<div class="mastery-sheet-row"><span>${escapeHtml(splitRefId(ref).name)}</span><span>—</span></div>`; }).join("") || `<div class="sheet-empty">No Weapon Masteries selected.</div>`}</section>` : ""}
@@ -4468,6 +4808,8 @@ async function renderBuilder(app) {
   const classChoiceSpecs = d.optionalFeatureSpecs || [];
   const persistentClassChoiceSpecs = d.classFeatureChoiceSpecs || [];
   const persistentClassProficiencySpecs = d.classProficiencyChoiceSpecs || [];
+  const featureSpellChoiceSpecs = d.featureSpellChoiceSpecs || [];
+  const featureFeatChoiceSpecs = d.featureFeatChoiceSpecs || [];
   const generalFeatSlots = d.progressionFeatSlots || [];
   const masteryCount = d.weaponMasteryCount || 0;
   const masteryItemsData = masteryCount ? await getItemsData().catch(() => null) : null;
@@ -4577,6 +4919,14 @@ async function renderBuilder(app) {
     }
     return `<div class="feat-choice-row"><label class="field">${escapeHtml(spec.label)}${persistentClassProficiencySpecs.filter(x=>x.featureName===spec.featureName&&x.kind===spec.kind).length>1 ? ` · Choice ${spec.index}` : ""}<select data-class-proficiency-choice="${escapeHtml(spec.key)}"><option value="">— Select —</option>${options.map(option=>`<option value="${escapeHtml(option.value)}" ${String(selected).toLowerCase()===String(option.value).toLowerCase()?"selected":""}>${escapeHtml(option.label)}</option>`).join("")}</select></label></div>`;
   }).join("") : "";
+  const featureSpellChoiceMarkup = featureSpellChoiceSpecs.length ? featureSpellChoiceSpecs.map(spec => `<div class="choice-card"><div class="mini">${escapeHtml(spec.name)} spell choices</div>${renderFeatureSpellChoiceRows(spec, c, featureSpellChoiceSpecs)}</div>`).join("") : "";
+  const featureFeatChoiceMarkup = featureFeatChoiceSpecs.length ? featureFeatChoiceSpecs.map(spec => {
+    const selected = c.featureFeatChoices?.[spec.key];
+    const used = new Set([c.feat, ...(c.additionalFeats || []), ...Object.values(c.progressionFeats || {}), ...Object.entries(c.featureFeatChoices || {}).filter(([key])=>key!==spec.key).map(([,ref])=>ref)]
+      .filter(Boolean).map(ref => `${textNorm(ref.name)}|${String(ref.source || DATA_SOURCE).toLowerCase()}`));
+    const options = spec.options.filter(feat => !used.has(`${textNorm(feat.name)}|${String(feat.source || DATA_SOURCE).toLowerCase()}`));
+    return `<div class="feat-choice-row"><label class="field">${escapeHtml(spec.name)} · Origin feat<select data-feature-feat="${escapeHtml(spec.key)}"><option value="">— Select —</option>${options.map(feat=>`<option value="${escapeHtml(refValue(feat))}" ${selected?.name===feat.name&&selected?.source===feat.source?"selected":""}>${escapeHtml(feat.name)}</option>`).join("")}</select></label></div>`;
+  }).join("") : "";
   const optionalChoiceMarkup = classChoiceSpecs.length ? classChoiceSpecs.map(spec => {
     const selected = c.optionalFeatureChoices?.[spec.key];
     const options = availableOptionalFeatures(spec, c, c.level);
@@ -4606,7 +4956,7 @@ async function renderBuilder(app) {
 
     <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Ability scores</div><div class="mini">Base scores are stored separately. The final values include background increases and any manual bonuses.</div></div><div class="quick-actions"><button class="button button-small" data-action="apply-standard-array">Standard array</button><button class="button button-small" data-action="apply-point-buy">27-point reset</button><span class="status-pill">Point buy: ${pointBuyTotal} / 27</span></div></div><div class="ability-editor">${ABILITIES.map(a=>`<label class="ability-editor-cell"><span>${ABILITY_LABELS[a]}</span><input type="number" min="1" max="30" data-stat="${a}" value="${c.baseStats[a]}"><small>Final ${d.stats[a]}</small></label>`).join("")}</div></section>
 
-    <div class="grid two compact-gap"><section class="card"><div class="section-head"><div><div class="section-title">Class feature choices</div><div class="mini">Persistent class-feature options, Fighting Styles, Metamagic, Eldritch Invocations, and similar selections are stored as rules references and feed derived sheet effects.</div></div></div>${persistentClassChoiceMarkup ? `<div class="subhead">Feature options</div>${persistentClassChoiceMarkup}` : ""}${persistentClassProficiencyMarkup ? `<div class="subhead">Skill, Expertise & Language choices</div>${persistentClassProficiencyMarkup}` : ""}<div class="subhead">Optional features</div>${optionalChoiceMarkup}<div class="subhead"><div class="section-title">General feats</div></div>${generalFeatMarkup}</section><section class="card"><div class="section-head"><div><div class="section-title">Weapon Mastery</div><div class="mini">Select the weapons you have mastered. Only currently proficient weapons with 5etools mastery data are shown.</div></div></div>${masteryMarkup}</section></div>
+    <div class="grid two compact-gap"><section class="card"><div class="section-head"><div><div class="section-title">Class feature choices</div><div class="mini">Persistent class and subclass options, Fighting Styles, Metamagic, Eldritch Invocations, spell groups, and feature-granted spell or feat selections are stored and reconciled against the current rules.</div></div></div>${persistentClassChoiceMarkup ? `<div class="subhead">Feature options</div>${persistentClassChoiceMarkup}` : ""}${persistentClassProficiencyMarkup ? `<div class="subhead">Skill, Expertise & Language choices</div>${persistentClassProficiencyMarkup}` : ""}<div class="subhead">Optional features</div>${optionalChoiceMarkup}${featureFeatChoiceMarkup ? `<div class="subhead">Feature-granted feats</div>${featureFeatChoiceMarkup}` : ""}${featureSpellChoiceMarkup ? `<div class="subhead">Feature spell choices</div>${featureSpellChoiceMarkup}` : ""}<div class="subhead"><div class="section-title">General feats</div></div>${generalFeatMarkup}</section><section class="card"><div class="section-head"><div><div class="section-title">Weapon Mastery</div><div class="mini">Select the weapons you have mastered. Only currently proficient weapons with 5etools mastery data are shown.</div></div></div>${masteryMarkup}</section></div>
     <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Background ability increases</div><div class="mini">2024 backgrounds can use either +2/+1 or +1/+1/+1 when the background offers that choice.</div></div></div>${bg ? `<div class="mini" style="margin-bottom:10px">${escapeHtml(bg.name)}: choose from ${escapeHtml((bgAbility.plus1From || []).map(x=>ABILITY_LABELS[x]).join(", ") || "the listed abilities")}.</div>${bgAbility.supportsThree ? `<label class="field">Increase pattern<select data-builder="bgMode"><option value="split" ${bgMode==="split"?"selected":""}>+2 / +1</option><option value="three" ${bgMode==="three"?"selected":""}>+1 / +1 / +1</option></select></label>` : ""}${bgMode === "three" && bgAbility.supportsThree ? `<div class="form-grid three"><label class="field">+1 ability<select data-builder="bgPlus1"><option value="">— Select —</option>${bgAbility.threeFrom.map(x=>`<option value="${x}" ${selectedAbility1===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1b"><option value="">— Select —</option>${bgAbility.threeFrom.filter(x=>x!==selectedAbility1).map(x=>`<option value="${x}" ${selectedAbility1b===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1c"><option value="">— Select —</option>${bgAbility.threeFrom.filter(x=>x!==selectedAbility1&&x!==selectedAbility1b).map(x=>`<option value="${x}" ${selectedAbility1c===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label></div>` : `<div class="form-grid two"><label class="field">+2 ability<select data-builder="bgPlus2"><option value="">— Select —</option>${(bgAbility.plus2From || []).map(x=>`<option value="${x}" ${selectedAbility2===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label><label class="field">+1 ability<select data-builder="bgPlus1"><option value="">— Select —</option>${(bgAbility.plus1From || []).filter(x=>x!==selectedAbility2).map(x=>`<option value="${x}" ${selectedAbility1===x?"selected":""}>${ABILITY_NAMES[x]}</option>`).join("")}</select></label></div>`}${autoBonusLines}` : `<div class="empty">Choose a 2024 background to see its ability-score options.</div>`}</section>
 
     <div class="grid two compact-gap"><section class="card"><div class="section-head"><div><div class="section-title">Languages</div><div class="mini">Every character starts with Common and chooses two additional languages from the 2024 PHB Standard Languages table. Rare languages are excluded here; class, species, background, and feats can add more separately.</div></div><span class="status-pill">${standardLanguageChoices.filter(Boolean).length} / 2 selected</span></div><div class="language-choice-grid"><div class="language-fixed"><strong>Common</strong><span>Always known</span></div><label class="field">Standard language 1<select data-builder="standardLanguage1" data-standard-language="0"><option value="">— Select —</option>${standardLanguageValues.map(v=>`<option value="${escapeHtml(v.name)}" ${standardLanguageChoices[0]===v.name?"selected":""}>${escapeHtml(v.name)}</option>`).join("")}</select></label><label class="field">Standard language 2<select data-builder="standardLanguage2" data-standard-language="1"><option value="">— Select —</option>${standardLanguageValues.filter(v=>v.name!==standardLanguageChoices[0]).map(v=>`<option value="${escapeHtml(v.name)}" ${standardLanguageChoices[1]===v.name?"selected":""}>${escapeHtml(v.name)}</option>`).join("")}</select></label></div></section><section class="card"><div class="section-head"><div class="section-title">Class skill choices</div><span class="status-pill">${classSkillChoices.size} / ${maxClassSkills || 0}</span></div>${classOptionsSkills.length ? `<div class="skill-grid">${classOptionsSkills.map(key=>{ const overlap=bgSkills.has(key); const checked=classSkillChoices.has(key); return `<label class="skill-check ${overlap?"skill-overlap":""}"><input type="checkbox" data-class-skill="${key}" ${checked?"checked":""} ${overlap&&!checked?"disabled":""}><span>${escapeHtml(SKILLS[key]?.[1] || canonicalLabel(key))}</span>${overlap?`<small class="choice-warning">${checked?"Also from background · choose another":"Already from background"}</small>`:""}</label>`; }).join("")}</div>` : `<div class="empty">Choose a class to load its skill choices from 5etools.</div>`}<div class="section-title subhead">Skill expertise</div><div class="skill-grid">${Object.entries(SKILLS).map(([key,[,name]])=>`<label class="skill-check"><input type="checkbox" data-expertise="${key}" ${c.expertise.includes(key)?"checked":""}>${escapeHtml(name)}</label>`).join("")}</div></section><section class="card"><div class="section-title">Background</div>${bg ? `<div class="detail-list"><div><strong>Skills</strong><span>${escapeHtml(grantedSkillsFromMap(bg.skillProficiencies).map(k=>SKILLS[k]?.[1]||canonicalLabel(k)).join(", ")||"None")} ${proficiencyOverlap.skills.length ? `<small class="choice-warning">Class overlap: ${escapeHtml(proficiencyOverlap.skills.map(k=>SKILLS[k]?.[1]||k).join(", "))}</small>` : ""}</span></div><div><strong>Origin feat</strong><span>${escapeHtml(bgFeatRefs.map(x=>x.name || x).join(", ")||"Choice")}</span></div><div><strong>Tools</strong><span>${escapeHtml(backgroundProficiencies.tools.join(", ")||"None")}</span></div><div><strong>Languages</strong><span>${escapeHtml(backgroundProficiencies.languages.join(", ")||"None")}</span></div></div>` : `<div class="empty">Choose a background.</div>`}</section></div>
@@ -4727,9 +5077,15 @@ async function renderSpellbook(app) {
   if (!availableTabs.includes(state.spellPickerTab)) state.spellPickerTab = availableTabs[0] || "prepared";
   const tab = state.spellPickerTab;
   const className = c.class?.name || "";
-  const available = spells.filter(s => spellAvailableToCharacter(s, state.lastDerived)).slice(0, 2000);
-  const tabLabel = value => value === "prepared" ? `Prepared (${c.preparedSpells.length}/${maxPrepared ?? 0})` : value === "cantrips" ? `Cantrips (${c.cantrips.length}/${maxCantrips ?? 0})` : `Spellbook (${c.spellbook.length})`;
-  const automaticCount = (state.lastDerived?.alwaysPreparedSpells?.length || 0) + (state.lastDerived?.alwaysKnownSpells?.length || 0);
+  const automaticRefs = spellRefSet([
+    ...(state.lastDerived?.alwaysPreparedSpells || []),
+    ...(state.lastDerived?.alwaysKnownSpells || []),
+    ...(state.lastDerived?.alwaysSpellbookSpells || []),
+    ...(state.lastDerived?.featSpellRefs || []),
+  ]);
+  const available = spells.filter(s => spellAvailableToCharacter(s, state.lastDerived) || automaticRefs.has(`${s.name}|${s.source}`.toLowerCase())).slice(0, 2000);
+  const tabLabel = value => value === "prepared" ? `Prepared (${c.preparedSpells.length}/${maxPrepared ?? 0})` : value === "cantrips" ? `Cantrips (${c.cantrips.length}/${maxCantrips ?? 0})` : `Spellbook (${dedupeSpellRefs([...(c.spellbook || []), ...(state.lastDerived?.alwaysSpellbookSpells || [])]).length})`;
+  const automaticCount = automaticRefs.size;
 
   app.innerHTML = `${pageHeader("SPELLBOOK", `${escapeHtml(c.name || "Character")} · Spells`, `${escapeHtml(className || "No class")} · 2024 official spell data`, `<button class="button" data-action="sheet">Character</button>`)}
     <section class="card">${availableTabs.length ? `<div class="tabbar">${availableTabs.map(value=>`<button class="tab-inner ${tab===value?"active":""}" data-spell-tab="${value}">${tabLabel(value)}</button>`).join("")}</div><p class="muted">Only spells on your class or subclass list and of a level you can currently prepare are shown.${usesWizardSpellbook(state.lastDerived) ? " Wizard prepared spells must first be in your spellbook." : ""}${automaticCount ? ` ${automaticCount} always-prepared or bonus spell${automaticCount===1?" is":"s are"} added automatically.` : ""}</p><div class="spell-toolbar"><input id="spellSearch" type="search" placeholder="Search eligible 2024 spells…"><select id="spellLevel"><option value="all">All levels</option>${Array.from({length:10},(_,i)=>`<option value="${i}">${i===0?"Cantrip":`Level ${i}`}</option>`).join("")}</select></div><div id="spellResults" class="spell-results"></div>` : `<div class="empty">This class and subclass do not currently grant spell selection.</div>`}</section>`;
@@ -4745,12 +5101,12 @@ function renderSpellResults(allSpells) {
   const tab = state.spellPickerTab;
   const listName = tab === "prepared" ? "preparedSpells" : tab === "cantrips" ? "cantrips" : "spellbook";
   const maxLevel = maxCastableSpellLevel(state.lastDerived);
-  const tabFilter = tab === "cantrips" ? s => s.level === 0 : s => s.level > 0 && s.level <= maxLevel;
-  const list = allSpells.filter(s => tabFilter(s) && spellSelectionAllowed(s, listName, state.lastDerived, state.character) && (!q || s.name.toLowerCase().includes(q)) && (level === "all" || String(s.level) === level)).slice(0, 300);
+  const tabFilter = tab === "cantrips" ? s => s.level === 0 : tab === "spellbook" ? s => s.level >= 0 && s.level <= maxLevel : s => s.level > 0 && s.level <= maxLevel;
   const c = state.character;
   const collection = c[listName];
   const set = new Set(collection.map(x=>String(x).toLowerCase()));
-  const automatic = spellRefSet(tab === "cantrips" ? state.lastDerived?.alwaysKnownSpells : tab === "prepared" ? state.lastDerived?.alwaysPreparedSpells : []);
+  const automatic = spellRefSet(tab === "cantrips" ? [...(state.lastDerived?.alwaysKnownSpells || []), ...(state.lastDerived?.alwaysPreparedSpells || [])] : tab === "prepared" ? state.lastDerived?.alwaysPreparedSpells : state.lastDerived?.alwaysSpellbookSpells);
+  const list = allSpells.filter(s => tabFilter(s) && (automatic.has(`${s.name}|${s.source}`.toLowerCase()) || spellSelectionAllowed(s, listName, state.lastDerived, state.character)) && (!q || s.name.toLowerCase().includes(q)) && (level === "all" || String(s.level) === level)).slice(0, 300);
   root.innerHTML = list.map(s => {
     const id = `${s.name}|${s.source}`;
     const isAutomatic = automatic.has(id.toLowerCase());
@@ -5100,6 +5456,32 @@ function bindEvents() {
     }
     await saveCharacter(); render();
   });
+  document.querySelectorAll("[data-feature-spell-pick]").forEach(el => el.onchange = async () => {
+    if (!state.character.featureSpellChoices) state.character.featureSpellChoices = {};
+    const specKey = el.dataset.featureSpellPick;
+    const choiceKey = el.dataset.featureSpellChoice;
+    const index = Number(el.dataset.featureSpellIndex || 0);
+    const record = state.character.featureSpellChoices[specKey] && typeof state.character.featureSpellChoices[specKey] === "object"
+      ? { ...state.character.featureSpellChoices[specKey], picks:{ ...(state.character.featureSpellChoices[specKey].picks || {}) } }
+      : { picks:{} };
+    const picks = [...(record.picks[choiceKey] || [])];
+    if (el.value) picks[index] = normalizeSpellRef(el.value);
+    else picks.splice(index, 1);
+    record.picks[choiceKey] = picks.filter(Boolean);
+    if (!record.picks[choiceKey].length) delete record.picks[choiceKey];
+    state.character.featureSpellChoices[specKey] = record;
+    await saveCharacter(); render();
+  });
+  document.querySelectorAll("[data-feature-feat]").forEach(el => el.onchange = async () => {
+    if (!state.character.featureFeatChoices) state.character.featureFeatChoices = {};
+    const key = el.dataset.featureFeat;
+    if (!el.value) delete state.character.featureFeatChoices[key];
+    else {
+      const ref = splitRefId(el.value);
+      state.character.featureFeatChoices[key] = { name:ref.name, source:ref.source || DATA_SOURCE };
+    }
+    await saveCharacter(); render();
+  });
   document.querySelectorAll("[data-optional-feature]").forEach(el => el.onchange = async () => {
     const key = el.dataset.optionalFeature;
     if (!state.character.optionalFeatureChoices) state.character.optionalFeatureChoices = {};
@@ -5280,9 +5662,13 @@ async function readBuilder() {
     const currentOptionalSpecs = optionalFeatureProgression(obj, c.level, subclassObj);
     reconcileOptionalFeatureChoices(c, currentOptionalSpecs, c.level);
 
-    const currentClassFeatureSpecs = classFeatureChoiceSpecs(file, obj, c.level);
-    reconcileClassFeatureChoices(c, currentClassFeatureSpecs);
     const currentSubclassFeatures = getSubclassFeatures(file, subclassObj, c.level);
+    const currentPreFeatureSaves = preSubclassSavingThrowProficiencies(c, obj, selectedFeatObjects(c));
+    const currentClassFeatureSpecs = [
+      ...classFeatureChoiceSpecs(file, obj, c.level),
+      ...subclassFeatureChoiceSpecs(obj, subclassObj, currentSubclassFeatures, currentPreFeatureSaves),
+    ];
+    reconcileClassFeatureChoices(c, currentClassFeatureSpecs);
     const currentClassProficiencySpecs = classFeatureProficiencyChoiceSpecs(obj, [...getClassFeatures(file, obj, c.level), ...currentSubclassFeatures]);
     reconcileClassProficiencyChoices(c, currentClassProficiencySpecs);
 
@@ -5291,6 +5677,8 @@ async function readBuilder() {
       c.optionalFeatureChoices = {};
       c.classFeatureChoices = {};
       c.classProficiencyChoices = {};
+      c.featureSpellChoices = {};
+      c.featureFeatChoices = {};
       c.progressionFeats = {};
       c.startingEquipment.class = null;
     }
@@ -5301,6 +5689,8 @@ async function readBuilder() {
     c.optionalFeatureChoices = {};
     c.classFeatureChoices = {};
     c.classProficiencyChoices = {};
+    c.featureSpellChoices = {};
+    c.featureFeatChoices = {};
     c.progressionFeats = {};
     if (c.class !== null) c.startingEquipment.class = null;
   }
@@ -5453,7 +5843,7 @@ function spellSelectionAllowed(spell, listName, d = state.lastDerived, c = state
   if (listName === "spellbook") return usesWizardSpellbook(d);
   if (listName === "preparedSpells" && usesWizardSpellbook(d)) {
     const id = normalizeSpellRef(`${spell.name}|${spell.source}`)?.toLowerCase();
-    return spellRefSet(c?.spellbook).has(id) || spellRefSet(d?.alwaysPreparedSpells).has(id);
+    return spellRefSet(c?.spellbook).has(id) || spellRefSet(d?.alwaysSpellbookSpells).has(id) || spellRefSet(d?.alwaysPreparedSpells).has(id);
   }
   return listName === "preparedSpells";
 }
@@ -5477,7 +5867,8 @@ async function updateSpellResultFilter(){
   mergeOfficialSpells();
   const spells = getLoadedSpells().filter(s => isOfficial2024Entity(s)).sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
   const d = state.lastDerived || await deriveCharacter();
-  const available = spells.filter(s => spellAvailableToCharacter(s, d)).slice(0,2000);
+  const automatic = spellRefSet([...(d?.alwaysPreparedSpells || []), ...(d?.alwaysKnownSpells || []), ...(d?.alwaysSpellbookSpells || []), ...(d?.featSpellRefs || [])]);
+  const available = spells.filter(s => spellAvailableToCharacter(s, d) || automatic.has(`${s.name}|${s.source}`.toLowerCase())).slice(0,2000);
   renderSpellResults(available);
 }
 async function toggleSpellCollection(id, checked){

@@ -62,6 +62,17 @@ a resource maximum changes, Long Rest eligibility and complete reset effects,
 Hit Dice healing, damage while at 0 Hit Points, critical-hit failures, massive
 damage, stabilization, death, and recovery through healing.
 
+The class-choice layer now gates all 48 PHB subclasses and all 58 optional
+features against the pinned corpus. Behavioral cases cover subclass-owned
+progressions, proficiency choices, Circle of the Land spell groups, Wild Heart
+options, Fiendish Resilience, Iron Mind's fallback save, Magical Discoveries,
+all four Wizard Savant spellbook progressions, invocation cantrip targets, and
+Pact of the Tome's three cantrips plus two rituals. Repeatable Lessons of the
+First Ones slots also grant distinct Origin feats through the normal feat
+effect and structured-choice system. Feature-granted spells are kept separate
+from ordinary prepared-spell limits and invalid saved choices are removed when
+their class, level, prerequisite, or selected cantrip changes.
+
 ### 4. Browser/UI integration
 
 `npm run test:browser` runs the actual PWA in Chromium against the pinned
@@ -72,8 +83,11 @@ IndexedDB save/reload; Wizard spellbook/prepared/cantrip selection; equipment
 add/wield/attune state; persisted schema migration; Short and Long Rest controls;
 critical damage at 0 HP; service-worker offline reload; and touch tap/long-press
 behavior. It also verifies Battle Master maneuver slots and dependency-gated
-Eldritch Invocations through save/reload. GitHub Actions installs Chromium and runs this suite after the pure
-rules and pinned-data layers.
+Eldritch Invocations, Circle of the Land spell groups, Pact of the Tome spell
+choices, invocation cantrip targets, and Lessons of the First Ones Origin feats
+through save/reload. GitHub Actions
+installs Chromium and runs this suite after the pure rules and pinned-data
+layers.
 
 Browser tests should be deterministic by supplying fixture data locally rather than depending on live 5etools during the test.
 

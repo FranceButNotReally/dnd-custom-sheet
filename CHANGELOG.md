@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased — rules conformance expansion
+- Added reconciled subclass and optional-feature choices for Circle of the Land terrain spells and resistance, all three Wild Heart option groups, Fiendish Resilience, Iron Mind's fallback save, College of Lore Magical Discoveries, every Wizard Savant spell progression, invocation cantrip targets, Pact of the Tome's three cantrips plus two rituals, and distinct Origin feats from repeatable Lessons of the First Ones.
+- Added feature-granted prepared, cantrip, and spellbook collections without consuming ordinary preparation limits, including fixed invocation spells and selected off-list spells in the spell UI.
+- Corrected Darkvision-extending subclass features to add 60 feet to an existing range and surfaced Wild Heart Climb/Swim speeds on the sheet.
 - Added an exhaustive PHB class/subclass corpus gate spanning 12 classes, 48 subclasses, 283 class-feature records, 309 subclass-feature records, and all 58 optional features.
 - Added subclass-owned progression support, restoring Battle Master maneuver slots and the Champion's extra Fighting Style to the builder.
 - Enforced Eldritch Invocation level, dependency, category, repeatability, and duplicate rules in reconciliation and in the live option lists.

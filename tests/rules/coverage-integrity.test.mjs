@@ -55,13 +55,15 @@ test("browser-backed persistence, touch, and offline behavior are hard coverage"
   assert.equal(registry.domains.find(x => x.id === "ui-choices")?.status, "partial");
 });
 
-test("subclass and optional-feature coverage records the exhaustive pinned corpus without hiding remaining choices", () => {
+test("subclass and optional-feature coverage records the exhaustive pinned corpus honestly", () => {
   const subclasses = registry.domains.find(x => x.id === "subclass-choices");
   const optional = registry.domains.find(x => x.id === "optional-class-features");
   assert.equal(subclasses?.status, "partial");
   assert.match(subclasses.notes, /48 PHB subclasses/i);
   assert.match(subclasses.notes, /309 subclass-feature records/i);
-  assert.equal(optional?.status, "partial");
+  assert.equal(optional?.status, "covered");
   assert.match(optional.notes, /58 PHB optional features/i);
   assert.match(optional.notes, /Pact of the Tome/i);
+  assert.match(optional.notes, /invocation cantrip targets/i);
+  assert.match(optional.notes, /Lessons of the First Ones/i);
 });
