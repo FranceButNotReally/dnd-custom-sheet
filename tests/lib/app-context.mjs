@@ -48,7 +48,7 @@ export function loadAppTestContext() {
     'hasArmorTraining', 'calcAutoAc', 'classTableNumericValue', 'getUnarmoredDefenseFormula', 'applyTextualRulesEffects',
     'applySelectedSpeciesOptionEffects', 'buildDerivedEffects', 'featureRechargeDetails', 'featureResourceSpecs',
     'classTableResourceSpecs', 'featResourceSpecs', 'reconcileResources', 'weaponMasteryCount', 'masteryObjects', 'masteryLabel',
-    'resetDeathSaves', 'applyDamage', 'applyHealing', 'countSlotUsed', 'setSlotUsed',
+    'resetDeathSaves', 'deathState', 'recordDeathSave', 'applyDamage', 'applyHealing', 'restoreResourceForRest', 'applyShortRest', 'spendHitDice', 'applyLongRest', 'countSlotUsed', 'setSlotUsed',
     'normalizeAbilityKey', 'normalizeSkillKey', 'grantedSkillsFromMap', 'friendlyProficiencyKey', 'normalizedProficiencyLabel',
     'damageTypeName', 'formatSpellRange', 'formatSpellTime', 'formatDuration', 'dfltSpeed', 'sizeLabel', 'resourceRechargeLabel', 'inferFeatureUseMaxFromText',
     'autoLinkNoteKeywords', 'renderNoteText', 'weaponNotePayload', 'spellNotePayload', 'matchesSearchText',

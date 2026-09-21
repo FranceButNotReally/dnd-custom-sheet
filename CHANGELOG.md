@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased — rules conformance expansion
+- Added deterministic resource-state transitions and a pinned-corpus matrix spanning every PHB class and its subclass resource features.
+- Preserved spent uses—not stale remaining uses—when a scaling class resource increases or decreases its maximum.
+- Added functional Short Rest Hit Dice spending with Constitution healing, availability limits, and maximum-HP clamping.
+- Added complete Long Rest transitions for HP, temporary HP, Hit Dice, spell slots, Exhaustion, Concentration, death saves, and rest-recharging resources, including the 1-HP eligibility rule.
+- Added explicit Healthy, Dying, Stable, and Dead states with damage-at-zero failures, critical-hit failures, massive-damage death, temporary-HP protection, and healing recovery.
+- Replaced impractical hundred-pip displays for large resource pools with compact numeric adjustment controls while retaining pips for small pools.
 - Added a pinned-corpus equipment matrix covering all 40 PHB table weapons, nine weapon properties, eight mastery properties, twelve armor suits, Shield, and every PHB artisan tool and instrument.
 - Corrected ranged-weapon detection to use the 5etools item type instead of misreading the `R` (Reach) property, and normalized Lance's object-form conditional Two-Handed property.
 - Added damage types, Versatile damage, Heavy ability requirements, magic weapon damage bonuses, and current Disadvantage warnings to generated attack rows.

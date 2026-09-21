@@ -3716,7 +3716,11 @@ function reconcileResources(c, specs) {
   for (const spec of specs || []) unique.set(spec.id, spec);
   const auto = [...unique.values()].map(spec => {
     const prior = byId.get(spec.id);
-    return { ...spec, mode: "auto", current: prior ? clamp(Number(prior.current ?? spec.max), 0, spec.max) : spec.max };
+    if (!prior) return { ...spec, mode: "auto", current: spec.max };
+    const priorMax = Math.max(0, Number(prior.max ?? spec.max));
+    const priorCurrent = clamp(Number(prior.current ?? priorMax), 0, priorMax);
+    const spent = Math.max(0, priorMax - priorCurrent);
+    return { ...spec, mode: "auto", current: clamp(Number(spec.max || 0) - spent, 0, spec.max) };
   });
   c.resources = [...manual, ...auto];
 }
@@ -4129,11 +4133,14 @@ function renderSenseRef(ref) {
 function effectiveD20Penalty(c) { return -2 * clamp(Number(c?.exhaustion || 0), 0, 6); }
 
 function renderSheetResources(c) {
-  const resources = (c.resources || []).filter(r => r && Number(r.max || 0) > 0);
+  const resources = (c.resources || []).map((resource,index)=>({resource,index})).filter(({resource}) => resource && Number(resource.max || 0) > 0);
   if (!resources.length) return `<div class="resource-sheet-empty">No limited-use resources.</div>`;
-  return `<div class="sheet-resource-grid">${resources.map((r,i)=>{
+  return `<div class="sheet-resource-grid">${resources.map(({resource:r,index:i})=>{
     const max=Number(r.max||0), current=clamp(Number(r.current ?? max),0,max), spent=max-current;
-    return `<div class="sheet-resource-card"><div class="sheet-resource-head"><span>${escapeHtml(r.name || "Resource")}</span><strong>${current}/${max}</strong></div>${r.origin?.name ? `<small>${escapeHtml(r.origin.name)}</small>` : ""}<div class="pips sheet-resource-pips">${Array.from({length:max},(_,idx)=>`<button class="pip ${idx<spent?"used":""}" data-action="resource-pip" data-resource="${i}" data-index="${idx}" aria-label="${escapeHtml(r.name||"Resource")} ${idx+1}"></button>`).join("")}</div><div class="resource-meta">${escapeHtml(r.recharge ? (r.recharge==="both"?"Short or Long Rest":`${r.recharge==="short"?"Short":"Long"} Rest`) : "Manual")}</div></div>`;
+    const controls = max <= 20
+      ? `<div class="pips sheet-resource-pips">${Array.from({length:max},(_,idx)=>`<button class="pip ${idx<spent?"used":""}" data-action="resource-pip" data-resource="${i}" data-index="${idx}" aria-label="${escapeHtml(r.name||"Resource")} ${idx+1}"></button>`).join("")}</div>`
+      : `<div class="resource-actions"><button class="sheet-nav" data-action="resource-adjust" data-resource="${i}" data-delta="-5">−5</button><button class="sheet-nav" data-action="resource-adjust" data-resource="${i}" data-delta="-1">−1</button><button class="sheet-nav" data-action="resource-adjust" data-resource="${i}" data-delta="1">+1</button><button class="sheet-nav" data-action="resource-adjust" data-resource="${i}" data-delta="5">+5</button></div>`;
+    return `<div class="sheet-resource-card"><div class="sheet-resource-head"><span>${escapeHtml(r.name || "Resource")}</span><strong>${current}/${max}</strong></div>${r.origin?.name ? `<small>${escapeHtml(r.origin.name)}</small>` : ""}${controls}<div class="resource-meta">${escapeHtml(r.recharge ? (r.recharge==="both"?"Short or Long Rest":`${r.recharge==="short"?"Short":"Long"} Rest`) : "Manual")}</div></div>`;
   }).join("")}</div>`;
 }
 
@@ -4240,6 +4247,8 @@ async function renderSheet(app) {
   const selectedSpellRefs = [...(c.cantrips || []), ...(c.preparedSpells || []), ...(c.spellbook || []), ...(d.alwaysPreparedSpells || []), ...(d.alwaysKnownSpells || []), ...(d.featSpellRefs || [])];
   if (selectedSpellRefs.length) await Promise.all(selectedSpellRefs.map(getSpellById));
   const attackRows = await getAttackRows(d);
+  const currentDeathState = deathState(c,d.maxHp);
+  const deathStateLabel = ({healthy:"Healthy",dying:"Dying",stable:"Stable",dead:"Dead"})[currentDeathState] || "Unknown";
   const page = state.sheetPage || 1;
   const classLine = [c.class?.name, c.subclass?.name].filter(Boolean).join(" · ");
   const identityLine = [c.background?.name, c.species?.name].filter(Boolean).join(" · ");
@@ -4279,8 +4288,8 @@ async function renderSheet(app) {
       <div class="identity-fields"><div class="field-line"><span>Class & Subclass</span><strong>${escapeHtml(classLine || "—")}</strong></div><div class="field-line"><span>Level</span><strong>${c.level}</strong></div><div class="field-line"><span>Experience</span><strong>${Number(c.xp || 0).toLocaleString()}</strong></div><div class="field-line"><span>Proficiency Bonus</span><strong>${formatMod(d.pb)}</strong></div></div>
       <div class="identity-stat-box"><span>Armor Class</span><strong>${d.ac}</strong><small>${escapeHtml(d.acReason || "Automatic")}</small>${!d.acAutomatic ? `<div class="stat-actions"><button class="sheet-mini-btn" data-action="clear-ac-override">Use automatic AC</button></div>` : ""}</div>
       <div class="identity-stat-box hp"><span>Hit Points</span><strong>${d.currentHp} / ${d.maxHp}</strong><small>Current / Maximum</small><div class="hp-max-label">MAX HP: ${d.maxHp}${c.hpMaxOverride == null ? " · Automatic" : " · Manual"}</div><div class="hp-formula">${escapeHtml(d.hpFormula || "Automatic maximum")}</div>${c.hpMaxOverride != null ? `<div class="stat-actions"><button class="sheet-mini-btn" data-action="clear-hp-override">Use automatic Max HP</button></div>` : ""}<div class="hp-actions" role="group" aria-label="Hit Point controls"><button type="button" data-action="damage">Damage</button><button type="button" data-action="heal">Heal</button><button type="button" data-action="hp">Set HP</button></div><div class="hp-temp-row"><span>Temporary HP</span><strong>${Number(c.tempHp || 0)}</strong><button data-action="temp-hp">Set</button></div></div>
-      <div class="identity-stat-box"><span>Hit Dice</span><strong>d${hitDieFaces(d.classObj)}</strong><small>${c.hitDiceUsed} used</small></div>
-      <div class="identity-stat-box"><span>Death Saves${d.effects?.deathSaveAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${c.deathSaves.success} ✓ · ${c.deathSaves.failure} ✕</strong><small>${d.currentHp === 0 ? `<button data-action="death" data-type="success">Success</button> <button data-action="death" data-type="failure">Failure</button>` : `Only tracked at 0 HP.`}</small></div>
+      <div class="identity-stat-box"><span>Hit Dice</span><strong>${Math.max(0,Number(c.level||1)-Number(c.hitDiceUsed||0))}d${hitDieFaces(d.classObj)}</strong><small>${c.hitDiceUsed} spent · spend during Short Rest</small></div>
+      <div class="identity-stat-box"><span>Death Saves${d.effects?.deathSaveAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${c.deathSaves.success} ✓ · ${c.deathSaves.failure} ✕</strong><small>${escapeHtml(deathStateLabel)}${currentDeathState === "dying" ? ` · <button data-action="death" data-type="success">Success</button> <button data-action="death" data-type="failure">Failure</button>` : ""}</small></div>
     </div>
     <div class="sheet-metrics"><div><span>Initiative${d.effects?.initiativeAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}${d.armorTrainingPenalty ? ` <sup class="save-advantage">DIS</sup>` : ""}</span><strong>${formatMod(d.mods.dex + Number(d.effects?.initiativeBonus || 0) + Number(d.d20Penalty || 0))}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong></div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—"}</strong></div></div>${d.activeEffects?.length || d.optionalFeatureObjects?.length || d.weaponMasteryCount ? `<section class="sheet-panel derived-effects-panel"><div class="sheet-panel-title">Active Rules Effects</div><div class="active-effect-list">${d.activeEffects.map(x=>`<span class="active-effect-chip">${escapeHtml(x)}</span>`).join("")}${d.optionalFeatureObjects.map(x=>`<button class="active-effect-chip effect-link" data-action="optional-feature-detail" data-name="${encodeURIComponent(`${x.name}|${x.source}`)}">${escapeHtml(x.name)}</button>`).join("")}${d.weaponMasteryCount ? `<span class="active-effect-chip">Weapon Mastery ${Math.min(selectedWeaponMasteryRefs(c).length,d.weaponMasteryCount)}/${d.weaponMasteryCount}</span>` : ""}</div></section>` : ""}
     <div class="sheet-grid-main"><div class="ability-column">${abilityBoxes}</div><div class="sheet-right-column">
@@ -4837,7 +4846,7 @@ function bindEvents() {
           }
           await saveCharacter(); return render();
         }
-        if (action === "damage") { const d = await deriveCharacter(); const amount = Number(prompt("Damage taken", "1") || 0); if (amount > 0) { applyDamage(amount, d.maxHp); await saveCharacter(); return render(); } return; }
+        if (action === "damage") { const d = await deriveCharacter(); const amount = Number(prompt("Damage taken", "1") || 0); if (amount > 0) { const critical = Number(d.currentHp || 0) === 0 && confirm("Was this damage from a critical hit?"); applyDamage(amount, d.maxHp, {critical}); await saveCharacter(); return render(); } return; }
         if (action === "heal") { const d = await deriveCharacter(); const amount = Number(prompt("Hit Points regained", "1") || 0); if (amount > 0) { applyHealing(amount, d.maxHp); await saveCharacter(); return render(); } return; }
         if (action === "temp-hp") { const value = prompt("Temporary hit points", String(state.character.tempHp || 0)); if (value !== null) { state.character.tempHp = Math.max(0, Number(value || 0)); await saveCharacter(); return render(); } return; }
         if (action === "heroic") { state.character.heroicInspiration = !state.character.heroicInspiration; await saveCharacter(); return render(); }
@@ -4847,7 +4856,7 @@ function bindEvents() {
         if (action === "slot") { const level = Number(el.dataset.level); const cap = Number(state.lastDerived?.spellSlots?.[level - 1] || 0); const current = countSlotUsed(state.character, level); const idx = Number(el.dataset.index); setSlotUsed(state.character, level, idx < current ? idx : Math.min(cap, idx + 1)); await saveCharacter(); return render(); }
         if (action === "death") {
           if (Number(state.lastDerived?.currentHp ?? state.character.hpCurrent ?? 0) > 0) { showToast("Death saves can only be tracked at 0 HP."); return; }
-          const type = el.dataset.type; state.character.deathSaves[type] = Math.min(3, Number(state.character.deathSaves[type] || 0) + 1); await saveCharacter(); return render();
+          recordDeathSave(state.character,el.dataset.type); await saveCharacter(); return render();
         }
         if (action === "death-reset") { state.character.deathSaves = { success: 0, failure: 0 }; await saveCharacter(); return render(); }
         if (action === "condition") { if (el.dataset.suppressClick) { delete el.dataset.suppressClick; return; } const condition = el.dataset.condition; if (condition === "Exhaustion") { if (Number(state.character.exhaustion || 0) > 0) state.character.exhaustion = 0; else state.character.exhaustion = 1; } else toggleArray(state.character.conditions, condition); await saveCharacter(); return render(); }
@@ -4904,6 +4913,7 @@ function bindEvents() {
         if (action === "remove-attack") { state.character.attacks.splice(Number(el.dataset.index),1); await saveCharacter(); return render(); }
         if (action === "species-trait") { const trait = (state.lastDerived?.speciesObj?.entries || []).find(x => x?.name === decodeURIComponent(el.dataset.name || "")); if (trait) return openModal(trait.name, `<div class="rules-text formatted-rules">${renderRichEntries(trait.entries)}</div>`); }
         if (action === "resource-pip") { const i = Number(el.dataset.resource); const resource = state.character.resources[i]; if (!resource) return; const pip=Number(el.dataset.index)+1; const max=Number(resource.max||0); const current=clamp(Number(resource.current ?? max),0,max); const spent=max-current; resource.current = pip <= spent ? Math.min(max, max - Math.max(0,pip-1)) : Math.max(0, max - pip); await saveCharacter(); return render(); }
+        if (action === "resource-adjust") { const resource=state.character.resources[Number(el.dataset.resource)]; if (!resource) return; resource.current=clamp(Number(resource.current??resource.max)+Number(el.dataset.delta||0),0,Number(resource.max||0)); await saveCharacter(); return render(); }
         if (action === "rest-short") return shortRest();
         if (action === "rest-long") return longRest();
         if (action === "new-character") { await createCharacter(); state.view = "builder"; return render(); }
@@ -5192,8 +5202,8 @@ function openResourceManager() {
   const resources = state.character.resources;
   const renderRows = () => resources.map((r,i) => `<div class="editor-row resource-editor-row">
     <input class="editor-name" data-resource-name="${i}" value="${escapeHtml(r.name || "Resource")}" aria-label="Resource name" ${r.mode==="auto"?"readonly":""}>
-    <input type="number" min="0" max="99" data-resource-max="${i}" value="${Number(r.max || 0)}" aria-label="Resource maximum" ${r.mode==="auto"?"readonly":""}>
-    <input type="number" min="0" max="99" data-resource-current="${i}" value="${Number(r.current || 0)}" aria-label="Current resource">
+    <input type="number" min="0" max="999" data-resource-max="${i}" value="${Number(r.max || 0)}" aria-label="Resource maximum" ${r.mode==="auto"?"readonly":""}>
+    <input type="number" min="0" max="999" data-resource-current="${i}" value="${Number(r.current || 0)}" aria-label="Current resource">
     <select data-resource-recharge="${i}" aria-label="Recharge" ${r.mode==="auto"?"disabled":""}><option value="" ${!r.recharge?"selected":""}>Manual</option><option value="short" ${r.recharge==="short"?"selected":""}>Short rest</option><option value="long" ${r.recharge==="long"?"selected":""}>Long rest</option><option value="both" ${r.recharge==="both"?"selected":""}>Short or Long rest</option></select>
     <span class="resource-mode">${r.mode==="auto" ? `Auto · ${escapeHtml(r.origin?.name || "Feature")}` : "Manual"}</span>${r.mode==="auto" ? `<button class="icon-button" disabled title="Automatic resources are derived from their feature">×</button>` : `<button class="icon-button" data-resource-delete="${i}" title="Remove">×</button>`}
   </div>`).join("") || `<div class="empty">No resources. Add one below.</div>`;
@@ -5389,49 +5399,121 @@ function applyPointBuyDefault(){
   const values=[15,14,13,12,10,8];ABILITIES.forEach((a,i)=>state.character.baseStats[a]=values[i]);saveCharacter().then(render);showToast("Loaded the 27-point-buy baseline (15, 14, 13, 12, 10, 8). Adjust individual scores as needed.");
 }
 function resetDeathSaves(){ state.character.deathSaves = { success: 0, failure: 0 }; }
-function applyDamage(amount, maxHp){
+function deathState(c, maxHp = null) {
+  const hp = Number(c?.hpCurrent ?? maxHp ?? 0);
+  if (hp > 0) return "healthy";
+  if (c?.deathSaves?.status === "dead" || Number(c?.deathSaves?.failure || 0) >= 3) return "dead";
+  if (c?.deathSaves?.status === "stable" || Number(c?.deathSaves?.success || 0) >= 3) return "stable";
+  return "dying";
+}
+function recordDeathSave(c, type, amount = 1) {
+  if (!c || Number(c.hpCurrent || 0) > 0 || !["success", "failure"].includes(type)) return deathState(c);
+  if (deathState(c) === "dead" || deathState(c) === "stable") return deathState(c);
+  c.deathSaves = { success: clamp(Number(c.deathSaves?.success || 0), 0, 3), failure: clamp(Number(c.deathSaves?.failure || 0), 0, 3) };
+  c.deathSaves[type] = clamp(Number(c.deathSaves[type] || 0) + Math.max(0, Number(amount || 0)), 0, 3);
+  if (c.deathSaves.success >= 3) c.deathSaves = { success: 0, failure: 0, status: "stable" };
+  else if (c.deathSaves.failure >= 3) c.deathSaves.status = "dead";
+  return deathState(c);
+}
+function applyDamage(amount, maxHp, options = {}){
   const n = Math.max(0, Number(amount || 0));
-  if (!n) return;
+  if (!n) return deathState(state.character, maxHp);
   const c = state.character;
   let remaining = n;
   const temp = Math.max(0, Number(c.tempHp || 0));
   const absorbed = Math.min(temp, remaining);
   c.tempHp = temp - absorbed;
   remaining -= absorbed;
+  if (remaining <= 0) return deathState(c, maxHp);
   const hp = clamp(Number(c.hpCurrent ?? maxHp ?? 0), 0, maxHp);
+  if (hp === 0 && remaining > 0) {
+    c.deathSaves = { success: 0, failure: clamp(Number(c.deathSaves?.failure || 0), 0, 3) };
+    recordDeathSave(c, "failure", options.critical ? 2 : 1);
+    c.hpAuto = false;
+    return deathState(c, maxHp);
+  }
   c.hpCurrent = clamp(hp - remaining, 0, maxHp);
   c.hpAuto = false;
+  if (c.hpCurrent === 0) {
+    const overflow = Math.max(0, remaining - hp);
+    c.deathSaves = overflow >= maxHp
+      ? { success: 0, failure: 3, status: "dead" }
+      : { success: 0, failure: 0 };
+  }
+  return deathState(c, maxHp);
 }
 function applyHealing(amount, maxHp){
   const n = Math.max(0, Number(amount || 0));
-  if (!n) return;
+  if (!n) return deathState(state.character, maxHp);
   const c = state.character;
   const before = clamp(Number(c.hpCurrent ?? 0), 0, maxHp);
   c.hpCurrent = clamp(before + n, 0, maxHp);
   c.hpAuto = false;
   if (c.hpCurrent > 0) resetDeathSaves();
+  return deathState(c, maxHp);
 }
-function shortRest(){
-  const c=state.character;
-  for(const r of c.resources){
+function restoreResourceForRest(resource, rest) {
+  if (!resource || !["short", "long"].includes(rest)) return false;
+  const recharge = String(resource.recharge || "");
+  if (rest === "short" && recharge !== "short" && recharge !== "both") return false;
+  if (rest === "long" && !["short", "long", "both"].includes(recharge)) return false;
+  if (rest === "short" && resource.shortRestore === "one") resource.current = Math.min(Number(resource.max || 0), Number(resource.current || 0) + 1);
+  else resource.current = Number(resource.max || 0);
+  return true;
+}
+function applyShortRest(c) {
+  for(const r of c?.resources || []){
     if(r.recharge!=="short" && r.recharge!=="both") continue;
-    if(r.shortRestore === "one") r.current=Math.min(Number(r.max||0), Number(r.current||0)+1);
-    else r.current=r.max;
+    restoreResourceForRest(r,"short");
   }
-  saveCharacter().then(()=>{showToast("Short rest recorded.");render();});
+  return c;
 }
-function longRest(){
-  const c=state.character;
-  c.hpCurrent=state.lastDerived?.maxHp??c.hpCurrent;
+function spendHitDice(c, count, rollTotal, conMod, maxHp) {
+  const level = Math.max(1, Number(c?.level || 1));
+  const used = clamp(Number(c?.hitDiceUsed || 0), 0, level);
+  const spend = clamp(Math.floor(Number(count || 0)), 0, level - used);
+  if (!spend) return 0;
+  const healing = Math.max(0, Number(rollTotal || 0) + spend * Number(conMod || 0));
+  c.hitDiceUsed = used + spend;
+  const before = clamp(Number(c.hpCurrent || 0), 0, maxHp);
+  c.hpCurrent = clamp(before + healing, 0, maxHp);
+  c.hpAuto = false;
+  if (c.hpCurrent > 0) c.deathSaves = { success: 0, failure: 0 };
+  return c.hpCurrent - before;
+}
+function applyLongRest(c, maxHp) {
+  if (!c || Number(c.hpCurrent || 0) <= 0 || deathState(c, maxHp) === "dead") return false;
+  c.hpCurrent=maxHp??c.hpCurrent;
   c.hpAuto = c.hpMaxOverride == null;
   c.tempHp=0;
-  // 2024 PHB: a Long Rest restores all spent Hit Dice.
   c.hitDiceUsed=0;
   c.deathSaves={success:0,failure:0};
   c.spellSlotsUsed=[];
   c.exhaustion=Math.max(0, Number(c.exhaustion||0)-1);
   c.concentration=null;
-  for(const r of c.resources){if(r.recharge==="short"||r.recharge==="long"||r.recharge==="both")r.current=r.max;}
+  for(const r of c.resources || []) restoreResourceForRest(r,"long");
+  return true;
+}
+function shortRest(){
+  const c=state.character;
+  applyShortRest(c);
+  const d=state.lastDerived;
+  const available=Math.max(0, Number(c.level||1)-Number(c.hitDiceUsed||0));
+  if (available && Number(c.hpCurrent||0) < Number(d?.maxHp||0)) {
+    const rawCount=prompt(`Hit Dice available: ${available}. How many do you want to spend?`,"0");
+    if (rawCount !== null) {
+      const count=clamp(Math.floor(Number(rawCount||0)),0,available);
+      if (count) {
+        const rawRoll=prompt(`Roll ${count}d${hitDieFaces(d?.classObj)} and enter the dice total before Constitution modifiers.`,String(count));
+        if (rawRoll !== null) spendHitDice(c,count,Number(rawRoll||0),Number(d?.mods?.con||0),Number(d?.maxHp||c.hpCurrent||0));
+      }
+    }
+  }
+  saveCharacter().then(()=>{showToast("Short rest recorded.");render();});
+}
+function longRest(){
+  const c=state.character;
+  if (!applyLongRest(c,state.lastDerived?.maxHp??c.hpCurrent)) { showToast("A Long Rest requires at least 1 Hit Point at its start."); return; }
   saveCharacter().then(()=>{showToast("Long rest recorded. HP, spell slots, hit dice, and exhaustion updated.");render();});
 }
 

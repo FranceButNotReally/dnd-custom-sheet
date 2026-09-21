@@ -36,3 +36,11 @@ test("the PHB equipment tables have hard behavioral coverage", () => {
   }
   assert.equal(registry.domains.find(x => x.id === "equipment-effects")?.status, "partial");
 });
+
+test("rest, Hit Dice, and death-state transitions have hard behavioral coverage", () => {
+  for (const id of ["rests", "hit-dice", "death-saves", "hp-state"]) {
+    const domain = registry.domains.find(x => x.id === id);
+    assert.ok(domain, id);
+    assert.equal(domain.status, "covered", id);
+  }
+});

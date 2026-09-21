@@ -53,6 +53,15 @@ weight, carrying capacity, and attunement-gated weapon/armor enhancements.
 Conditional activated magic-item powers remain explicitly partial rather than
 being applied as unconditional static bonuses.
 
+The resource/state layer uses pure transitions for resource scaling, Short and
+Long Rests, Hit Dice, damage, healing, temporary Hit Points, and death saves.
+Its corpus contracts require every PHB class to expose an automatic resource
+by level 20 and every class's PHB subclasses to yield stable resource specs.
+Behavioral cases cover partial Short Rest recovery, preserving spent uses when
+a resource maximum changes, Long Rest eligibility and complete reset effects,
+Hit Dice healing, damage while at 0 Hit Points, critical-hit failures, massive
+damage, stabilization, death, and recovery through healing.
+
 ### 4. Browser/UI integration
 
 This is the next layer to expand. These tests should use a real browser against the actual PWA and exercise the same paths a player uses: character creation, selection controls, equipment, spell selection, save/skill displays, notes, rests, and touch interaction.
@@ -107,6 +116,7 @@ The most important browser scenarios are:
 
 - Character creation with each of the 12 classes; standard array placement, class skills, background ability increases, languages, species choices, subclass, feats, optional class features, and weapon mastery.
 - Derived sheet verification for saves, skills, AC, HP, speed, initiative, senses, resistances, resources, attacks, spellcasting, and rest/reset behavior.
+- Resource interaction with small pip pools, large numeric pools, Short Rest Hit Dice spending, Long Rest eligibility, and Healthy/Dying/Stable/Dead displays.
 - Equipment search/add/equip/wield/attune with Dagger, Quarterstaff, armor, shields, tools, starting-equipment references, weight/capacity, and visible training/Stealth/Heavy warnings.
 - Spell selection for cantrips, prepared spells, Wizard spellbooks, subclass spellcasting, always-prepared spells, and feat-granted spells.
 - Notes and rule-reference interaction with mouse click, touch click, and long press.
