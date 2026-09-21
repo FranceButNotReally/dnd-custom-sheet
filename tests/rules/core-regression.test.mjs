@@ -275,8 +275,10 @@ add('longbow flags identify ranged and two-handed', () => {
   assert.equal(x.ranged,true);
   assert.equal(x.twoHanded,true);
 });
-add('R weapon property makes an otherwise untyped weapon ranged', () => {
-  assert.equal(a.weaponFlags({weaponCategory:'',property:['R']}).ranged,true);
+add('R weapon property is Reach while item type R identifies a ranged weapon', () => {
+  assert.equal(a.weaponFlags({type:'M|XPHB',weaponCategory:'martial',property:['R']}).ranged,false);
+  assert.equal(a.weaponFlags({type:'M|XPHB',weaponCategory:'martial',property:['R']}).melee,true);
+  assert.equal(a.weaponFlags({type:'R|XPHB',weaponCategory:'martial',property:['A']}).ranged,true);
 });
 add('T weapon property makes a weapon thrown', () => {
   assert.equal(a.weaponFlags({weaponCategory:'simple',property:['T']}).thrown,true);

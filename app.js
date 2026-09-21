@@ -2984,7 +2984,7 @@ function hasWeaponProficiency(item, profs) {
   const compactSet = new Set(clean.map(compact));
   if (clean.some(p => p === name || textNorm(p) === normalizedName || p.includes(normalizedName))) return true;
   const category = String(item?.weaponCategory || "").toLowerCase();
-  const props = new Set((item?.property || []).map(String).map(x => x.split("|")[0].toUpperCase()));
+  const props = weaponPropertyCodes(item);
   if (category === "simple" && (compactSet.has("simple") || compactSet.has("simpleweapons"))) return true;
   if (category === "martial") {
     if (compactSet.has("martial") || compactSet.has("martialweapons")) return true;
@@ -2993,23 +2993,132 @@ function hasWeaponProficiency(item, profs) {
   return false;
 }
 
+function weaponPropertyCode(value) {
+  const raw = typeof value === "string"
+    ? value
+    : value?.uid || value?.name || value?.entry || value?.label || "";
+  return String(raw).split("|")[0].trim().toUpperCase();
+}
+
+function weaponPropertyCodes(item) {
+  return new Set((item?.property || []).map(weaponPropertyCode).filter(Boolean));
+}
+
 function weaponAbility(item, mods) {
-  const props = new Set((item?.property || []).map(String).map(x => x.split("|")[0]));
+  const props = weaponPropertyCodes(item);
   if (props.has("F")) return mods.dex >= mods.str ? "dex" : "str";
   const category = String(item?.weaponCategory || "").toLowerCase();
-  return category === "ranged" || props.has("R") ? "dex" : "str";
+  return category === "ranged" || itemTypeCode(item) === "R" ? "dex" : "str";
 }
 
 function weaponFlags(item) {
-  const props = new Set((item?.property || []).map(x => String(x).split("|")[0]));
+  const props = weaponPropertyCodes(item);
   const category = String(item?.weaponCategory || "").toLowerCase();
+  const ranged = category === "ranged" || itemTypeCode(item) === "R";
   return {
-    ranged: category === "ranged" || props.has("R"),
+    ranged,
     thrown: props.has("T"),
     finesse: props.has("F"),
     light: props.has("L"),
     twoHanded: props.has("2H"),
-    melee: category !== "ranged" && !props.has("R"),
+    melee: !ranged,
+  };
+}
+
+function itemTypeCode(item) {
+  return String(item?.type || "").split("|")[0].toUpperCase();
+}
+
+function equipmentCategory(item) {
+  const type = itemTypeCode(item);
+  if (item?.weaponCategory) return "weapon";
+  if (type === "S") return "shield";
+  if (["LA", "MA", "HA"].includes(type) || item?.armor) return "armor";
+  if (type.startsWith("AT") || type.startsWith("GS") || type.startsWith("INS") || type === "T") return "tool";
+  if (item?.rarity && String(item.rarity).toLowerCase() !== "none") return "magic";
+  if (type === "MNT" || type === "VEH" || type === "SHP" || type === "AIR") return "mount";
+  return "gear";
+}
+
+function numericItemBonus(value) {
+  const parsed = Number.parseInt(String(value ?? 0).replace(/^\+/, ""), 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function itemRequiresAttunement(item) {
+  return Boolean(item?.reqAttune);
+}
+
+function itemEffectActive(owned, item) {
+  return !itemRequiresAttunement(item) || Boolean(owned?.attuned);
+}
+
+function reconcileAttunement(c, itemsData = null) {
+  const items = itemsData ? officialEntries(itemsData, "item") : [];
+  let active = 0;
+  for (const owned of c?.inventory || []) {
+    if (!owned?.attuned) continue;
+    const item = items.find(x => x.name === owned.name && (!owned.source || String(x.source).toLowerCase() === String(owned.source).toLowerCase())) || items.find(x => x.name === owned.name);
+    if (!itemRequiresAttunement(item) || active >= 3) owned.attuned = false;
+    else active += 1;
+  }
+  return active;
+}
+
+function inventoryWeight(c, itemsData = null) {
+  const items = itemsData ? officialEntries(itemsData, "item") : [];
+  return (c?.inventory || []).reduce((total, owned) => {
+    if (!owned?.name) return total;
+    const item = items.find(x => x.name === owned.name && (!owned.source || String(x.source).toLowerCase() === String(owned.source).toLowerCase())) || items.find(x => x.name === owned.name);
+    const weight = Number(item?.weight || 0);
+    const quantity = Math.max(0, Number(owned.quantity ?? 1));
+    return total + (Number.isFinite(weight) ? weight * quantity : 0);
+  }, 0);
+}
+
+function carryingCapacity(stats) {
+  return Math.max(0, Number(stats?.str || 0) * 15);
+}
+
+function heavyWeaponRequirement(item) {
+  if (!weaponPropertyCodes(item).has("H")) return null;
+  const ability = weaponFlags(item).ranged ? "dex" : "str";
+  return { ability, score: 13 };
+}
+
+function weaponDamageText(item, abilityDamage = 0, extraDamage = 0) {
+  if (!item?.dmg1) return "—";
+  const modifier = Number(abilityDamage || 0) + Number(extraDamage || 0);
+  const suffix = modifier ? ` ${formatMod(modifier)}` : "";
+  const damageType = damageTypeName(item.dmgType);
+  const primary = `${item.dmg1}${suffix} ${damageType}`.trim();
+  return item.dmg2 ? `${primary} · ${item.dmg2}${suffix} two-handed` : primary;
+}
+
+function weaponAttackProfile(item, d, wieldedWeapons = [], owned = null) {
+  const ability = weaponAbility(item, d.mods);
+  const proficient = hasWeaponProficiency(item, d.proficiencies?.weapons || []);
+  const flags = weaponFlags(item);
+  const itemBonus = itemEffectActive(owned, item) ? numericItemBonus(item.attackBonus ?? item.bonusWeapon ?? 0) : 0;
+  let attackBonus = Number(d.mods?.[ability] || 0) + (proficient ? Number(d.pb || 0) : 0) + itemBonus + Number(d.d20Penalty || 0);
+  if (flags.ranged) attackBonus += Number(d.effects?.attackBonuses?.ranged || 0);
+  let extraDamage = itemBonus;
+  if (d.effects?.damageBonuses?.dueling && flags.melee && !flags.twoHanded && wieldedWeapons.filter(other => other !== item).length === 0) {
+    extraDamage += Number(d.effects.damageBonuses.dueling || 0);
+  }
+  if (d.effects?.damageBonuses?.thrown && flags.thrown) extraDamage += Number(d.effects.damageBonuses.thrown || 0);
+  const warnings = [];
+  const heavy = heavyWeaponRequirement(item);
+  if (heavy && Number(d.stats?.[heavy.ability] || 0) < heavy.score) warnings.push(`Disadvantage: Heavy requires ${ABILITY_LABELS[heavy.ability]} ${heavy.score}.`);
+  if (d.armorTrainingPenalty && ["str", "dex"].includes(ability)) warnings.push("Disadvantage: wearing armor without training.");
+  if (!proficient) warnings.push("Proficiency Bonus is not included.");
+  return {
+    ability,
+    proficient,
+    flags,
+    attackBonus,
+    damage: weaponDamageText(item, Number(d.mods?.[ability] || 0), extraDamage),
+    warnings,
   };
 }
 
@@ -3022,22 +3131,9 @@ async function getAttackRows(d) {
     if (!owned?.equipped || owned.wielding === false || !owned.name) continue;
     const item = officialItems.find(x => x.name === owned.name && (!owned.source || x.source === owned.source)) || officialItems.find(x => x.name === owned.name);
     if (!item || !item.weaponCategory) continue;
-    const ability = weaponAbility(item, d.mods);
-    const proficient = hasWeaponProficiency(item, d.proficiencies.weapons);
-    const flags = weaponFlags(item);
-    const itemBonus = Number.parseInt(String(item.attackBonus ?? item.bonusWeapon ?? 0), 10) || 0;
-    let bonus = d.mods[ability] + (proficient ? d.pb : 0) + itemBonus + Number(d.d20Penalty || 0);
-    if (flags.ranged) bonus += Number(d.effects?.attackBonuses?.ranged || 0);
-    const abilityDamage = d.mods[ability];
-    let extraDamage = 0;
-    if (d.effects?.damageBonuses?.dueling && flags.melee && !flags.twoHanded) {
-      const wieldedWeapons = (state.character.inventory || []).filter(x => x?.equipped && x.wielding !== false && x?.name).map(x => officialItems.find(it => it.name === x.name && (!x.source || it.source === x.source)) || officialItems.find(it => it.name === x.name)).filter(it => it?.weaponCategory);
-      const otherWeaponCount = wieldedWeapons.filter(other => other !== item).length;
-      if (otherWeaponCount === 0) extraDamage += Number(d.effects.damageBonuses.dueling || 0);
-    }
-    if (d.effects?.damageBonuses?.thrown && flags.thrown) extraDamage += Number(d.effects.damageBonuses.thrown || 0);
-    const damageFormula = item.dmg1 ? `${item.dmg1}${abilityDamage || extraDamage ? ` ${formatMod(abilityDamage + extraDamage)}` : ""}` : "—";
-    rows.push({ nameHtml: renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`), name: item.name, attackBonus: `${formatMod(bonus)}${proficient ? "" : "*"}`, damage: damageFormula, notePayload: weaponNotePayload(item) });
+    const wieldedWeapons = (state.character.inventory || []).filter(x => x?.equipped && x.wielding !== false && x?.name).map(x => officialItems.find(it => it.name === x.name && (!x.source || it.source === x.source)) || officialItems.find(it => it.name === x.name)).filter(it => it?.weaponCategory);
+    const profile = weaponAttackProfile(item, d, wieldedWeapons, owned);
+    rows.push({ nameHtml: renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`), name: item.name, attackBonus: `${formatMod(profile.attackBonus)}${profile.proficient ? "" : "*"}${profile.warnings.some(x=>x.startsWith("Disadvantage")) ? " DIS" : ""}`, damage: profile.damage, notePayload: weaponNotePayload(item, profile.warnings) });
   }
   for (const custom of state.character.attacks || []) rows.push({ name: custom.name || "Attack", attackBonus: custom.attackBonus || "—", damage: custom.damage || "—", notePayload: custom.range || custom.notes ? customNotePayload([custom.range, custom.notes].filter(Boolean).join(" · "), `${custom.name || "Attack"} · Notes`) : null });
   for (const spell of (state.character.cantrips || []).map(spellById).filter(Boolean)) rows.push({ nameHtml: renderReferenceTag("spell", `${spell.name}|${spell.source}|${spell.name}`), name: spell.name, attackBonus: d.spellcastingAbility ? formatMod(d.pb + d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—", damage: (spell.damageInflict || []).map(damageTypeName).join(", ") || "Cantrip", notePayload: spellNotePayload(spell) });
@@ -3072,11 +3168,11 @@ function calcAutoAc(c, mods, itemsData = null, effects = null, proficiencies = n
     const found = items.find(it => it.name === owned.name && String(it.source || "").toLowerCase() === String(owned.source || "").toLowerCase()) || items.find(it => it.name === owned.name);
     return found ? { owned, item: found, index } : null;
   }).filter(Boolean);
-  const itemType = item => String(item?.type || "").split("|")[0];
-  const armor = resolved.filter(({ item }) => ["LA", "MA", "HA"].includes(itemType(item)));
-  const shields = resolved.filter(({ item }) => itemType(item) === "S");
-  const trainedArmor = armor.filter(({ item }) => hasArmorTraining(proficiencies, itemType(item)));
-  const trainedShields = shields.filter(({ item }) => hasArmorTraining(proficiencies, "S"));
+  const armor = resolved.filter(({ item }) => ["LA", "MA", "HA"].includes(itemTypeCode(item)));
+  const shields = resolved.filter(({ item }) => itemTypeCode(item) === "S");
+  const untrainedEquipment = [...armor, ...shields]
+    .filter(({ item }) => !hasArmorTraining(proficiencies, itemTypeCode(item)))
+    .map(({ item }) => item.name);
   const formula = effects?.acFormulas?.[0] || getUnarmoredDefenseFormula(c.class, c.level);
 
   let best = 10 + mods.dex;
@@ -3096,13 +3192,15 @@ function calcAutoAc(c, mods, itemsData = null, effects = null, proficiencies = n
     }
   }
 
-  if (trainedArmor.length) {
-    for (const { item } of trainedArmor) {
+  let selectedArmor = null;
+  if (armor.length) {
+    let bestArmorAc = Number.NEGATIVE_INFINITY;
+    for (const { item, owned } of armor) {
       const base = Number(item.ac);
       if (!Number.isFinite(base)) continue;
-      const bonus = Number.parseInt(String(item.bonusAc || "0"), 10) || 0;
+      const bonus = itemEffectActive(owned, item) ? numericItemBonus(item.bonusAc) : 0;
       let dex = 0;
-      const type = itemType(item);
+      const type = itemTypeCode(item);
       if (type === "LA") dex = mods.dex;
       else if (type === "MA") {
         const masteryCap = effects?.flags?.has?.("mediumArmorMaster") && Number(abilityScores?.dex || 0) >= 16 ? 3 : 2;
@@ -3110,8 +3208,10 @@ function calcAutoAc(c, mods, itemsData = null, effects = null, proficiencies = n
         dex = Math.min(mods.dex, Number.isFinite(cap) ? cap : 2);
       }
       const candidate = base + bonus + dex;
-      if (candidate >= best) {
+      if (candidate >= bestArmorAc) {
+        bestArmorAc = candidate;
         best = candidate;
+        selectedArmor = item;
         sourceMode = "armor";
         breakdown = [String(base), bonus ? `armor ${formatMod(bonus)}` : null, dex ? `DEX ${formatMod(dex)}` : null].filter(Boolean);
         reason = `${item.name} = ${best}`;
@@ -3119,10 +3219,10 @@ function calcAutoAc(c, mods, itemsData = null, effects = null, proficiencies = n
     }
   }
 
-  if (trainedShields.length) {
+  if (shields.length) {
     const canUseShield = sourceMode !== "unarmored" || Boolean(formula?.allowShield);
     if (canUseShield) {
-      const shieldAc = Math.max(0, ...trainedShields.map(({ item }) => Number(item.ac || 0) + (Number.parseInt(String(item.bonusAc || "0"), 10) || 0)));
+      const shieldAc = Math.max(0, ...shields.map(({ item, owned }) => Number(item.ac || 0) + (itemEffectActive(owned, item) ? numericItemBonus(item.bonusAc) : 0)));
       if (shieldAc) { best += shieldAc; breakdown.push(`shield +${shieldAc}`); reason += ` + shield`; }
     }
   }
@@ -3130,15 +3230,14 @@ function calcAutoAc(c, mods, itemsData = null, effects = null, proficiencies = n
   if (effects?.flags?.has?.("dualWielder")) {
     const meleeWeapons = resolved.filter(({ owned, item }) => {
       if (owned?.wielding === false || !item.weaponCategory) return false;
-      const category = String(item.weaponCategory).toLowerCase();
-      const props = new Set((item.property || []).map(x => String(x).split("|")[0]));
-      return category !== "ranged" && !props.has("R") && !props.has("2H");
+      const flags = weaponFlags(item);
+      return flags.melee && !flags.twoHanded;
     });
     if (meleeWeapons.length >= 2) conditionalAcBonus += 1;
   }
   let armorSpeedPenalty = 0;
-  for (const { item } of armor) {
-    const req = Number(item.str ?? item.strRequirement ?? item.strengthRequirement ?? 0);
+  if (selectedArmor && itemTypeCode(selectedArmor) === "HA") {
+    const req = Number(selectedArmor.strength ?? selectedArmor.str ?? selectedArmor.strRequirement ?? selectedArmor.strengthRequirement ?? 0);
     const score = Number(abilityScores?.str ?? c.baseStats?.str ?? 10);
     if (req > 0 && score < req) armorSpeedPenalty = Math.max(armorSpeedPenalty, 10);
   }
@@ -3150,7 +3249,18 @@ function calcAutoAc(c, mods, itemsData = null, effects = null, proficiencies = n
   const totalAcBonus = acBonus + conditionalAcBonus;
   if (totalAcBonus) { best += totalAcBonus; breakdown.push(`other ${formatMod(totalAcBonus)}`); reason += ` + ${formatMod(totalAcBonus)}`; }
   const formulaText = sourceMode === "unarmored" ? breakdown.join(" ") + ` = ${best}` : reason;
-  return { value: best, reason: formulaText, mode: sourceMode, breakdown, speedPenalty: armorSpeedPenalty, wearingHeavyArmor: armor.some(({ item }) => itemType(item) === "HA") };
+  return {
+    value: best,
+    reason: formulaText,
+    mode: sourceMode,
+    breakdown,
+    speedPenalty: armorSpeedPenalty,
+    wearingHeavyArmor: Boolean(selectedArmor && itemTypeCode(selectedArmor) === "HA"),
+    stealthDisadvantage: Boolean(selectedArmor?.stealth),
+    selectedArmor: selectedArmor?.name || null,
+    untrainedEquipment,
+    multipleArmor: armor.length > 1,
+  };
 }
 
 function textNorm(value) { return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase(); }
@@ -3632,7 +3742,7 @@ async function deriveCharacter() {
     effects: null, maxHp: 1, currentHp: Number(c.hpCurrent ?? 0), progressionFeatSlots: [], ac: Number(c.acOverride ?? (10 + mods.dex)), acAutomatic: c.acOverride == null,
     acReason: "10 + Dexterity modifier", d20Penalty: effectiveD20Penalty(c), speed: Number(c.speedOverride ?? dfltSpeed(findSpecies(c.species?.name, c.species?.source || null))),
     size: sizeLabel(findSpecies(c.species?.name, c.species?.source || null)?.size), spellcastingAbility: null, spellcastingSource: null, spellSlots: [],
-    maxPrepared: null, knownSpells: null, cantrips: null, alwaysPreparedSpells: [], alwaysKnownSpells: [], featSpellRefs: [], inventoryWeight: 0, passivePerception: 10 + mods.wis,
+    maxPrepared: null, knownSpells: null, cantrips: null, alwaysPreparedSpells: [], alwaysKnownSpells: [], featSpellRefs: [], inventoryWeight: 0, carryingCapacity: carryingCapacity(finalStats), passivePerception: 10 + mods.wis,
     passiveInvestigation: 10 + mods.int, proficiencies: { armor: [], weapons: [], tools: [], languages: [] },
     resistances: [], senses: [], sourceSummary: state.data.sourceMeta || []
   };
@@ -3751,9 +3861,20 @@ async function deriveCharacter() {
   d.proficiencies.tools = dedupeLabels([...(d.proficiencies.tools || []), ...(d.effects.tools || [])]);
   d.proficiencies.languages = dedupeLabels([...(d.proficiencies.languages || []), ...(d.effects.languages || [])]);
   try {
-    const acResult = calcAutoAc(c, mods, await getItemsData(), d.effects, d.proficiencies, d.stats);
+    const equipmentData = await getItemsData();
+    reconcileAttunement(c, equipmentData);
+    const acResult = calcAutoAc(c, mods, equipmentData, d.effects, d.proficiencies, d.stats);
+    d.inventoryWeight = inventoryWeight(c, equipmentData);
     d.heavyArmorWorn = Boolean(acResult.wearingHeavyArmor);
     d.armorSpeedPenalty = Number(acResult.speedPenalty || 0);
+    d.armorTrainingPenalty = acResult.untrainedEquipment.length > 0;
+    d.armorStealthDisadvantage = Boolean(acResult.stealthDisadvantage);
+    d.equipmentWarnings = [];
+    if (acResult.untrainedEquipment.length) d.equipmentWarnings.push(`Armor Training missing: ${acResult.untrainedEquipment.join(", ")} (Disadvantage on Strength and Dexterity D20 Tests; spellcasting unavailable).`);
+    if (acResult.stealthDisadvantage) d.equipmentWarnings.push(`${acResult.selectedArmor}: Disadvantage on Dexterity (Stealth) checks.`);
+    if (acResult.multipleArmor) d.equipmentWarnings.push("Multiple suits of armor are equipped; only the best applicable Armor Class is used.");
+    if (d.inventoryWeight > d.carryingCapacity) d.equipmentWarnings.push(`Carrying ${d.inventoryWeight} lb., above the ${d.carryingCapacity} lb. carrying capacity.`);
+    d.activeEffects.push(...d.equipmentWarnings);
     d.unarmoredDefense = d.effects.acFormulas?.[0] || getUnarmoredDefenseFormula(d.classObj || c.class, c.level);
     if (c.acOverride == null) {
       d.ac = acResult.value;
@@ -4017,12 +4138,12 @@ function renderSheetResources(c) {
 }
 
 function normalizeWeaponPropertyCode(value) {
-  const raw = String(value?.name ?? value ?? "").split("|")[0].trim();
+  const raw = weaponPropertyCode(value);
   const byLabel = Object.entries(WEAPON_PROPERTY_INFO).find(([code, info]) => info.label.toLowerCase() === raw.toLowerCase());
   return byLabel ? byLabel[0] : raw.toUpperCase();
 }
 
-function weaponNotePayload(item) {
+function weaponNotePayload(item, warnings = []) {
   const properties = [];
   const codes = [];
   for (const value of Array.isArray(item?.property) ? item.property : []) {
@@ -4031,7 +4152,8 @@ function weaponNotePayload(item) {
     if (!info) continue;
     if (codes.includes(code)) continue;
     codes.push(code);
-    properties.push({ code, label: info.label, description: info.description, raw: String(value?.name ?? value ?? "") });
+    const note = typeof value === "object" && value?.note ? ` (${value.note})` : "";
+    properties.push({ code, label: info.label, description: `${info.description}${note}`, raw: String(value?.uid ?? value?.name ?? value ?? "") });
   }
   const masteryNames = masteryObjects(item).map(x => String(x?.name || "")).filter(Boolean);
   return {
@@ -4045,6 +4167,7 @@ function weaponNotePayload(item) {
       description: WEAPON_MASTERY_INFO[textNorm(name)] || "This weapon has this Weapon Mastery property in the 2024 rules."
     })),
     mastered: Boolean(state.character && hasSelectedWeaponMastery(state.character, item)),
+    warnings: (warnings || []).filter(Boolean),
   };
 }
 
@@ -4097,11 +4220,12 @@ function renderAttackNoteDialog(payload) {
   }
   if (payload.kind === "weapon") {
     const range = payload.range ? `<section class="note-section"><h3>Range</h3><p>${renderNoteText(payload.range)}</p></section>` : "";
+    const warnings = (payload.warnings || []).length ? `<section class="note-section"><h3>Current Warnings</h3>${payload.warnings.map(x=>`<p class="choice-warning">${escapeHtml(x)}</p>`).join("")}</section>` : "";
     const propertyRows = (payload.properties || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.label)} <small>(${escapeHtml(x.code)})</small></strong><span>${renderNoteText(x.description)}</span></div>`).join("");
     const shorthand = (payload.shorthand || []).map(x => `<span class="note-chip"><b>${escapeHtml(x.code)}</b><span>${escapeHtml(x.label)}</span></span>`).join("");
     const masteryRows = (payload.mastery || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.name)}</strong><span>${renderNoteText(x.description)}</span></div>`).join("");
     const masteryStatus = payload.mastery?.length ? `<p class="note-status">${payload.mastered ? "You currently have this weapon mastery selected." : "You do not currently have this weapon mastery selected."}</p>` : "";
-    return openModal(payload.title || "Weapon Notes", `<div class="rules-text formatted-rules note-dialog-content">${range}${propertyRows ? `<section class="note-section"><h3>Weapon Properties</h3>${propertyRows}</section>` : ""}${shorthand ? `<section class="note-section"><h3>Shorthand</h3><div class="note-chip-row">${shorthand}</div></section>` : ""}${masteryRows ? `<section class="note-section"><h3>Weapon Mastery</h3>${masteryRows}${masteryStatus}</section>` : ""}</div>`);
+    return openModal(payload.title || "Weapon Notes", `<div class="rules-text formatted-rules note-dialog-content">${warnings}${range}${propertyRows ? `<section class="note-section"><h3>Weapon Properties</h3>${propertyRows}</section>` : ""}${shorthand ? `<section class="note-section"><h3>Shorthand</h3><div class="note-chip-row">${shorthand}</div></section>` : ""}${masteryRows ? `<section class="note-section"><h3>Weapon Mastery</h3>${masteryRows}${masteryStatus}</section>` : ""}</div>`);
   }
   if (payload.kind === "spell") {
     const facts = [["Casting Time", payload.castingTime], ["Range", payload.range], ["Duration", payload.duration]].filter(([,v]) => v).map(([k,v]) => `<div class="note-fact"><strong>${escapeHtml(k)}</strong><span>${renderNoteText(v)}</span></div>`).join("");
@@ -4121,14 +4245,15 @@ async function renderSheet(app) {
   const identityLine = [c.background?.name, c.species?.name].filter(Boolean).join(" · ");
   const saves = ABILITIES.map(a => {
     const prof = d.savingThrowProficiencies.has(a), adv = d.savingThrowAdvantages?.has(a);
-    return `<div class="sheet-save-row"><span class="check-circle ${prof ? "on" : ""}"></span><span>${ABILITY_NAMES[a]} Save${adv ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${formatMod(d.mods[a] + (prof ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>`;
+    const dis = d.armorTrainingPenalty && ["str", "dex"].includes(a);
+    return `<div class="sheet-save-row"><span class="check-circle ${prof ? "on" : ""}"></span><span>${ABILITY_NAMES[a]} Save${adv ? ` <sup class="save-advantage">ADV</sup>` : ""}${dis ? ` <sup class="save-advantage">DIS</sup>` : ""}</span><strong>${formatMod(d.mods[a] + (prof ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>`;
   }).join("");
   const skillsByAbility = Object.fromEntries(ABILITIES.map(a => [a, []]));
   for (const [key,[ability,name]] of Object.entries(SKILLS)) skillsByAbility[ability].push({ key, name, prof: d.skillProficiencies.has(key), exp: d.effectiveExpertise?.has(key) || false, bonus: d.mods[ability] + (d.skillProficiencies.has(key) ? d.pb : Number(d.effects?.unproficientSkillBonus || 0)) + (d.effectiveExpertise?.has(key) ? d.pb : 0) + Number(d.effects?.skillBonuses?.[key] || 0) + Number(d.d20Penalty || 0) });
   const abilityBoxes = ABILITIES.map(a => `<section class="ability-box">
       <div class="ability-head"><span>${ABILITY_LABELS[a]}</span><strong>${d.stats[a]}</strong><em>${formatMod(d.mods[a])}</em></div>
-      <div class="ability-save"><span class="check-circle ${d.savingThrowProficiencies.has(a) ? "on" : ""}"></span><b>Saving Throw${d.savingThrowAdvantages?.has(a) ? ` <sup class="save-advantage">ADV</sup>` : ""}</b><strong>${formatMod(d.mods[a] + (d.savingThrowProficiencies.has(a) ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>
-      <div class="skill-stack">${skillsByAbility[a].map(sk => `<div class="sheet-skill-row"><span class="check-circle ${sk.prof ? "on" : ""}"></span><span>${escapeHtml(sk.name)}${sk.exp ? " <sup>EX</sup>" : ""}</span><strong>${formatMod(sk.bonus)}</strong></div>`).join("")}</div>
+      <div class="ability-save"><span class="check-circle ${d.savingThrowProficiencies.has(a) ? "on" : ""}"></span><b>Saving Throw${d.savingThrowAdvantages?.has(a) ? ` <sup class="save-advantage">ADV</sup>` : ""}${d.armorTrainingPenalty && ["str","dex"].includes(a) ? ` <sup class="save-advantage">DIS</sup>` : ""}</b><strong>${formatMod(d.mods[a] + (d.savingThrowProficiencies.has(a) ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>
+      <div class="skill-stack">${skillsByAbility[a].map(sk => `<div class="sheet-skill-row"><span class="check-circle ${sk.prof ? "on" : ""}"></span><span>${escapeHtml(sk.name)}${sk.exp ? " <sup>EX</sup>" : ""}${d.armorTrainingPenalty && ["str","dex"].includes(a) ? ` <sup class="save-advantage">DIS</sup>` : ""}</span><strong>${formatMod(sk.bonus)}</strong></div>`).join("")}</div>
     </section>`).join("");
   const featureRows = [...d.classFeatures.map(f => ({...f, kind:"Class"})), ...d.subclassFeatures.map(f => ({...f, kind:"Subclass"}))]
     .sort((a,b) => Number(a.level)-Number(b.level) || a.name.localeCompare(b.name))
@@ -4157,7 +4282,7 @@ async function renderSheet(app) {
       <div class="identity-stat-box"><span>Hit Dice</span><strong>d${hitDieFaces(d.classObj)}</strong><small>${c.hitDiceUsed} used</small></div>
       <div class="identity-stat-box"><span>Death Saves${d.effects?.deathSaveAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${c.deathSaves.success} ✓ · ${c.deathSaves.failure} ✕</strong><small>${d.currentHp === 0 ? `<button data-action="death" data-type="success">Success</button> <button data-action="death" data-type="failure">Failure</button>` : `Only tracked at 0 HP.`}</small></div>
     </div>
-    <div class="sheet-metrics"><div><span>Initiative${d.effects?.initiativeAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${formatMod(d.mods.dex + Number(d.effects?.initiativeBonus || 0) + Number(d.d20Penalty || 0))}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong></div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—"}</strong></div></div>${d.activeEffects?.length || d.optionalFeatureObjects?.length || d.weaponMasteryCount ? `<section class="sheet-panel derived-effects-panel"><div class="sheet-panel-title">Active Rules Effects</div><div class="active-effect-list">${d.activeEffects.map(x=>`<span class="active-effect-chip">${escapeHtml(x)}</span>`).join("")}${d.optionalFeatureObjects.map(x=>`<button class="active-effect-chip effect-link" data-action="optional-feature-detail" data-name="${encodeURIComponent(`${x.name}|${x.source}`)}">${escapeHtml(x.name)}</button>`).join("")}${d.weaponMasteryCount ? `<span class="active-effect-chip">Weapon Mastery ${Math.min(selectedWeaponMasteryRefs(c).length,d.weaponMasteryCount)}/${d.weaponMasteryCount}</span>` : ""}</div></section>` : ""}
+    <div class="sheet-metrics"><div><span>Initiative${d.effects?.initiativeAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}${d.armorTrainingPenalty ? ` <sup class="save-advantage">DIS</sup>` : ""}</span><strong>${formatMod(d.mods.dex + Number(d.effects?.initiativeBonus || 0) + Number(d.d20Penalty || 0))}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong></div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—"}</strong></div></div>${d.activeEffects?.length || d.optionalFeatureObjects?.length || d.weaponMasteryCount ? `<section class="sheet-panel derived-effects-panel"><div class="sheet-panel-title">Active Rules Effects</div><div class="active-effect-list">${d.activeEffects.map(x=>`<span class="active-effect-chip">${escapeHtml(x)}</span>`).join("")}${d.optionalFeatureObjects.map(x=>`<button class="active-effect-chip effect-link" data-action="optional-feature-detail" data-name="${encodeURIComponent(`${x.name}|${x.source}`)}">${escapeHtml(x.name)}</button>`).join("")}${d.weaponMasteryCount ? `<span class="active-effect-chip">Weapon Mastery ${Math.min(selectedWeaponMasteryRefs(c).length,d.weaponMasteryCount)}/${d.weaponMasteryCount}</span>` : ""}</div></section>` : ""}
     <div class="sheet-grid-main"><div class="ability-column">${abilityBoxes}</div><div class="sheet-right-column">
       <section class="sheet-panel"><div class="sheet-panel-title">Weapons & Damage Cantrips <button class="sheet-mini-btn" data-action="manage-attacks">Manage</button></div><div class="weapon-table head"><span>Name</span><span>Atk</span><span>Damage</span><span>Notes</span></div>${attackHtml}</section>
       ${d.weaponMasteryCount ? `<section class="sheet-panel"><div class="sheet-panel-title">Weapon Masteries</div><div class="selection-count">${selectedWeaponMasteryRefs(c).length} / ${d.weaponMasteryCount}</div>${selectedWeaponMasteryRefs(c).map(ref => { const item = findOfficialItemByName(splitRefId(ref).name, splitRefId(ref).source); return item ? `<div class="mastery-sheet-row"><span>${renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`)}</span><span>${masteryObjects(item).map(x=>renderWeaponMasteryLink(x.name)).join(", ") || "—"}</span></div>` : `<div class="mastery-sheet-row"><span>${escapeHtml(splitRefId(ref).name)}</span><span>—</span></div>`; }).join("") || `<div class="sheet-empty">No Weapon Masteries selected.</div>`}</section>` : ""}
@@ -4176,7 +4301,7 @@ async function renderSheet(app) {
     <section class="sheet-panel spell-slots-panel"><div class="sheet-panel-title">Spell Slots</div><div class="spell-slot-grid">${slots || `<div class="sheet-empty">No spell slots.</div>`}</div></section>
     <div class="sheet-grid-two"><section class="sheet-panel"><div class="sheet-panel-title">Cantrips <button class="sheet-mini-btn" data-action="spells">Manage</button></div>${cantrips.length ? cantrips.map(s => `<div class="sheet-list-item static"><span>${renderReferenceTag("spell", `${s.name}|${s.source}|${s.name}`)}</span><small>${escapeHtml(spellSchoolName(s.school))}</small></div>`).join("") : `<div class="sheet-empty">No cantrips selected.</div>`}</section><section class="sheet-panel"><div class="sheet-panel-title">Prepared Spells <button class="sheet-mini-btn" data-action="spells">Manage</button></div>${prepared.length ? prepared.map(s => `<div class="sheet-list-item static"><span>${renderReferenceTag("spell", `${s.name}|${s.source}|${s.name}`)}</span><small>Level ${s.level}</small></div>`).join("") : `<div class="sheet-empty">No prepared spells selected.</div>`}</section></div>
     <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Proficiencies & Languages</div><div class="proficiency-groups"><div><b>Armor</b><p>${renderProficiencyGroup(d.proficiencies.armor, "armor") || "None"}</p></div><div><b>Weapons</b><p>${renderProficiencyGroup(d.proficiencies.weapons, "weapon") || "None"}</p></div><div><b>Tools</b><p>${renderProficiencyGroup(d.proficiencies.tools, "tool") || "None"}</p></div><div><b>Languages</b><p>${renderProficiencyGroup(languages, "language") || "None"}</p></div></div>${d.resistances.length ? `<div class="derived-subgroup"><b>Damage Resistances</b><p>${escapeHtml(d.resistances.join(", "))}</p></div>` : ""}<div class="derived-subgroup"><b>Senses</b><p class="sense-list">${d.senseRefs.length ? d.senseRefs.map(renderSenseRef).join(", ") : "No special senses"}${d.senses.length ? `${d.senseRefs.length ? ", " : ""}${escapeHtml(d.senses.join(", "))}` : ""}</p></div><button class="sheet-mini-btn" data-action="builder">Edit proficiencies</button></section><section class="sheet-panel"><div class="sheet-panel-title">Personality & Backstory</div><textarea class="sheet-notes" data-field="notes" rows="12" placeholder="Character notes, personality, ideals, bonds, flaws, backstory…">${escapeHtml(c.notes)}</textarea></section></div>
-    <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Equipment</div>${(c.inventory || []).length ? c.inventory.slice(0,12).map((it,i) => `<div class="sheet-list-item static"><span>${renderInventoryItemLink(it)}${it.quantity>1?` ×${it.quantity}`:""}</span><small>${it.equipped ? "Equipped" : ""}</small></div>`).join("") : `<div class="sheet-empty">No equipment.</div>`}<button class="sheet-mini-btn" data-action="equipment">Open equipment</button></section><section class="sheet-panel"><div class="sheet-panel-title">Coins & Attunement</div><div class="coin-grid">${["cp","sp","ep","gp","pp"].map(k => `<label><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" value="${Number(c.currency?.[k] || 0)}" min="0"></label>`).join("")}</div><div class="attunement"><b>Magic Item Attunement</b><p>Track attuned items in Equipment.</p></div></section></div>
+    <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Equipment <small>${d.inventoryWeight} / ${d.carryingCapacity} lb.</small></div>${(c.inventory || []).length ? c.inventory.slice(0,12).map((it,i) => `<div class="sheet-list-item static"><span>${renderInventoryItemLink(it)}${it.quantity>1?` ×${it.quantity}`:""}</span><small>${it.equipped ? "Equipped" : ""}</small></div>`).join("") : `<div class="sheet-empty">No equipment.</div>`}<button class="sheet-mini-btn" data-action="equipment">Open equipment</button></section><section class="sheet-panel"><div class="sheet-panel-title">Coins & Attunement</div><div class="coin-grid">${["cp","sp","ep","gp","pp"].map(k => `<label><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" value="${Number(c.currency?.[k] || 0)}" min="0"></label>`).join("")}</div><div class="attunement"><b>Magic Item Attunement</b><p>${(c.inventory || []).filter(x=>x.attuned).length} / 3 items attuned.</p></div></section></div>
   </div>`;
 
   app.innerHTML = `<div class="sheet-stage">${page === 1 ? pageOne : pageTwo}</div>`;
@@ -4533,20 +4658,13 @@ async function renderEquipment(app) {
     bindEvents();
     return;
   }
+  const derived = await deriveCharacter();
   const items = state.character.inventory || [];
   app.innerHTML = `${pageHeader("EQUIPMENT", `${escapeHtml(state.character.name || "Character")} · Equipment`, "Items are resolved against the cached 2024 5etools equipment catalog.", `<button class="button" data-action="sheet">Character</button><button class="button button-primary" data-action="item-picker">Add item</button>`)}
-  <section class="card"><div class="equipment-total-value">Total currency value: <strong>${formatCurrencyValue(currencyToCp(state.character.currency))}</strong></div><div class="equipment-state-legend"><strong>Equipped</strong> = worn or otherwise active for equipment effects and Armor Class. <strong>Wielding</strong> = a weapon is currently held and counts for attacks and weapon-dependent effects. Wielding a weapon automatically equips it; a weapon can stay equipped without being wielded.</div><div class="currency-grid">${["pp","gp","ep","sp","cp"].map(k=>`<label class="field"><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" min="0" step="1" value="${Number(state.character.currency?.[k] || 0)}"></label>`).join("")}</div>
+  <section class="card"><div class="equipment-total-value">Total currency value: <strong>${formatCurrencyValue(currencyToCp(state.character.currency))}</strong> · Carried weight: <strong>${derived.inventoryWeight} / ${derived.carryingCapacity} lb.</strong> · Attuned: <strong>${items.filter(x=>x.attuned).length} / 3</strong></div><div class="equipment-state-legend"><strong>Equipped</strong> = worn or otherwise active for equipment effects and Armor Class. <strong>Wielding</strong> = a weapon is currently held and counts for attacks and weapon-dependent effects. <strong>Attuned</strong> activates properties that require attunement. Wielding a weapon automatically equips it; a weapon can stay equipped without being wielded.</div>${derived.equipmentWarnings?.length ? `<div class="proficiency-overlap"><strong>Equipment rules</strong><span>${escapeHtml(derived.equipmentWarnings.join(" "))}</span></div>` : ""}<div class="currency-grid">${["pp","gp","ep","sp","cp"].map(k=>`<label class="field"><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" min="0" step="1" value="${Number(state.character.currency?.[k] || 0)}"></label>`).join("")}</div>
   <div class="picker-toolbar equipment-page-toolbar"><input id="equipmentSearch" type="search" placeholder="Filter inventory…"><select id="equipmentCategory"><option value="all">All equipment</option><option value="weapon">Weapons</option><option value="armor">Armor</option><option value="shield">Shields</option><option value="tool">Tools</option><option value="gear">Adventuring gear</option><option value="magic">Magic items</option></select><label class="picker-check"><input id="equipmentEquipped" type="checkbox"> Equipped only</label></div>
   <div id="equipmentRows" class="equipment-list"></div></section>`;
-  const categoryOf = it => {
-    const found = findOfficialItemByName(it.name, it.source) || findOfficialItemByName(it.name);
-    const x = found || it; const t = String(x.type || "").toUpperCase();
-    if (x.weaponCategory) return "weapon";
-    if (x.ac != null || /^(LA|MA|HA|S)$/.test(t.split("|")[0])) return t.startsWith("S") ? "shield" : "armor";
-    if (t.startsWith("AT") || t.startsWith("GS") || t.startsWith("INS") || t.startsWith("T")) return "tool";
-    if (x.rarity && String(x.rarity).toLowerCase() !== "none") return "magic";
-    return "gear";
-  };
+  const categoryOf = it => equipmentCategory(findOfficialItemByName(it.name, it.source) || findOfficialItemByName(it.name) || it);
   const rerender = () => {
     const q = (document.querySelector("#equipmentSearch")?.value || "").trim().toLowerCase();
     const cat = document.querySelector("#equipmentCategory")?.value || "all";
@@ -4559,8 +4677,10 @@ async function renderEquipment(app) {
     root.innerHTML = list.length ? list.map(({it,index})=>{
       const found = findOfficialItemByName(it.name,it.source) || findOfficialItemByName(it.name);
       const isWeapon = Boolean(found?.weaponCategory);
+      const requiresAttunement = itemRequiresAttunement(found);
       const label = found?.name || it.displayName || it.name;
-      return `<div class="equipment-row"><div>${found ? renderReferenceTag("item", `${found.name}|${found.source}|${found.name}`) : `<span>${escapeHtml(label)}</span>`}<div class="mini">${escapeHtml(found?.source || it.source || DATA_SOURCE)}${it.quantity>1?` · ×${it.quantity}`:""}${it.equipped?" · Equipped":""}${isWeapon && it.wielding!==false?" · Wielding":""}</div></div><div class="quick-actions"><button class="button button-small ${it.equipped?"button-primary":""}" data-action="toggle-equipped" data-index="${index}">${it.equipped?"Equipped":"Equip"}</button>${isWeapon?`<button class="button button-small ${it.wielding!==false?"button-primary":""}" data-action="toggle-wielding" data-index="${index}">${it.wielding!==false?"Wielding":"Wield"}</button>`:""}<button class="button button-small" data-action="item-info" data-index="${index}">Details</button><button class="button button-small" data-action="qty-minus" data-index="${index}">−</button><button class="button button-small" data-action="qty-plus" data-index="${index}">+</button><button class="button button-small button-danger" data-action="remove-item" data-index="${index}">Remove</button></div></div>`;
+      const itemWeight = Number(found?.weight || 0) * Math.max(0, Number(it.quantity ?? 1));
+      return `<div class="equipment-row"><div>${found ? renderReferenceTag("item", `${found.name}|${found.source}|${found.name}`) : `<span>${escapeHtml(label)}</span>`}<div class="mini">${escapeHtml(found?.source || it.source || DATA_SOURCE)}${it.quantity>1?` · ×${it.quantity}`:""}${itemWeight?` · ${itemWeight} lb.`:""}${it.equipped?" · Equipped":""}${isWeapon && it.wielding!==false?" · Wielding":""}${it.attuned?" · Attuned":""}${requiresAttunement&&!it.attuned?" · Requires attunement":""}</div></div><div class="quick-actions"><button class="button button-small ${it.equipped?"button-primary":""}" data-action="toggle-equipped" data-index="${index}">${it.equipped?"Equipped":"Equip"}</button>${isWeapon?`<button class="button button-small ${it.wielding!==false?"button-primary":""}" data-action="toggle-wielding" data-index="${index}">${it.wielding!==false?"Wielding":"Wield"}</button>`:""}${requiresAttunement?`<button class="button button-small ${it.attuned?"button-primary":""}" data-action="toggle-attuned" data-index="${index}">${it.attuned?"Attuned":"Attune"}</button>`:""}<button class="button button-small" data-action="item-info" data-index="${index}">Details</button><button class="button button-small" data-action="qty-minus" data-index="${index}">−</button><button class="button button-small" data-action="qty-plus" data-index="${index}">+</button><button class="button button-small button-danger" data-action="remove-item" data-index="${index}">Remove</button></div></div>`;
     }).join("") : `<div class="empty">No equipment matches the current filters.</div>`;
     bindEvents();
   };
@@ -4764,6 +4884,14 @@ function bindEvents() {
           if (!official?.weaponCategory) { showToast(`Could not resolve ${item.name} as a weapon.`); return; }
           item.name = official.name; item.source = official.source; item.displayName = official.name; item.unresolved = false;
           item.wielding = item.wielding === false; if (item.wielding) item.equipped = true;
+          await saveCharacter(); return render();
+        }
+        if (action === "toggle-attuned") {
+          const i = Number(el.dataset.index); const item = state.character.inventory[i]; if (!item) return;
+          const official = findOfficialItemByName(item.name,item.source) || findOfficialItemByName(item.name);
+          if (!itemRequiresAttunement(official)) { showToast(`${item.name} does not require attunement.`); return; }
+          if (!item.attuned && state.character.inventory.filter(x=>x.attuned).length >= 3) { showToast("A character can be attuned to no more than three magic items."); return; }
+          item.attuned = !item.attuned;
           await saveCharacter(); return render();
         }
         if (action === "remove-item") { state.character.inventory.splice(Number(el.dataset.index),1); await saveCharacter(); return render(); }

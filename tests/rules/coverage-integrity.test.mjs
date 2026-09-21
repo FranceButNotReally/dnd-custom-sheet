@@ -27,3 +27,12 @@ test("spell selection is no longer an unimplemented gap", () => {
   assert.equal(spellSelection.status, "partial");
   assert.match(spellSelection.notes, /class\/subclass lists/i);
 });
+
+test("the PHB equipment tables have hard behavioral coverage", () => {
+  for (const id of ["weapon-properties", "armor-and-shields", "equipment"]) {
+    const domain = registry.domains.find(x => x.id === id);
+    assert.ok(domain, id);
+    assert.equal(domain.status, "covered", id);
+  }
+  assert.equal(registry.domains.find(x => x.id === "equipment-effects")?.status, "partial");
+});

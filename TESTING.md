@@ -43,6 +43,16 @@ spells, Eldritch Knight and Arcane Trickster progression, and every structured
 PHB feat spell choice. Missing class metadata is never interpreted as access to
 every spell list.
 
+The equipment layer exhaustively checks the 40 PHB table weapons, all nine
+weapon properties, all eight mastery properties, the twelve armor suits plus
+Shield, and every PHB artisan tool and instrument. Behavioral cases cover the
+real 5etools object form used by Lance, melee/ranged ability selection,
+Versatile damage, Heavy requirements, armor Dexterity caps, armor-training and
+Stealth penalties, heavy-armor Strength penalties, Shield stacking, equipment
+weight, carrying capacity, and attunement-gated weapon/armor enhancements.
+Conditional activated magic-item powers remain explicitly partial rather than
+being applied as unconditional static bonuses.
+
 ### 4. Browser/UI integration
 
 This is the next layer to expand. These tests should use a real browser against the actual PWA and exercise the same paths a player uses: character creation, selection controls, equipment, spell selection, save/skill displays, notes, rests, and touch interaction.
@@ -97,7 +107,7 @@ The most important browser scenarios are:
 
 - Character creation with each of the 12 classes; standard array placement, class skills, background ability increases, languages, species choices, subclass, feats, optional class features, and weapon mastery.
 - Derived sheet verification for saves, skills, AC, HP, speed, initiative, senses, resistances, resources, attacks, spellcasting, and rest/reset behavior.
-- Equipment search/add/equip/wield with Dagger, Quarterstaff, armor, shields, tools, and starting-equipment references.
+- Equipment search/add/equip/wield/attune with Dagger, Quarterstaff, armor, shields, tools, starting-equipment references, weight/capacity, and visible training/Stealth/Heavy warnings.
 - Spell selection for cantrips, prepared spells, Wizard spellbooks, subclass spellcasting, always-prepared spells, and feat-granted spells.
 - Notes and rule-reference interaction with mouse click, touch click, and long press.
 - Offline reload after synchronization, including the complete item and spell catalog.

@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased — rules conformance expansion
+- Added a pinned-corpus equipment matrix covering all 40 PHB table weapons, nine weapon properties, eight mastery properties, twelve armor suits, Shield, and every PHB artisan tool and instrument.
+- Corrected ranged-weapon detection to use the 5etools item type instead of misreading the `R` (Reach) property, and normalized Lance's object-form conditional Two-Handed property.
+- Added damage types, Versatile damage, Heavy ability requirements, magic weapon damage bonuses, and current Disadvantage warnings to generated attack rows.
+- Corrected armor behavior so untrained armor still supplies its AC while surfacing Strength/Dexterity D20 Test and spellcasting penalties; added Stealth Disadvantage and multiple-armor warnings.
+- Fixed heavy-armor Strength speed penalties against the pinned `strength` field and added inventory weight plus Strength-based carrying capacity.
+- Added three-item attunement tracking and gated attunement-required magic weapon/armor enhancements until the item is attuned.
 - Repaired 2024 spell selection by loading the pinned 5etools spell-source lookup instead of treating missing per-spell class metadata as universal access.
 - Restricted cantrip, prepared-spell, and Wizard spellbook choices by class/subclass list and current spell level, with invalid saved choices reconciled safely.
 - Added Eldritch Knight and Arcane Trickster spellcasting ability, cantrip, prepared-spell, and slot progressions.
