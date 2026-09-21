@@ -457,7 +457,7 @@ test('all structured feat choice families persist through the builder', async ({
   await page.locator('label.field', {hasText:'Skill Expert · Expertise'}).locator('select').selectOption('arcana');
   await page.locator('label.field', {hasText:'Elemental Adept · Elemental Adept damage type'}).locator('select').selectOption('Fire');
 
-  await page.locator('label.field', {hasText:'Magic Initiate · Spell list'}).locator('select').selectOption('Wizard');
+  await page.locator('label.field', {hasText:'Magic Initiate · Spell list'}).locator('select').selectOption('Wizard Spells');
   await page.locator('label.field', {hasText:'Magic Initiate · Spellcasting ability'}).locator('select').selectOption('int');
   const spellPicks=page.locator('[data-feat-spell-pick]');
   await expect(spellPicks).toHaveCount(3);
@@ -522,7 +522,9 @@ test.describe('touch interactions', () => {
   test('long-pressing a condition opens its cached rules reference', async ({ page }) => {
     await openReadySheet(page);
     const blinded = page.locator('[data-action="condition"][data-condition="Blinded"]');
-    await blinded.tap();
+    await blinded.dispatchEvent('pointerdown', { pointerType: 'touch', isPrimary: true });
+    await blinded.dispatchEvent('pointerup', { pointerType: 'touch', isPrimary: true });
+    await blinded.dispatchEvent('click');
     await expect(blinded).toHaveClass(/selected/);
 
     const prone = page.locator('[data-action="condition"][data-condition="Prone"]');
