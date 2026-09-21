@@ -437,6 +437,7 @@ test('all structured feat choice families persist through the builder', async ({
   await page.reload();
   await page.getByRole('button', { name:'Builder' }).click();
 
+  await expect(page.locator('[data-feat-ability-mode]')).toHaveCount(1);
   await page.locator('[data-feat-ability-mode]').selectOption('split');
   let asiChoices=page.locator('label.field', {hasText:'Ability Score Improvement · Ability increase (+1)'}).locator('select');
   await asiChoices.nth(0).selectOption('str');
