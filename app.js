@@ -4619,6 +4619,10 @@ function renderSpellResults(allSpells) {
     const checked = isAutomatic || set.has(id.toLowerCase());
     return `<div class="spell-row"><label class="spell-select"><input type="checkbox" data-spell-toggle="${escapeHtml(id)}" ${checked?"checked":""} ${isAutomatic?"disabled":""}> <span class="spell-title">${renderReferenceTag("spell", `${s.name}|${s.source}|${s.name}`)}</span></label><span class="spell-meta">${s.level===0?"Cantrip":`Lv ${s.level}`} · ${escapeHtml(spellSchoolName(s.school))}${isAutomatic?" · Always prepared":""}</span></div>`;
   }).join("") || `<div class="empty">No matching spells.</div>`;
+  bindRuleReferenceLinks(root);
+  root.querySelectorAll("[data-spell-toggle]").forEach(el => {
+    el.onchange = () => toggleSpellCollection(el.dataset.spellToggle, el.checked);
+  });
 }
 
 function spellById(id) {
@@ -5031,7 +5035,6 @@ function bindEvents() {
   document.querySelectorAll("[data-class-skill]").forEach(el => el.onchange = async () => { const arr=state.character.classSkillChoices; toggleArray(arr,normalizeSkillKey(el.dataset.classSkill),el.checked); const max=state.lastDerived?.skillChoiceSpec?.count||0; if(arr.length>max){arr.splice(arr.indexOf(normalizeSkillKey(el.dataset.classSkill)),1);el.checked=false;showToast(`Choose only ${max} class skills.`);return;} await saveCharacter(); render(); });
   document.querySelectorAll("[data-custom-skill]").forEach(el => el.onchange = async () => { toggleArray(state.character.customSkillProficiencies, normalizeSkillKey(el.dataset.customSkill), el.checked); await saveCharacter(); render(); });
   document.querySelectorAll("[data-expertise]").forEach(el => el.onchange = async () => { toggleArray(state.character.expertise, normalizeSkillKey(el.dataset.expertise), el.checked); await saveCharacter(); render(); });
-  document.querySelectorAll("[data-spell-toggle]").forEach(el => el.onchange = async () => toggleSpellCollection(el.dataset.spellToggle, el.checked));
   document.querySelectorAll("[data-spell-tab]").forEach(el => el.onclick = () => { state.spellPickerTab = el.dataset.spellTab; render(); });
   const search = document.querySelector("#spellSearch"); const level = document.querySelector("#spellLevel");
   if (search) search.oninput = () => { updateSpellResultFilter().catch(console.warn); }; if (level) level.onchange = () => { updateSpellResultFilter().catch(console.warn); };

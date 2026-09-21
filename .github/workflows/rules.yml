@@ -40,5 +40,11 @@ jobs:
       - name: Generate coverage and corpus reports
         run: npm run test:coverage
 
+      - name: Install browser test runtime
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser UI and offline tests
+        run: npm run test:browser
+
       - name: Check application syntax
         run: node --check app.js && node --check sw.js

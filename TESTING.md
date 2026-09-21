@@ -64,7 +64,15 @@ damage, stabilization, death, and recovery through healing.
 
 ### 4. Browser/UI integration
 
-This is the next layer to expand. These tests should use a real browser against the actual PWA and exercise the same paths a player uses: character creation, selection controls, equipment, spell selection, save/skill displays, notes, rests, and touch interaction.
+`npm run test:browser` runs the actual PWA in Chromium against the pinned
+5etools corpus. Network requests are fulfilled from the same deterministic test
+cache used by the data contracts. The suite currently exercises representative
+species, background, class-feature, language, and skill choices through an
+IndexedDB save/reload; Wizard spellbook/prepared/cantrip selection; equipment
+add/wield/attune state; persisted schema migration; Short and Long Rest controls;
+critical damage at 0 HP; service-worker offline reload; and touch tap/long-press
+behavior. GitHub Actions installs Chromium and runs this suite after the pure
+rules and pinned-data layers.
 
 Browser tests should be deterministic by supplying fixture data locally rather than depending on live 5etools during the test.
 
@@ -110,15 +118,15 @@ As the suite becomes more complete, branch protection should mark **Rules confor
 
 ## Browser test target
 
-When the current rule-engine layer is stable, add Playwright tests for the actual rendered PWA. The browser suite should run at least Chromium desktop plus a touch-emulated tablet profile. It should verify the complete user path, not implementation details: create a character, make a choice, save it, reload it, and verify the derived sheet.
+Continue expanding the Playwright coverage for the actual rendered PWA across Chromium desktop and the touch-emulated tablet profile. Scenarios should verify the complete user path, not implementation details: create a character, make a choice, save it, reload it, and verify the derived sheet.
 
-The most important browser scenarios are:
+The next browser scenarios to expand are:
 
 - Character creation with each of the 12 classes; standard array placement, class skills, background ability increases, languages, species choices, subclass, feats, optional class features, and weapon mastery.
 - Derived sheet verification for saves, skills, AC, HP, speed, initiative, senses, resistances, resources, attacks, spellcasting, and rest/reset behavior.
-- Resource interaction with small pip pools, large numeric pools, Short Rest Hit Dice spending, Long Rest eligibility, and Healthy/Dying/Stable/Dead displays.
+- Resource interaction with large numeric pools and every Healthy/Dying/Stable/Dead display; Short Rest Hit Dice, Long Rest, and critical damage at 0 HP now have browser coverage.
 - Equipment search/add/equip/wield/attune with Dagger, Quarterstaff, armor, shields, tools, starting-equipment references, weight/capacity, and visible training/Stealth/Heavy warnings.
-- Spell selection for cantrips, prepared spells, Wizard spellbooks, subclass spellcasting, always-prepared spells, and feat-granted spells.
+- Feat-choice UI for ability, proficiency, damage/resistance, and feat-granted spell choices across repeatable feat instances.
 - Notes and rule-reference interaction with mouse click, touch click, and long press.
 - Offline reload after synchronization, including the complete item and spell catalog.
 

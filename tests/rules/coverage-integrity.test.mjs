@@ -21,11 +21,12 @@ test("rules coverage registry is internally consistent", () => {
   }
 });
 
-test("spell selection is no longer an unimplemented gap", () => {
-  const spellSelection = registry.domains.find(x => x.id === "spell-selection");
-  assert.ok(spellSelection);
-  assert.equal(spellSelection.status, "partial");
-  assert.match(spellSelection.notes, /class\/subclass lists/i);
+test("spell selection and spell collections have hard logic and browser coverage", () => {
+  for (const id of ["spell-selection", "cantrips", "prepared-known-spells"]) {
+    const domain = registry.domains.find(x => x.id === id);
+    assert.ok(domain, id);
+    assert.equal(domain.status, "covered", id);
+  }
 });
 
 test("the PHB equipment tables have hard behavioral coverage", () => {
@@ -43,4 +44,13 @@ test("rest, Hit Dice, and death-state transitions have hard behavioral coverage"
     assert.ok(domain, id);
     assert.equal(domain.status, "covered", id);
   }
+});
+
+test("browser-backed persistence, touch, and offline behavior are hard coverage", () => {
+  for (const id of ["touch-interactions", "save-load-migration", "offline-cache"]) {
+    const domain = registry.domains.find(x => x.id === id);
+    assert.ok(domain, id);
+    assert.equal(domain.status, "covered", id);
+  }
+  assert.equal(registry.domains.find(x => x.id === "ui-choices")?.status, "partial");
 });

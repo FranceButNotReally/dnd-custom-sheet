@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased — rules conformance expansion
+- Added a real Chromium integration layer for builder choices, IndexedDB persistence and migration, rest/death controls, touch interactions, and complete offline service-worker reloads.
+- Added Playwright to the existing single GitHub Actions rules job so UI/data-integrity checks run with the pure rules and pinned-corpus suites without creating extra workflow fan-out.
+- Fixed dynamically rendered spell checkboxes so cantrip, spellbook, and prepared-spell selections now invoke their persistence handler.
 - Added deterministic resource-state transitions and a pinned-corpus matrix spanning every PHB class and its subclass resource features.
 - Preserved spent uses—not stale remaining uses—when a scaling class resource increases or decreases its maximum.
 - Added functional Short Rest Hit Dice spending with Constitution healing, availability limits, and maximum-HP clamping.
