@@ -1161,6 +1161,15 @@ function classFeatureProficiencyChoiceSpecs(classObj, features) {
     if (className === "wizard" && n === "scholar") {
       add(feature, "expertise", 1, ["arcana","history","investigation","medicine","nature","religion"], "Scholar expertise");
     }
+    if (className === "bard" && textNorm(feature?.subclassShortName) === "lore" && n === "bonusproficiencies") {
+      add(feature, "skill", 3, Object.keys(SKILLS), "College of Lore skill");
+    }
+    if (className === "fighter" && textNorm(feature?.subclassShortName) === "battlemaster" && n === "studentofwar") {
+      add(feature, "tool", 1, ARTISAN_TOOL_OPTIONS, "Student of War artisan tool");
+    }
+    if (className === "ranger" && textNorm(feature?.subclassShortName) === "feywanderer" && n === "otherworldlyglamour") {
+      add(feature, "skill", 1, ["deception","performance","persuasion"], "Otherworldly Glamour skill");
+    }
   }
   return specs;
 }
@@ -1172,7 +1181,7 @@ function reconcileClassProficiencyChoices(c, specs) {
   for (const spec of specs || []) {
     const selected = c.classProficiencyChoices[spec.key];
     if (!selected) continue;
-    if ((spec.kind === "skill" || spec.kind === "expertise") && !spec.from.includes(selected)) delete c.classProficiencyChoices[spec.key];
+    if (["skill","expertise","tool"].includes(spec.kind) && !spec.from.includes(selected)) delete c.classProficiencyChoices[spec.key];
   }
 }
 
@@ -1182,6 +1191,7 @@ function applyClassProficiencyChoices(c, d, effects) {
     if (!selected) continue;
     if (spec.kind === "skill" && SKILLS[selected]) effects.skills.add(selected);
     if (spec.kind === "expertise" && SKILLS[selected] && d.skillProficiencies?.has?.(selected)) effects.expertise.add(selected);
+    if (spec.kind === "tool" && selected) effects.tools.push(String(selected));
     if (spec.kind === "language") effects.languages.push(String(selected));
   }
 }
@@ -1209,34 +1219,55 @@ function progressionUnlockLevel(progression) {
   return null;
 }
 
-function optionalFeatureProgression(classObj, level) {
+function progressionOwners(classObj, subclassObj = null) {
+  return [
+    classObj ? { obj: classObj, scope: "class" } : null,
+    subclassObj ? { obj: subclassObj, scope: "subclass" } : null,
+  ].filter(Boolean);
+}
+
+function optionalFeatureProgression(classObj, level, subclassObj = null) {
   const out = [];
   // 2024 optional class features (notably Warlock Eldritch Invocations) use
   // optionalfeatureProgression + featureType rather than featProgression + category.
-  for (const prog of classObj?.optionalfeatureProgression || []) {
-    const progression = prog?.progression || [];
-    const count = progressionCountAtLevel(progression, level);
-    const unlockLevel = progressionUnlockLevel(progression);
-    if (!count || !unlockLevel) continue;
-    const category = Array.isArray(prog.featureType) ? prog.featureType : (prog.featureType ? [prog.featureType] : []);
-    for (let i = 0; i < count; i++) out.push({ key: `${prog.name}|${category.join(",")}|${i+1}`, name: prog.name, category, index: i+1, level: unlockLevel });
+  for (const owner of progressionOwners(classObj, subclassObj)) {
+    for (const prog of owner.obj?.optionalfeatureProgression || []) {
+      const progression = prog?.progression || [];
+      const count = progressionCountAtLevel(progression, level);
+      const unlockLevel = progressionUnlockLevel(progression);
+      if (!count || !unlockLevel) continue;
+      const category = Array.isArray(prog.featureType) ? prog.featureType : (prog.featureType ? [prog.featureType] : []);
+      const prefix = owner.scope === "class" ? "" : `subclass:${owner.obj.name}|${owner.obj.source || DATA_SOURCE}|`;
+      for (let i = 0; i < count; i++) out.push({
+        key: `${prefix}${prog.name}|${category.join(",")}|${i+1}`,
+        name: prog.name,
+        category,
+        index: i+1,
+        level: unlockLevel,
+        owner: owner.scope,
+        ownerName: owner.obj.name,
+      });
+    }
   }
   return out;
 }
 
-function progressionFeatSlots(classObj, level) {
+function progressionFeatSlots(classObj, level, subclassObj = null) {
   const out = [];
-  for (const prog of classObj?.featProgression || []) {
-    const progression = prog?.progression || {};
-    const levels = Object.keys(progression).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);
-    let count = 0, unlockLevel = null;
-    for (const lv of levels) if (lv <= Number(level || 1)) { count = Number(progression[String(lv)] || 0); unlockLevel = lv; }
-    if (!count || !unlockLevel) continue;
-    const category = textNorm(prog.name) === "epicboon" ? [] : (Array.isArray(prog.category) ? prog.category : []);
-    const hasOptional = availableOptionalFeatures({ category }).length > 0;
-    if (hasOptional) continue;
-    for (let i = 0; i < count; i++) {
-      out.push({ key: `feat:${prog.name}|${category.join(",")}|${i+1}`, name: prog.name, category, index: i+1, level: unlockLevel });
+  for (const owner of progressionOwners(classObj, subclassObj)) {
+    for (const prog of owner.obj?.featProgression || []) {
+      const progression = prog?.progression || {};
+      const levels = Object.keys(progression).map(Number).filter(Number.isFinite).sort((a,b)=>a-b);
+      let count = 0, unlockLevel = null;
+      for (const lv of levels) if (lv <= Number(level || 1)) { count = Number(progression[String(lv)] || 0); unlockLevel = lv; }
+      if (!count || !unlockLevel) continue;
+      const category = textNorm(prog.name) === "epicboon" ? [] : (Array.isArray(prog.category) ? prog.category : []);
+      const hasOptional = availableOptionalFeatures({ category }).length > 0;
+      if (hasOptional) continue;
+      const prefix = owner.scope === "class" ? "" : `subclass:${owner.obj.name}|${owner.obj.source || DATA_SOURCE}|`;
+      for (let i = 0; i < count; i++) {
+        out.push({ key: `feat:${prefix}${prog.name}|${category.join(",")}|${i+1}`, name: prog.name, category, index: i+1, level: unlockLevel, owner: owner.scope, ownerName: owner.obj.name });
+      }
     }
   }
 
@@ -1327,16 +1358,67 @@ function featCanSelectForSlot(feat, d, c, slot) {
   return !refs.some(ref => textNorm(ref?.name) === textNorm(feat?.name) && String(ref?.source || DATA_SOURCE).toLowerCase() === String(feat?.source || DATA_SOURCE).toLowerCase());
 }
 
-function availableOptionalFeatures(spec) {
+function availableOptionalFeatures(spec, c = null, level = null) {
   const entries = officialEntries(state.data.optionalfeatures, "optionalfeature");
+  const selectedNames = new Set(Object.entries(c?.optionalFeatureChoices || {})
+    .filter(([key]) => key !== spec?.key)
+    .map(([, ref]) => textNorm(ref?.name))
+    .filter(Boolean));
   return entries.filter(x => {
     const types = Array.isArray(x.featureType) ? x.featureType : [];
-    return !spec.category.length || spec.category.some(cat => types.includes(cat));
+    if (spec.category.length && !spec.category.some(cat => types.includes(cat))) return false;
+    if (level != null && !optionalFeaturePrerequisiteMet(x, level, selectedNames)) return false;
+    if (selectedNames.has(textNorm(x.name)) && !optionalFeatureIsRepeatable(x)) return false;
+    return true;
   }).sort((a,b)=>a.name.localeCompare(b.name) || String(a.source).localeCompare(String(b.source)));
 }
 
-function selectedOptionalFeatureObjects(c, classObj, level) {
-  const specs = optionalFeatureProgression(classObj, level);
+function optionalFeatureIsRepeatable(feature) {
+  return /\bRepeatable\b/i.test(plainTextFromEntries(feature?.entries));
+}
+
+function optionalFeaturePrerequisiteMet(feature, level, selectedNames = new Set()) {
+  const alternatives = Array.isArray(feature?.prerequisite) ? feature.prerequisite : [];
+  if (!alternatives.length) return true;
+  return alternatives.some(option => {
+    const requiredLevel = Number(option?.level?.level || option?.level || 0);
+    if (requiredLevel && Number(level || 1) < requiredLevel) return false;
+    const requiredFeatures = Array.isArray(option?.optionalfeature) ? option.optionalfeature : [];
+    if (requiredFeatures.some(ref => !selectedNames.has(textNorm(String(ref).split("|")[0])))) return false;
+    // Spell prerequisites identify the cantrip that the invocation modifies.
+    // The option remains eligible here; its target is a separate invocation choice.
+    return true;
+  });
+}
+
+function reconcileOptionalFeatureChoices(c, specs, level) {
+  c.optionalFeatureChoices = { ...(c.optionalFeatureChoices || {}) };
+  const valid = new Map((specs || []).map(spec => [spec.key, spec]));
+  for (const key of Object.keys(c.optionalFeatureChoices)) if (!valid.has(key)) delete c.optionalFeatureChoices[key];
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const selected = Object.entries(c.optionalFeatureChoices).map(([key, ref]) => ({ key, ref, feature: findOfficial(state.data.optionalfeatures, "optionalfeature", ref?.name, ref?.source || null) }));
+    const selectedNames = new Set(selected.filter(x => x.feature).map(x => textNorm(x.feature.name)));
+    const seen = new Set();
+    for (const item of selected) {
+      const spec = valid.get(item.key);
+      const types = Array.isArray(item.feature?.featureType) ? item.feature.featureType : [];
+      const categoryOk = item.feature && (!spec?.category?.length || spec.category.some(cat => types.includes(cat)));
+      const duplicate = item.feature && seen.has(textNorm(item.feature.name)) && !optionalFeatureIsRepeatable(item.feature);
+      const prereqOk = item.feature && optionalFeaturePrerequisiteMet(item.feature, level, selectedNames);
+      if (!spec || !categoryOk || duplicate || !prereqOk) {
+        delete c.optionalFeatureChoices[item.key];
+        changed = true;
+        continue;
+      }
+      seen.add(textNorm(item.feature.name));
+    }
+  }
+}
+
+function selectedOptionalFeatureObjects(c, specs) {
   const out = [];
   for (const spec of specs) {
     const ref = c.optionalFeatureChoices?.[spec.key];
@@ -3355,24 +3437,32 @@ function buildDerivedEffects(c, d, featObjs) {
   // we only automate effects that can be represented reliably on a sheet.
   for (const feature of allFeatures) {
     const n = textNorm(feature.name);
-    applyTextualRulesEffects(feature.entries, effects, feature.name);
     if (n === "unarmoreddefense" && uad) effects.active.push(`${uad.label}`);
+    if (n === "unarmoreddefense" && textNorm(feature.subclassShortName) === "dance") {
+      effects.acFormulas.push({ base: 10, abilities: ["dex", "cha"], allowShield: false, label: "Dazzling Footwork (10 + DEX + CHA)" });
+      effects.active.push("Dazzling Footwork: Unarmored Defense (10 + DEX + CHA)");
+    }
     if (n === "unarmoredmovement") {
       const bonus = classTableNumericValue(d.classObj, "unarmored movement", c.level);
       if (bonus) { effects.speedBonus += bonus; effects.active.push(`Unarmored Movement: +${bonus} ft.`); }
     }
     if (n === "fastmovement") { effects.flags.add("fastMovement"); effects.active.push("Fast Movement: +10 ft. while not wearing heavy armor"); }
     if (n === "feralinstinct") { effects.initiativeAdvantage = true; effects.active.push("Feral Instinct: Advantage on Initiative"); }
+    if (n === "dangersense") { effects.savingThrowAdvantages.add("dex"); effects.active.push("Danger Sense: Advantage on Dexterity saving throws while not Incapacitated"); }
+    if (n === "remarkableathlete") { effects.initiativeAdvantage = true; effects.active.push("Remarkable Athlete: Advantage on Initiative and Strength (Athletics)"); }
+    if (n === "assassinate") { effects.initiativeAdvantage = true; effects.active.push("Assassinate: Advantage on Initiative"); }
     if (n === "auraofprotection") {
       effects.savingThrowBonus += Math.max(1, Number(d.mods?.cha || 0));
       effects.active.push(`Aura of Protection: +${Math.max(1, Number(d.mods?.cha || 0))} to saving throws`);
     }
+    if (n === "auraofalacrity") { effects.speedBonus += 10; effects.active.push("Aura of Alacrity: +10 ft. Speed"); }
     if (n === "roving") { effects.flags.add("roving"); effects.active.push("Roving: +10 ft. Speed while not wearing Heavy armor; Climb and Swim Speed equal Speed"); }
     if (n === "slipperymind") {
       effects.savingThrows.add("wis");
       effects.savingThrows.add("cha");
       effects.active.push("Slippery Mind: Wisdom and Charisma saving throw proficiency");
     }
+    if (n === "ironmind") { effects.savingThrows.add("wis"); effects.active.push("Iron Mind: Wisdom saving throw proficiency"); }
     if (n === "jackofalltrades") {
       effects.unproficientSkillBonus = Math.max(effects.unproficientSkillBonus, Math.floor(Number(d.pb || 0) / 2));
       effects.active.push(`Jack of All Trades: +${effects.unproficientSkillBonus} to unproficient skill checks`);
@@ -3405,6 +3495,51 @@ function buildDerivedEffects(c, d, featObjs) {
       effects.languages.push("Thieves' Cant");
       effects.active.push("Thieves' Cant: language known");
     }
+    if (n === "martialtraining" && textNorm(feature.subclassShortName) === "valor") {
+      effects.weaponProficiencies.push("Martial Weapons");
+      effects.armorProficiencies.push("Medium Armor", "Shields");
+      effects.active.push("Martial Training: Martial Weapons, Medium Armor, and Shields");
+    }
+    if (n === "implementsofmercy") {
+      effects.skills.add("insight");
+      effects.skills.add("medicine");
+      effects.tools.push("Herbalism Kit");
+      effects.active.push("Implements of Mercy: Insight, Medicine, and Herbalism Kit proficiency");
+    }
+    if (n === "assassinstools") {
+      effects.tools.push("Disguise Kit", "Poisoner's Kit");
+      effects.active.push("Assassin's Tools: Disguise Kit and Poisoner's Kit proficiency");
+    }
+    if (n === "otherworldlyglamour") {
+      const bonus = Math.max(1, Number(d.mods?.wis || 0));
+      for (const skill of ["deception", "performance", "persuasion"]) effects.skillBonuses[skill] = Math.max(Number(effects.skillBonuses[skill] || 0), bonus);
+      effects.active.push(`Otherworldly Glamour: +${bonus} to Charisma checks`);
+    }
+    if (n === "draconicresilience") {
+      effects.hpPerLevel += 1;
+      effects.acFormulas.push({ base: 10, abilities: ["dex", "cha"], allowShield: true, label: "Draconic Resilience (10 + DEX + CHA)" });
+      effects.active.push("Draconic Resilience: +1 Hit Point per Sorcerer level; AC 10 + DEX + CHA while unarmored");
+    }
+    if (n === "umbralsight") {
+      effects.senses.push("Darkvision 60 ft.");
+      effects.active.push("Umbral Sight: Darkvision 60 ft. or +60 ft. to existing Darkvision");
+    }
+    if (n === "darkvision" && textNorm(feature.subclassShortName) === "shadow") {
+      effects.senses.push("Darkvision 60 ft.");
+      effects.active.push("Shadow Arts: Darkvision 60 ft.");
+    }
+    if (n === "feralsenses") {
+      effects.senses.push("Blindsight 30 ft.");
+      effects.active.push("Feral Senses: Blindsight 30 ft.");
+    }
+    if (n === "psychicdefenses" || n === "thoughtshield") {
+      if (!effects.resistances.includes("Psychic")) effects.resistances.push("Psychic");
+      effects.active.push(`${feature.name}: Resistance to Psychic damage`);
+    }
+    if (n === "avatarofbattle") {
+      for (const type of ["Bludgeoning", "Piercing", "Slashing"]) if (!effects.resistances.includes(type)) effects.resistances.push(type);
+      effects.active.push("Avatar of Battle: Resistance to Bludgeoning, Piercing, and Slashing damage");
+    }
     if (["divinestrike","potentspellcasting","primalstrike"].includes(n)) {
       effects.flags.add(n);
       effects.active.push(`${feature.name}: selected class feature option`);
@@ -3417,8 +3552,8 @@ function buildDerivedEffects(c, d, featObjs) {
   // Optional class features such as Fighting Styles and Eldritch Invocations.
   for (const feature of d.optionalFeatureObjects || []) {
     const n = textNorm(feature.name);
-    applyTextualRulesEffects(feature.entries, effects, feature.name);
     effects.active.push(`${feature.name}`);
+    if (n === "eldritchmind") { effects.concentrationSaveAdvantage = true; effects.active[effects.active.length - 1] += ": Advantage on Constitution saves to maintain Concentration"; }
     if (n === "defense") { effects.acBonusWhileArmored += 1; effects.active[effects.active.length - 1] += ": +1 AC while wearing armor"; }
     if (n === "archery") { effects.attackBonuses.ranged = (effects.attackBonuses.ranged || 0) + 2; effects.active[effects.active.length - 1] += ": +2 ranged attack rolls"; }
     if (n === "dueling") { effects.damageBonuses.dueling = 2; effects.active[effects.active.length - 1] += ": +2 damage with qualifying one-handed attacks"; }
@@ -3762,11 +3897,12 @@ async function deriveCharacter() {
     d.classFeatureChoiceSpecs = classFeatureChoiceSpecs(d.classFile, d.classObj, c.level);
     reconcileClassFeatureChoices(c, d.classFeatureChoiceSpecs);
     d.classFeatureOptionObjects = selectedClassFeatureOptionObjects(c, d.classFeatureChoiceSpecs);
-    d.classProficiencyChoiceSpecs = classFeatureProficiencyChoiceSpecs(d.classObj, d.classFeatures);
+    d.classProficiencyChoiceSpecs = classFeatureProficiencyChoiceSpecs(d.classObj, [...d.classFeatures, ...d.subclassFeatures]);
     reconcileClassProficiencyChoices(c, d.classProficiencyChoiceSpecs);
-    d.optionalFeatureSpecs = optionalFeatureProgression(d.classObj, c.level);
-    d.progressionFeatSlots = progressionFeatSlots(d.classObj, c.level);
-    d.optionalFeatureObjects = selectedOptionalFeatureObjects(c, d.classObj, c.level);
+    d.optionalFeatureSpecs = optionalFeatureProgression(d.classObj, c.level, d.subclassObj);
+    reconcileOptionalFeatureChoices(c, d.optionalFeatureSpecs, c.level);
+    d.progressionFeatSlots = progressionFeatSlots(d.classObj, c.level, d.subclassObj);
+    d.optionalFeatureObjects = selectedOptionalFeatureObjects(c, d.optionalFeatureSpecs);
     d.autoResourceSpecs = [
       ...featureResourceSpecs(d.classFeatures, d, "classfeature"),
       ...classTableResourceSpecs(d.classObj, d.classFeatures, d),
@@ -3832,7 +3968,8 @@ async function deriveCharacter() {
     const canonical = senseName(sense) || canonicalLabel(sense);
     d.senseRefs.push({ tag: "sense", name: canonical, source: DATA_SOURCE, label: `${canonical} ${value} ft.` });
   }
-  for (const ref of collectSenseRefs([d.speciesObj?.entries || [], d.classFeatures || [], d.subclassFeatures || [], d.optionalFeatureObjects || [], featObjs || []])) d.senseRefs.push(ref);
+  const optionalSenseData = (d.optionalFeatureObjects || []).map(feature => ({ name:feature.name, senses:feature.senses }));
+  for (const ref of collectSenseRefs([d.speciesObj?.entries || [], optionalSenseData, featObjs || []])) d.senseRefs.push(ref);
   for (const sense of d.effects.senses || []) {
     const parsed = String(sense).match(/^(Blindsight|Darkvision|Tremorsense|Truesight)(?:\s+(.*))?$/i);
     if (parsed) d.senseRefs.push({ tag: "sense", name: parsed[1], source: DATA_SOURCE, label: parsed[2] ? `${parsed[1]} ${parsed[2]}` : parsed[1] });
@@ -4328,7 +4465,7 @@ async function renderBuilder(app) {
   const classOptions = await getAllClassOptions();
   const bg = findBackground(c.background?.name, c.background?.source || null);
   const d = await deriveCharacter();
-  const classChoiceSpecs = d.classObj ? optionalFeatureProgression(d.classObj, c.level) : [];
+  const classChoiceSpecs = d.optionalFeatureSpecs || [];
   const persistentClassChoiceSpecs = d.classFeatureChoiceSpecs || [];
   const persistentClassProficiencySpecs = d.classProficiencyChoiceSpecs || [];
   const generalFeatSlots = d.progressionFeatSlots || [];
@@ -4442,8 +4579,9 @@ async function renderBuilder(app) {
   }).join("") : "";
   const optionalChoiceMarkup = classChoiceSpecs.length ? classChoiceSpecs.map(spec => {
     const selected = c.optionalFeatureChoices?.[spec.key];
-    const options = availableOptionalFeatures(spec);
-    return `<div class="feat-choice-row"><label class="field">${escapeHtml(spec.name)} · Choice ${spec.index}<select data-optional-feature="${escapeHtml(spec.key)}"><option value="">— Select —</option>${options.map(f=>`<option value="${escapeHtml(refValue(f))}" ${selected?.name===f.name&&selected?.source===f.source?"selected":""}>${escapeHtml(f.name)}${f.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(f.source))}`:""}</option>`).join("")}</select></label></div>`;
+    const options = availableOptionalFeatures(spec, c, c.level);
+    const owner = spec.owner === "subclass" ? ` · ${spec.ownerName}` : "";
+    return `<div class="feat-choice-row"><label class="field">${escapeHtml(spec.name)}${escapeHtml(owner)} · Choice ${spec.index}<select data-optional-feature="${escapeHtml(spec.key)}"><option value="">— Select —</option>${options.map(f=>`<option value="${escapeHtml(refValue(f))}" ${selected?.name===f.name&&selected?.source===f.source?"selected":""}>${escapeHtml(f.name)}${f.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(f.source))}`:""}</option>`).join("")}</select></label></div>`;
   }).join("") : `<div class="empty">This class has no selectable optional class features at this level.</div>`;
   const masteryMarkup = masteryCount ? `<div class="selection-count">${selectedWeaponMasteryRefs(c).length} / ${masteryCount} selected</div><div class="mastery-picker"><label class="field">Mastered weapon<select id="weaponMasterySelect" data-weapon-mastery-select><option value="">Choose a weapon…</option>${uniqueMasteryItems.filter(item=>!hasSelectedWeaponMastery(c,item)).map(item=>`<option value="${escapeHtml(normalizeRefId(item.name,item.source))}">${escapeHtml(item.name)} — ${escapeHtml(masteryLabel(item))}</option>`).join("")}</select></label></div><div class="selected-mastery-list">${selectedWeaponMasteryRefs(c).map(ref=>{const item=findOfficialItemByName(splitRefId(ref).name,splitRefId(ref).source); return item ? `<div class="selected-mastery-item"><span>${renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`)} <small>${masteryObjects(item).map(x=>renderWeaponMasteryLink(x.name)).join(", ")}</small></span><button type="button" class="button button-small" data-remove-weapon-mastery="${escapeHtml(normalizeRefId(item.name,item.source))}">Remove</button></div>` : "";}).join("") || `<div class="empty">No weapon masteries selected.</div>`}</div>` : `<div class="empty">Weapon Mastery is not part of this class at the current level.</div>`;
   const startOptions = (obj, kind) => {
@@ -5134,17 +5272,18 @@ async function readBuilder() {
     const unlock = getSubclassUnlockLevel(obj);
     if (Number(c.level || 1) < unlock) c.subclass = null;
 
-    const currentFeatSlots = progressionFeatSlots(obj, c.level);
+    const subclassObj = getSubclassOptions(file, obj.name).find(s => s.name.toLowerCase() === String(c.subclass?.name || "").toLowerCase() && (!c.subclass?.source || s.source === c.subclass.source)) || null;
+    const currentFeatSlots = progressionFeatSlots(obj, c.level, subclassObj);
     const allowedFeatKeys = new Set(currentFeatSlots.map(x => x.key));
     for (const key of Object.keys(c.progressionFeats || {})) if (!allowedFeatKeys.has(key)) delete c.progressionFeats[key];
 
-    const currentOptionalSpecs = optionalFeatureProgression(obj, c.level);
-    const allowedOptionalKeys = new Set(currentOptionalSpecs.map(x => x.key));
-    for (const key of Object.keys(c.optionalFeatureChoices || {})) if (!allowedOptionalKeys.has(key)) delete c.optionalFeatureChoices[key];
+    const currentOptionalSpecs = optionalFeatureProgression(obj, c.level, subclassObj);
+    reconcileOptionalFeatureChoices(c, currentOptionalSpecs, c.level);
 
     const currentClassFeatureSpecs = classFeatureChoiceSpecs(file, obj, c.level);
     reconcileClassFeatureChoices(c, currentClassFeatureSpecs);
-    const currentClassProficiencySpecs = classFeatureProficiencyChoiceSpecs(obj, getClassFeatures(file, obj, c.level));
+    const currentSubclassFeatures = getSubclassFeatures(file, subclassObj, c.level);
+    const currentClassProficiencySpecs = classFeatureProficiencyChoiceSpecs(obj, [...getClassFeatures(file, obj, c.level), ...currentSubclassFeatures]);
     reconcileClassProficiencyChoices(c, currentClassProficiencySpecs);
 
     if (c.class.name !== previousClass) {

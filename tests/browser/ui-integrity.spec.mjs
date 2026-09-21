@@ -307,6 +307,55 @@ test('equipment can be added, wielded, attuned, and reloaded from the real catal
   expect(saved.inventory).toHaveLength(2);
 });
 
+test('subclass progressions and invocation prerequisites work through the builder UI', async ({ page }) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page, {
+    name: 'Subclass Sentinel',
+    level: 3,
+    class: { name: 'Fighter', source: 'XPHB' },
+    subclass: { name: 'Battle Master', source: 'XPHB' },
+    optionalFeatureChoices: {},
+    progressionFeats: {},
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Builder' }).click();
+
+  let optionSlots = page.locator('[data-optional-feature]');
+  await expect(optionSlots).toHaveCount(3);
+  await optionSlots.nth(0).selectOption({ label: 'Ambush' });
+  optionSlots = page.locator('[data-optional-feature]');
+  await optionSlots.nth(1).selectOption({ label: 'Bait and Switch' });
+  optionSlots = page.locator('[data-optional-feature]');
+  await optionSlots.nth(2).selectOption({ label: "Commander's Strike" });
+  await expect.poll(async () => Object.values((await currentCharacter(page)).optionalFeatureChoices || {}).length).toBe(3);
+
+  await updateCurrentCharacter(page, {
+    level: 5,
+    class: { name: 'Warlock', source: 'XPHB' },
+    subclass: { name: 'Fiend Patron', source: 'XPHB' },
+    optionalFeatureChoices: {},
+    progressionFeats: {},
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Builder' }).click();
+
+  optionSlots = page.locator('[data-optional-feature]');
+  await expect(optionSlots).toHaveCount(5);
+  await expect(optionSlots.first().locator('option', { hasText: 'Ascendant Step' })).toHaveCount(1);
+  await expect(optionSlots.first().locator('option', { hasText: 'Devouring Blade' })).toHaveCount(0);
+  await expect(optionSlots.first().locator('option', { hasText: 'Thirsting Blade' })).toHaveCount(0);
+  await optionSlots.first().selectOption({ label: 'Pact of the Blade' });
+
+  optionSlots = page.locator('[data-optional-feature]');
+  await expect(optionSlots.nth(1).locator('option', { hasText: 'Thirsting Blade' })).toHaveCount(1);
+  await optionSlots.nth(1).selectOption({ label: 'Thirsting Blade' });
+  await expect.poll(async () => Object.values((await currentCharacter(page)).optionalFeatureChoices || {}).map(value => value.name)).toEqual(expect.arrayContaining(['Pact of the Blade', 'Thirsting Blade']));
+
+  await page.reload();
+  const saved = await currentCharacter(page);
+  expect(Object.values(saved.optionalFeatureChoices).map(value => value.name)).toEqual(expect.arrayContaining(['Pact of the Blade', 'Thirsting Blade']));
+});
+
 test('a synchronized installation reloads its shell and rules data offline', async ({ page, context }) => {
   await openReadySheet(page);
   await page.evaluate(() => navigator.serviceWorker.ready);

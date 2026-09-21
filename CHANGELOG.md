@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased — rules conformance expansion
+- Added an exhaustive PHB class/subclass corpus gate spanning 12 classes, 48 subclasses, 283 class-feature records, 309 subclass-feature records, and all 58 optional features.
+- Added subclass-owned progression support, restoring Battle Master maneuver slots and the Champion's extra Fighting Style to the builder.
+- Enforced Eldritch Invocation level, dependency, category, repeatability, and duplicate rules in reconciliation and in the live option lists.
+- Added subclass skill/tool choices for College of Lore, Battle Master, and Fey Wanderer, plus persistent subclass AC, HP, Initiative, Speed, sense, proficiency, save, and resistance effects.
+- Stopped conditional class and optional-feature text, such as Rage resistance and Extended Spell, from being applied as permanent sheet effects.
 - Added a real Chromium integration layer for builder choices, IndexedDB persistence and migration, rest/death controls, touch interactions, and complete offline service-worker reloads.
 - Added Playwright to the existing single GitHub Actions rules job so UI/data-integrity checks run with the pure rules and pinned-corpus suites without creating extra workflow fan-out.
 - Fixed dynamically rendered spell checkboxes so cantrip, spellbook, and prepared-spell selections now invoke their persistence handler.

@@ -71,7 +71,8 @@ species, background, class-feature, language, and skill choices through an
 IndexedDB save/reload; Wizard spellbook/prepared/cantrip selection; equipment
 add/wield/attune state; persisted schema migration; Short and Long Rest controls;
 critical damage at 0 HP; service-worker offline reload; and touch tap/long-press
-behavior. GitHub Actions installs Chromium and runs this suite after the pure
+behavior. It also verifies Battle Master maneuver slots and dependency-gated
+Eldritch Invocations through save/reload. GitHub Actions installs Chromium and runs this suite after the pure
 rules and pinned-data layers.
 
 Browser tests should be deterministic by supplying fixture data locally rather than depending on live 5etools during the test.
