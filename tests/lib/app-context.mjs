@@ -38,10 +38,10 @@ export function loadAppTestContext() {
     'state', 'ABILITIES', 'ABILITY_NAMES', 'STANDARD_ARRAY', 'STANDARD_ARRAY_BY_CLASS', 'STANDARD_LANGUAGE_NAMES',
     'SKILLS', 'SPECIAL_SENSES', 'WEAPON_PROPERTY_INFO', 'WEAPON_MASTERY_INFO', 'SPELL_COMPONENT_INFO',
     'emptyCharacter', 'migrateCharacter', 'abilityMod', 'formatMod', 'proficiencyBonus', 'selectedFeatObjects', 'featInstanceKey', 'featSpecKey', 'isAbilityScoreImprovementFeat',
-    'classSpellSlots', 'classCantrips', 'classPrepared', 'classKnownSpells', 'hitDieFaces', 'defaultMaxHp',
+    'classSpellSlots', 'classCantrips', 'classPrepared', 'classKnownSpells', 'spellcastingSource', 'normalizeSpellRef', 'fixedAdditionalSpellRefs', 'hitDieFaces', 'defaultMaxHp',
     'skillChoiceSpec', 'optionalFeatureProgression', 'progressionFeatSlots', 'featPrerequisiteMet', 'featCanSelectForSlot', 'getSubclassUnlockLevel', 'classFeatureChoiceSpecs', 'reconcileClassFeatureChoices', 'selectedClassFeatureOptionObjects', 'resolveClassFeatureRef', 'classFeatureProficiencyChoiceSpecs', 'reconcileClassProficiencyChoices', 'applyClassProficiencyChoices',
     'featAbilitySpecs', 'featSaveSpecs', 'featSkillSpecs', 'featMixedChoiceSpecs', 'featExpertiseSpecs',
-    'featAdditionalSpellChoiceSpecs', 'featDamageChoiceSpecs', 'mixedChoiceOptions', 'speciesChoiceSpecs', 'reconcileSpeciesChoices',
+    'featAdditionalSpellChoiceSpecs', 'parseSpellChoiceFilter', 'fixedSpellRefsInAdditionalGroup', 'spellMatchesChoiceFilter', 'featSpellChoiceOptions', 'activeFeatSpellPlan', 'featGrantedSpellRefs', 'reconcileFeatSpellSelection', 'featDamageChoiceSpecs', 'mixedChoiceOptions', 'speciesChoiceSpecs', 'reconcileSpeciesChoices',
     'reconcileFeatChoices', 'backgroundAbilitySpec', 'reconcileBackgroundAbilityChoices', 'backgroundFeatNames', 'calculateFinalStats',
     'proficiencyChoiceSpecs', 'proficiencyOverlaps', 'hasWeaponProficiency', 'weaponAbility', 'weaponFlags',
     'hasArmorTraining', 'calcAutoAc', 'classTableNumericValue', 'getUnarmoredDefenseFormula', 'applyTextualRulesEffects',
@@ -51,7 +51,7 @@ export function loadAppTestContext() {
     'normalizeAbilityKey', 'normalizeSkillKey', 'grantedSkillsFromMap', 'friendlyProficiencyKey', 'normalizedProficiencyLabel',
     'damageTypeName', 'formatSpellRange', 'formatSpellTime', 'formatDuration', 'dfltSpeed', 'sizeLabel', 'resourceRechargeLabel', 'inferFeatureUseMaxFromText',
     'autoLinkNoteKeywords', 'renderNoteText', 'weaponNotePayload', 'spellNotePayload', 'matchesSearchText',
-    'spellAvailableToCharacter', 'spellById', 'findOfficial', 'findBackground', 'findSpecies', 'findFeat',
+    'spellLookupEntry', 'lookupSpellHasClass', 'lookupSpellHasSubclass', 'spellAvailableToClassName', 'spellAvailableToCharacter', 'spellById', 'maxCastableSpellLevel', 'dedupeSpellRefs', 'usesWizardSpellbook', 'spellSelectionAllowed', 'reconcileSpellSelections', 'findOfficial', 'findBackground', 'findSpecies', 'findFeat',
     'findLanguage', 'mergeItemCatalogs', 'buildItemIndex', 'equipmentCatalogDiagnostics', 'officialItemCatalog',
     'officialWeaponCatalog', 'itemFromCatalog', 'findOfficialItemByName', 'friendlyProficiencyKey',
     'parseProficiencyDisplay', 'allLanguageOptionsForChoice', 'standardLanguageOptions', 'allToolOptionsForChoice',
@@ -86,7 +86,7 @@ export function resetState(api) {
   api.state.character = null;
   api.state.data = {
     books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null,
-    optionalfeatures: null, spells: null, spellIndex: null, items: null, conditionsdiseases: null,
+    optionalfeatures: null, spells: null, spellIndex: null, spellSourceLookup: null, items: null, conditionsdiseases: null,
     variantrules: null, actions: null, classFiles: new Map(), spellFiles: new Map(), referenceCache: new Map(),
     officialSources: new Set(['XPHB', 'XDMG', 'XMM']), sourceMeta: [], itemIndex: new Map(), itemSourceData: null, itemsBase: null,
   };

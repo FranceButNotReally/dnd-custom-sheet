@@ -14,6 +14,7 @@ const PATHS = {
   languages: "data/languages.json",
   optionalfeatures: "data/optionalfeatures.json",
   spellIndex: "data/spells/index.json",
+  spellSourceLookup: "data/generated/gendata-spell-source-lookup.json",
   items: "data/items.json",
   itemsBase: "data/items-base.json",
   conditionsdiseases: "data/conditionsdiseases.json",
@@ -109,7 +110,7 @@ const state = {
   version: null,
   lastSync: null,
   lastReleaseCheck: null,
-  data: { books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null, optionalfeatures: null, spells: null, spellIndex: null, items: null, conditionsdiseases: null, variantrules: null, actions: null, classFiles: new Map(), spellFiles: new Map(), referenceCache: new Map(), officialSources: new Set(), sourceMeta: [] },
+  data: { books: null, classIndex: null, races: null, backgrounds: null, feats: null, languages: null, optionalfeatures: null, spells: null, spellIndex: null, spellSourceLookup: null, items: null, conditionsdiseases: null, variantrules: null, actions: null, classFiles: new Map(), spellFiles: new Map(), referenceCache: new Map(), officialSources: new Set(), sourceMeta: [] },
   character: null,
   deferredInstallPrompt: null,
   spellPickerTab: "prepared",
@@ -123,7 +124,7 @@ let dbPromise;
 
 function emptyCharacter() {
   return {
-    schema: 16,
+    schema: 17,
     id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     name: "New Character",
     player: "",
@@ -209,7 +210,7 @@ function migrateCharacter(raw) {
   const base = emptyCharacter();
   if (!raw || typeof raw !== "object") return base;
   const c = { ...base, ...raw };
-  c.schema = 16;
+  c.schema = 17;
   c.baseStats = { ...base.baseStats, ...(raw.baseStats || raw.stats || {}) };
   c.xp = Math.max(0, Number(raw.xp || 0));
   c.manualAbilityBonuses = { ...base.manualAbilityBonuses, ...(raw.manualAbilityBonuses || {}) };
@@ -244,6 +245,13 @@ function migrateCharacter(raw) {
   c.knownSpells = Array.isArray(raw.knownSpells) ? raw.knownSpells : [];
   c.preparedSpells = Array.isArray(raw.preparedSpells) ? raw.preparedSpells : [];
   c.cantrips = Array.isArray(raw.cantrips) ? raw.cantrips : [];
+  // Earlier builds presented a separate "Known" tab even though the 2024 PHB
+  // uses prepared-spell lists for every core spellcasting class. Preserve those
+  // choices by moving them to the prepared list once during migration.
+  if (Number(raw.schema || 0) < 17 && c.knownSpells.length) {
+    c.preparedSpells = [...new Set([...c.preparedSpells, ...c.knownSpells])];
+    c.knownSpells = [];
+  }
   c.inventory = Array.isArray(raw.inventory) ? raw.inventory : [];
   c.resources = Array.isArray(raw.resources) ? raw.resources.map(r => ({ ...r, mode: r?.mode === "auto" ? "auto" : "manual" })) : [];
   c.senses = Array.isArray(raw.senses) ? raw.senses : [];
@@ -563,6 +571,7 @@ const CORE_CACHE_PATHS = [
   PATHS.languages,
   PATHS.optionalfeatures,
   PATHS.spellIndex,
+  PATHS.spellSourceLookup,
   PATHS.conditionsdiseases,
   PATHS.variantrules,
   PATHS.actions,
@@ -674,7 +683,7 @@ async function cacheAllLibraryData(version, core = null) {
 }
 
 async function loadCoreData(version) {
-  const [books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spellIndex, conditionsdiseases, variantrules, actions, items, itemsBase] = await loadPathsInBatches(
+  const [books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spellIndex, spellSourceLookup, conditionsdiseases, variantrules, actions, items, itemsBase] = await loadPathsInBatches(
     version,
     CORE_CACHE_PATHS,
     {batchSize: 3, phase: "Core catalogs", total: CORE_CACHE_PATHS.length, label: "Loading core 2024 catalogs"}
@@ -685,7 +694,7 @@ async function loadCoreData(version) {
   for (const sense of SPECIAL_SENSES) referenceCache.set(referenceCacheKey("sense", sense, DATA_SOURCE), SPECIAL_SENSE_FALLBACKS[sense]);
   const mergedItems = mergeItemCatalogs(items, itemsBase);
   const itemIndex = buildItemIndex(mergedItems, officialSources);
-  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, items: mergedItems, itemSourceData: items, itemsBase, itemIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
+  return { books, classIndex, races, backgrounds, feats, languages, optionalfeatures, spells: null, spellIndex, spellSourceLookup, items: mergedItems, itemSourceData: items, itemsBase, itemIndex, conditionsdiseases, variantrules, actions, classFiles: new Map(), spellFiles: new Map(), referenceCache, officialSources, sourceMeta };
 }
 
 async function loadSpellSource(version, source) {
@@ -1729,41 +1738,158 @@ function featDamageChoiceSpecs(feat) {
   return specs;
 }
 function featAdditionalSpellChoiceSpecs(feat) {
+  const level = Math.max(1, Number(arguments[1] || state.character?.level || 1));
   const specs = [];
   const raw = feat?.additionalSpells;
   const groups = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? Object.values(raw).filter(x => x && typeof x === "object") : [];
-  for (const [index, group] of groups.entries()) {
+  const buildGroup = (group, index, key) => {
     const names = [];
-    const add = value => {
+    const addName = value => {
       if (value == null) return;
-      if (Array.isArray(value)) return value.forEach(add);
-      if (typeof value === "object") return add(value.name || value.value || value.class);
+      if (Array.isArray(value)) return value.forEach(addName);
+      if (typeof value === "object") return addName(value.name || value.value || value.class);
       if (typeof value === "string" && value.trim() && !names.some(x => textNorm(x) === textNorm(value))) names.push(value.trim());
     };
-    add(group?.names); add(group?.name); if (!names.length && group?.choose?.from) add(group.choose.from);
+    addName(group?.names); addName(group?.name); if (!names.length && group?.choose?.from) addName(group.choose.from);
     const abilityChoose = group?.ability?.choose;
     const abilityFrom = Array.isArray(abilityChoose?.from) ? abilityChoose.from.map(normalizeAbilityKey).filter(Boolean) : Array.isArray(abilityChoose) ? abilityChoose.map(normalizeAbilityKey).filter(Boolean) : [];
-    // 5etools also encodes class-list spell choices as known/innate spell entries.
-    const collectChooseClasses = value => {
+    const choices = [];
+    const collectChoices = (value, kind, path = [], scheduled = false) => {
       if (value == null) return;
-      if (Array.isArray(value)) return value.forEach(collectChooseClasses);
-      if (typeof value === "object") return Object.values(value).forEach(collectChooseClasses);
-      const text = String(value);
-      const match = text.match(/(?:^|\\|)class=([^|]+)/i);
-      if (match) add(match[1]);
+      if (Array.isArray(value)) return value.forEach((child, i) => collectChoices(child, kind, [...path, i], false));
+      if (typeof value !== "object") return;
+      if (typeof value.choose === "string") {
+        choices.push({
+          key: `${key}|choice|${kind}|${choices.length}`,
+          kind,
+          count: Math.max(1, Number(value.count || 1)),
+          filter: parseSpellChoiceFilter(value.choose),
+        });
+        return;
+      }
+      for (const [childKey, child] of Object.entries(value)) {
+        if (!scheduled && (kind === "known" || kind === "prepared")) {
+          const unlock = childKey === "_" ? 1 : Number(childKey);
+          if (Number.isFinite(unlock)) {
+            if (unlock <= level) collectChoices(child, kind, [...path, childKey], true);
+            continue;
+          }
+        }
+        collectChoices(child, kind, [...path, childKey], true);
+      }
     };
-    collectChooseClasses(group?.known);
-    collectChooseClasses(group?.innate);
-    const hasStructuredSpellChoice = value => {
-      if (value == null) return false;
-      if (Array.isArray(value)) return value.some(hasStructuredSpellChoice);
-      if (typeof value === "object") return Object.entries(value).some(([key, child]) => key === "choose" || hasStructuredSpellChoice(child));
-      return false;
-    };
-    const hasSpellChoice = hasStructuredSpellChoice(group?.known) || hasStructuredSpellChoice(group?.innate) || hasStructuredSpellChoice(group?.prepared);
-    if (names.length || abilityFrom.length || hasSpellChoice) specs.push({ index, names, abilityFrom, key: `${featInstanceKey(feat)}|spells|${index}` });
+    collectChoices(group?.known, "known");
+    collectChoices(group?.prepared, "prepared");
+    collectChoices(group?.innate, "innate", [], true);
+    return { index, name: group?.name || names[0] || "", names, abilityFrom, choices, fixedRefs: fixedSpellRefsInAdditionalGroup(group), key };
+  };
+  const built = groups.map((group, index) => buildGroup(group, index, `${featInstanceKey(feat)}|spells|${index}`));
+  if (textNorm(feat?.name) === "magicinitiate" && built.length > 1) {
+    const key = `${featInstanceKey(feat)}|spells|0`;
+    const listGroups = built.map((group, index) => ({ ...group, key, choices: group.choices.map((choice, choiceIndex) => ({ ...choice, key: `${key}|group|${index}|choice|${choice.kind}|${choiceIndex}` })) }));
+    specs.push({ index: 0, key, names: listGroups.map(group => group.name).filter(Boolean), abilityFrom: [...new Set(listGroups.flatMap(group => group.abilityFrom))], groups: listGroups, choices: [], fixedRefs: [] });
+    return specs;
   }
+  for (const group of built) if (group.names.length || group.abilityFrom.length || group.choices.length || group.fixedRefs.length) specs.push(group);
   return specs;
+}
+function parseSpellChoiceFilter(value) {
+  const filter = { levels: [], classes: [], schools: [], ritual: false };
+  for (const part of String(value || "").split("|")) {
+    const [rawKey, rawValue = ""] = part.split("=");
+    const key = rawKey.trim().toLowerCase(), values = rawValue.split(";").map(x => x.trim()).filter(Boolean);
+    if (key === "level") filter.levels.push(...values.map(Number).filter(Number.isFinite));
+    else if (key === "class") filter.classes.push(...values);
+    else if (key === "school") filter.schools.push(...values.map(x => x.toUpperCase()));
+    else if (key.includes("components") && rawValue.toLowerCase().includes("ritual")) filter.ritual = true;
+  }
+  return filter;
+}
+function fixedSpellRefsInAdditionalGroup(group) {
+  const out = [];
+  const add = value => {
+    if (typeof value === "string") {
+      const ref = normalizeSpellRef(value);
+      if (ref && !out.some(x => x.toLowerCase() === ref.toLowerCase())) out.push(ref);
+    } else if (Array.isArray(value)) value.forEach(add);
+    else if (value && typeof value === "object" && !value.choose) Object.values(value).forEach(add);
+  };
+  add(group?.known); add(group?.prepared); add(group?.innate);
+  return out;
+}
+function spellMatchesChoiceFilter(spell, filter, lookup = state.data.spellSourceLookup) {
+  if (!spell || !filter) return false;
+  if (filter.levels?.length && !filter.levels.includes(Number(spell.level))) return false;
+  if (filter.schools?.length && !filter.schools.includes(String(spell.school || "").toUpperCase())) return false;
+  if (filter.ritual && !spell.meta?.ritual) return false;
+  if (filter.classes?.length && !filter.classes.some(className => spellAvailableToClassName(spell, className, lookup))) return false;
+  return true;
+}
+function featSpellChoiceOptions(choice, spells = getLoadedSpells(), lookup = state.data.spellSourceLookup) {
+  return (spells || []).filter(spell => isOfficial2024Entity(spell) && spellMatchesChoiceFilter(spell, choice?.filter, lookup)).sort((a,b)=>Number(a.level)-Number(b.level)||a.name.localeCompare(b.name));
+}
+function activeFeatSpellPlan(spec, selected = {}) {
+  if (!spec?.groups?.length) return spec;
+  return spec.groups.find(group => textNorm(group.name) === textNorm(selected.list)) || null;
+}
+function featGrantedSpellRefs(feats, c, level) {
+  const refs = [];
+  for (const feat of feats || []) for (const spec of featAdditionalSpellChoiceSpecs(feat, level)) {
+    const selected = c?.featSpellChoices?.[spec.key] || {};
+    const plan = activeFeatSpellPlan(spec, selected);
+    if (!plan) continue;
+    refs.push(...(plan.fixedRefs || []));
+    for (const choice of plan.choices || []) refs.push(...(selected.picks?.[choice.key] || []));
+  }
+  return dedupeSpellRefs(refs);
+}
+function reconcileFeatSpellSelection(c, spec) {
+  const existing = c.featSpellChoices?.[spec.key];
+  const selected = existing && typeof existing === "object" ? { ...existing, picks: { ...(existing.picks || {}) } } : { picks: {} };
+  if (spec.groups?.length) {
+    if (!spec.names.some(name => textNorm(name) === textNorm(selected.list))) delete selected.list;
+  } else if (selected.list && !spec.names.some(name => textNorm(name) === textNorm(selected.list))) delete selected.list;
+  if (selected.ability && !spec.abilityFrom.includes(normalizeAbilityKey(selected.ability))) delete selected.ability;
+  else if (selected.ability) selected.ability = normalizeAbilityKey(selected.ability);
+  const plan = activeFeatSpellPlan(spec, selected);
+  const choices = plan?.choices || [];
+  const validChoiceKeys = new Set(choices.map(choice => choice.key));
+  for (const key of Object.keys(selected.picks)) if (!validChoiceKeys.has(key)) delete selected.picks[key];
+  if (getLoadedSpells().length && state.data.spellSourceLookup) {
+    const used = new Set();
+    for (const choice of choices) {
+      const eligible = new Set(featSpellChoiceOptions(choice).map(spell => `${spell.name}|${spell.source}`.toLowerCase()));
+      const picks = dedupeSpellRefs(selected.picks[choice.key] || []).filter(ref => eligible.has(ref.toLowerCase()) && !used.has(ref.toLowerCase())).slice(0, choice.count);
+      picks.forEach(ref => used.add(ref.toLowerCase()));
+      if (picks.length) selected.picks[choice.key] = picks;
+      else delete selected.picks[choice.key];
+    }
+  }
+  c.featSpellChoices[spec.key] = selected;
+}
+function renderFeatSpellChoiceRows(feat, spec, c) {
+  const selected = c.featSpellChoices?.[spec.key] || {};
+  const rows = [];
+  if (spec.groups?.length) rows.push(`<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Spell list<select data-feat-spell-list="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.names.map(name=>`<option value="${escapeHtml(name)}" ${textNorm(selected.list)===textNorm(name)?"selected":""}>${escapeHtml(name)}</option>`).join("")}</select></label></div>`);
+  if (spec.abilityFrom.length) rows.push(`<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Spellcasting ability<select data-feat-spell-ability="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.abilityFrom.map(a=>`<option value="${a}" ${selected.ability===a?"selected":""}>${ABILITY_NAMES[a]}</option>`).join("")}</select></label></div>`);
+  const plan = activeFeatSpellPlan(spec, selected);
+  if (!plan && spec.groups?.length) return rows.join("");
+  const choices = plan?.choices || [];
+  const allUsed = new Set(Object.values(selected.picks || {}).flat().map(ref => String(ref).toLowerCase()));
+  for (const choice of choices) {
+    const current = selected.picks?.[choice.key] || [];
+    const options = featSpellChoiceOptions(choice);
+    for (let pickIndex = 0; pickIndex < choice.count; pickIndex++) {
+      const chosen = current[pickIndex] || "";
+      const label = choice.filter?.levels?.length === 1 && choice.filter.levels[0] === 0 ? "Cantrip" : choice.filter?.ritual ? "Ritual spell" : "Spell";
+      const available = options.filter(spell => {
+        const ref = `${spell.name}|${spell.source}`.toLowerCase();
+        return ref === chosen.toLowerCase() || !allUsed.has(ref);
+      });
+      rows.push(`<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · ${label} ${pickIndex + 1}<select data-feat-spell-pick="${escapeHtml(spec.key)}" data-feat-spell-choice="${escapeHtml(choice.key)}" data-feat-spell-index="${pickIndex}"><option value="">— Select —</option>${available.map(spell=>{const ref=`${spell.name}|${spell.source}`;return `<option value="${escapeHtml(ref)}" ${chosen.toLowerCase()===ref.toLowerCase()?"selected":""}>${escapeHtml(spell.name)}${Number(spell.level)>0?` · Level ${spell.level}`:" · Cantrip"}</option>`}).join("")}</select></label></div>`);
+    }
+  }
+  return rows.join("");
 }
 function mixedChoiceOptions(spec) {
   const out = [];
@@ -1907,7 +2033,7 @@ function reconcileFeatChoices(c, feats) {
       else if (!spec.from.includes(c.featSkillChoices[key])) delete c.featSkillChoices[key];
     }
     for (const spec of featMixedChoiceSpecs(feat)) validMixed.add(spec.key);
-    for (const spec of featAdditionalSpellChoiceSpecs(feat)) validSpell.add(spec.key);
+    for (const spec of featAdditionalSpellChoiceSpecs(feat, c.level)) { validSpell.add(spec.key); reconcileFeatSpellSelection(c, spec); }
     for (const spec of featExpertiseSpecs(feat)) validExpertise.add(spec.key);
     for (const spec of featDamageChoiceSpecs(feat)) {
       validDamage.add(spec.key);
@@ -2329,14 +2455,15 @@ function formatMod(mod) { return mod >= 0 ? `+${mod}` : String(mod); }
 function proficiencyBonus(level) { return 2 + Math.floor((Math.max(1, Number(level || 1)) - 1) / 4); }
 function classSpellSlots(classObj, level) {
   const lvl = Math.max(1, Number(level || 1));
-  const progressionGroup = (classObj?.classTableGroups || []).find(g => Array.isArray(g.rowsSpellProgression));
+  const tableGroups = [...(classObj?.classTableGroups || []), ...(classObj?.subclassTableGroups || [])];
+  const progressionGroup = tableGroups.find(g => Array.isArray(g.rowsSpellProgression));
   const progressionRow = progressionGroup?.rowsSpellProgression?.[lvl - 1];
   if (Array.isArray(progressionRow)) return progressionRow.slice(0, 9).map(v => Math.max(0, Number(v) || 0));
 
   // Some 2024 classes (notably Warlock) expose Pact Magic in an ordinary
   // class-table row instead of rowsSpellProgression. The table contains both
   // the number of slots and the level of those slots.
-  for (const group of classObj?.classTableGroups || []) {
+  for (const group of tableGroups) {
     const labels = Array.isArray(group.colLabels) ? group.colLabels : [];
     const slotIdx = labels.findIndex(label => textNorm(stripTags(label)) === "spellslots" || textNorm(stripTags(label)).includes("spellslots"));
     const slotLevelIdx = labels.findIndex(label => textNorm(stripTags(label)) === "slotlevel" || textNorm(stripTags(label)).includes("slotlevel"));
@@ -2371,6 +2498,42 @@ function classKnownSpells(classObj, level) {
   if (!Array.isArray(prog)) return null;
   const value = Number(prog[Math.max(0, Number(level || 1) - 1)] || 0);
   return value || null;
+}
+function spellcastingSource(d) {
+  if (d?.classObj?.spellcastingAbility) return d.classObj;
+  if (d?.subclassObj?.spellcastingAbility) return d.subclassObj;
+  return null;
+}
+function normalizeSpellRef(value, fallbackSource = DATA_SOURCE) {
+  const [rawName, rawSource] = String(value || "").split("|");
+  const name = String(rawName || "").trim();
+  if (!name) return null;
+  const source = String(rawSource || fallbackSource).split("#")[0].trim() || fallbackSource;
+  return `${name}|${source}`;
+}
+function fixedAdditionalSpellRefs(entity, level, kind) {
+  const out = [];
+  const add = value => {
+    if (typeof value === "string") {
+      const ref = normalizeSpellRef(value);
+      if (ref && !out.some(x => x.toLowerCase() === ref.toLowerCase())) out.push(ref);
+      return;
+    }
+    if (Array.isArray(value)) return value.forEach(add);
+    if (value && typeof value === "object" && !value.choose) Object.values(value).forEach(add);
+  };
+  for (const group of Array.isArray(entity?.additionalSpells) ? entity.additionalSpells : []) {
+    // Named groups are mutually exclusive choices (for example Circle of the
+    // Land terrain). Do not grant every branch while that class choice is unset.
+    if (group?.name) continue;
+    const schedule = group?.[kind];
+    if (!schedule || typeof schedule !== "object") continue;
+    for (const [unlockRaw, value] of Object.entries(schedule)) {
+      const unlock = unlockRaw === "_" ? 1 : Number(unlockRaw);
+      if (Number.isFinite(unlock) && unlock <= Math.max(1, Number(level || 1))) add(value);
+    }
+  }
+  return out;
 }
 function hitDieFaces(classObj) { return Number(classObj?.hd?.faces || 8); }
 function defaultMaxHp(classObj, level, conMod, override) {
@@ -3468,8 +3631,8 @@ async function deriveCharacter() {
     unarmoredDefense: null, acBreakdown: [],
     effects: null, maxHp: 1, currentHp: Number(c.hpCurrent ?? 0), progressionFeatSlots: [], ac: Number(c.acOverride ?? (10 + mods.dex)), acAutomatic: c.acOverride == null,
     acReason: "10 + Dexterity modifier", d20Penalty: effectiveD20Penalty(c), speed: Number(c.speedOverride ?? dfltSpeed(findSpecies(c.species?.name, c.species?.source || null))),
-    size: sizeLabel(findSpecies(c.species?.name, c.species?.source || null)?.size), spellcastingAbility: null, spellSlots: [],
-    maxPrepared: null, knownSpells: null, cantrips: null, inventoryWeight: 0, passivePerception: 10 + mods.wis,
+    size: sizeLabel(findSpecies(c.species?.name, c.species?.source || null)?.size), spellcastingAbility: null, spellcastingSource: null, spellSlots: [],
+    maxPrepared: null, knownSpells: null, cantrips: null, alwaysPreparedSpells: [], alwaysKnownSpells: [], featSpellRefs: [], inventoryWeight: 0, passivePerception: 10 + mods.wis,
     passiveInvestigation: 10 + mods.int, proficiencies: { armor: [], weapons: [], tools: [], languages: [] },
     resistances: [], senses: [], sourceSummary: state.data.sourceMeta || []
   };
@@ -3509,15 +3672,24 @@ async function deriveCharacter() {
       } catch {}
     }
     d.skillChoiceSpec = skillChoiceSpec(d.classObj);
-    d.spellcastingAbility = d.classObj?.spellcastingAbility || null;
-    d.spellSlots = classSpellSlots(d.classObj, c.level);
-    d.cantrips = classCantrips(d.classObj, c.level);
+    d.spellcastingSource = spellcastingSource(d);
+    d.spellcastingAbility = d.spellcastingSource?.spellcastingAbility || null;
+    d.spellSlots = classSpellSlots(d.spellcastingSource, c.level);
+    d.cantrips = classCantrips(d.spellcastingSource, c.level);
     if (Number.isFinite(Number(d.cantrips))) {
       const extraCantrips = (d.classFeatureOptionObjects || []).filter(f => ["thaumaturge","magician"].includes(textNorm(f.name))).length;
       d.cantrips += extraCantrips;
     }
-    d.maxPrepared = classPrepared(d.classObj, c.level, mods);
-    d.knownSpells = classKnownSpells(d.classObj, c.level);
+    d.maxPrepared = classPrepared(d.spellcastingSource, c.level, mods);
+    d.knownSpells = classKnownSpells(d.spellcastingSource, c.level);
+    d.alwaysPreparedSpells = [...new Set([
+      ...fixedAdditionalSpellRefs(d.classObj, c.level, "prepared"),
+      ...fixedAdditionalSpellRefs(d.subclassObj, c.level, "prepared")
+    ])];
+    d.alwaysKnownSpells = [...new Set([
+      ...fixedAdditionalSpellRefs(d.classObj, c.level, "known"),
+      ...fixedAdditionalSpellRefs(d.subclassObj, c.level, "known")
+    ])];
     if (Number.isFinite(Number(d.cantrips)) && c.cantrips.length > d.cantrips) c.cantrips = c.cantrips.slice(0, d.cantrips);
     if (Number.isFinite(Number(d.maxPrepared)) && c.preparedSpells.length > d.maxPrepared) c.preparedSpells = c.preparedSpells.slice(0, d.maxPrepared);
     if (Number.isFinite(Number(d.knownSpells)) && c.knownSpells.length > d.knownSpells) c.knownSpells = c.knownSpells.slice(0, d.knownSpells);
@@ -3525,6 +3697,7 @@ async function deriveCharacter() {
   } else {
     reconcileResources(c, []);
   }
+  d.featSpellRefs = featGrantedSpellRefs(featObjs, c, c.level);
   // Build base proficiencies before feature effects so choice-based effects (e.g. 2024 Observant)
   // can distinguish a new proficiency from expertise on an already-proficient skill.
   const bgSkillsPre = grantedSkillsFromMap(d.backgroundObj?.skillProficiencies);
@@ -3617,6 +3790,7 @@ async function deriveCharacter() {
   if (c.acOverride == null && !Number.isFinite(d.ac)) d.ac = 10 + mods.dex;
   c.hitDiceUsed = Math.min(Math.max(0, Number(c.hitDiceUsed || 0)), Math.max(0, Number(c.level || 1)));
   if (Array.isArray(c.spellSlotsUsed) && d.spellSlots.length) c.spellSlotsUsed = c.spellSlotsUsed.slice(0, d.spellSlots.length).map((used, i) => Math.min(Math.max(0, Number(used || 0)), Number(d.spellSlots[i] || 0)));
+  reconcileSpellSelections(c, d);
   c.exhaustion = clamp(Number(c.exhaustion || 0), 0, 6);
   if (c.hpAuto || c.hpCurrent == null) { c.hpCurrent = d.maxHp; d.currentHp = d.maxHp; c.hpAuto = true; }
   else { d.currentHp = clamp(Number(c.hpCurrent || 0), 0, d.maxHp); }
@@ -3939,7 +4113,7 @@ function renderAttackNoteDialog(payload) {
 async function renderSheet(app) {
   const c = state.character;
   const d = await deriveCharacter();
-  const selectedSpellRefs = [...(c.cantrips || []), ...(c.preparedSpells || []), ...(c.spellbook || []), ...(c.knownSpells || [])];
+  const selectedSpellRefs = [...(c.cantrips || []), ...(c.preparedSpells || []), ...(c.spellbook || []), ...(d.alwaysPreparedSpells || []), ...(d.alwaysKnownSpells || []), ...(d.featSpellRefs || [])];
   if (selectedSpellRefs.length) await Promise.all(selectedSpellRefs.map(getSpellById));
   const attackRows = await getAttackRows(d);
   const page = state.sheetPage || 1;
@@ -3965,8 +4139,10 @@ async function renderSheet(app) {
   const conditionChips = CONDITIONS.map(x => renderConditionChip(x, x === "Exhaustion" ? Number(c.exhaustion || 0) > 0 : c.conditions.includes(x))).join("");
   const inspiration = c.heroicInspiration ? "★" : "☆";
   const slots = Array.from({length: 9}, (_,i) => d.spellSlots[i] ? `<div class="spell-slot-box"><strong>${i+1}</strong>${pipBar(d.spellSlots[i], countSlotUsed(c,i+1), "slot", {level:i+1})}</div>` : "").filter(Boolean).join("");
-  const prepared = (await Promise.all((c.preparedSpells || []).map(getSpellById))).filter(Boolean).sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
-  const cantrips = (await Promise.all((c.cantrips || []).map(getSpellById))).filter(Boolean).sort((a,b)=>a.name.localeCompare(b.name));
+  const preparedRefs = dedupeSpellRefs([...(c.preparedSpells || []), ...(d.alwaysPreparedSpells || []), ...(d.featSpellRefs || [])]);
+  const cantripRefs = dedupeSpellRefs([...(c.cantrips || []), ...(d.alwaysKnownSpells || []), ...(d.featSpellRefs || [])]);
+  const prepared = (await Promise.all(preparedRefs.map(getSpellById))).filter(s=>s&&Number(s.level)>0).sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
+  const cantrips = (await Promise.all(cantripRefs.map(getSpellById))).filter(s=>s&&Number(s.level)===0).sort((a,b)=>a.name.localeCompare(b.name));
   const languages = d.proficiencies.languages.length ? d.proficiencies.languages : ["None recorded"];
   const attackHtml = attackRows.map(row => `<div class="weapon-row"><span>${row.nameHtml || escapeHtml(row.name)}</span><strong>${escapeHtml(row.attackBonus)}</strong><span>${escapeHtml(row.damage)}</span><small>${renderAttackDetails(row.notePayload)}</small></div>`).join("") || `<div class="sheet-empty">Equip a weapon or add a custom attack.</div>`;
   const featurePreview = f => renderRichEntries((Array.isArray(f.entries) ? f.entries : [f.entries]).slice(0,2));
@@ -4080,12 +4256,7 @@ async function renderBuilder(app) {
       const label = spec.kind === "resistance" ? "Damage resistance" : "Elemental Adept damage type";
       return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · ${label}<select data-feat-damage="${escapeHtml(spec.key)}"><option value="">— Select —</option>${options.map(value=>`<option value="${escapeHtml(value)}" ${selected===value?"selected":""}>${escapeHtml(value)}</option>`).join("")}</select></label></div>`;
     }),
-    ...featAdditionalSpellChoiceSpecs(feat).flatMap(spec => {
-      const selected=c.featSpellChoices?.[spec.key]||{};
-      const list = spec.names.length ? `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Spell list<select data-feat-spell-list="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.names.map(name=>`<option value="${escapeHtml(name)}" ${String(selected.list||"").toLowerCase()===String(name).toLowerCase()?"selected":""}>${escapeHtml(name)}</option>`).join("")}</select></label></div>` : "";
-      const ability = spec.abilityFrom.length ? `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Spellcasting ability<select data-feat-spell-ability="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.abilityFrom.map(a=>`<option value="${a}" ${selected.ability===a?"selected":""}>${ABILITY_NAMES[a]}</option>`).join("")}</select></label></div>` : "";
-      return [list,ability].filter(Boolean);
-    })
+    ...featAdditionalSpellChoiceSpecs(feat, c.level).map(spec => renderFeatSpellChoiceRows(feat, spec, c))
   ]).filter(Boolean).join("");
   const selectedAbility2 = c.backgroundAbility.plus2;
   const selectedAbility1 = c.backgroundAbility.plus1;
@@ -4206,6 +4377,12 @@ async function populateSubclasses(className, currentName) {
 }
 
 function normalizeRefName(value) { return String(value || "").split("|")[0].trim().toLowerCase(); }
+function spellLookupEntry(spell, lookup = state.data.spellSourceLookup) {
+  if (!spell || !lookup) return null;
+  const source = String(spell.source || DATA_SOURCE).toLowerCase();
+  const name = String(spell.name || "").toLowerCase();
+  return lookup?.[source]?.[name] || null;
+}
 function spellClassRefs(spell) {
   const refs = [];
   const classes = spell?.classes || {};
@@ -4220,15 +4397,46 @@ function spellClassRefs(spell) {
   for (const value of spell?.class || []) refs.push(typeof value === "string" ? value : value?.name);
   return refs.filter(Boolean);
 }
+function lookupSpellHasClass(entry, className) {
+  const needle = normalizeRefName(className);
+  if (!entry || !needle) return false;
+  for (const bySource of Object.values(entry.class || {})) {
+    if (bySource && typeof bySource === "object" && Object.keys(bySource).some(name => normalizeRefName(name) === needle)) return true;
+  }
+  return false;
+}
+function lookupSpellHasSubclass(entry, className, subclass) {
+  const classNeedle = normalizeRefName(className);
+  const subclassNames = new Set([subclass?.name, subclass?.shortName].map(normalizeRefName).filter(Boolean));
+  if (!entry || !classNeedle || !subclassNames.size) return false;
+  for (const classSourceBucket of Object.values(entry.subclass || {})) {
+    if (!classSourceBucket || typeof classSourceBucket !== "object") continue;
+    for (const [candidateClass, subclassSourceBuckets] of Object.entries(classSourceBucket)) {
+      if (normalizeRefName(candidateClass) !== classNeedle || !subclassSourceBuckets || typeof subclassSourceBuckets !== "object") continue;
+      for (const subclasses of Object.values(subclassSourceBuckets)) {
+        if (!subclasses || typeof subclasses !== "object") continue;
+        for (const [shortName, detail] of Object.entries(subclasses)) {
+          const candidates = [shortName, detail?.name].map(normalizeRefName);
+          if (candidates.some(name => subclassNames.has(name))) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+function spellAvailableToClassName(spell, className, lookup = state.data.spellSourceLookup) {
+  const embedded = spellClassRefs(spell).map(normalizeRefName);
+  const needle = normalizeRefName(className);
+  if (embedded.length) return embedded.includes(needle);
+  return lookupSpellHasClass(spellLookupEntry(spell, lookup), className);
+}
 function spellAvailableToCharacter(spell, d = state.lastDerived) {
   if (!spell) return false;
-  const refs = spellClassRefs(spell).map(normalizeRefName);
   const className = normalizeRefName(d?.classObj?.name);
-  if (!className) return true;
-  if (!refs.length) return true;
-  if (refs.some(ref => ref === className)) return true;
-  const subclassName = normalizeRefName(d?.subclassObj?.name);
-  return Boolean(subclassName && refs.some(ref => ref === subclassName || ref.includes(subclassName) || subclassName.includes(ref)));
+  if (!className) return false;
+  if (spellAvailableToClassName(spell, className)) return true;
+  const entry = spellLookupEntry(spell);
+  return lookupSpellHasSubclass(entry, className, d?.subclassObj);
 }
 
 async function renderSpellbook(app) {
@@ -4240,18 +4448,21 @@ async function renderSpellbook(app) {
   if (!spells.length) { await loadSpellSource(state.version, DATA_SOURCE); mergeOfficialSpells(); spells = officialEntries(state.data.spells, "spell").sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name)); }
   const maxPrepared = state.lastDerived?.maxPrepared ?? null;
   const maxCantrips = state.lastDerived?.cantrips ?? null;
+  const availableTabs = [];
+  if (Number.isFinite(Number(maxPrepared))) availableTabs.push("prepared");
+  if (Number(maxCantrips || 0) > 0) availableTabs.push("cantrips");
+  if (usesWizardSpellbook(state.lastDerived)) availableTabs.push("spellbook");
+  if (!availableTabs.includes(state.spellPickerTab)) state.spellPickerTab = availableTabs[0] || "prepared";
   const tab = state.spellPickerTab;
-  const collection = tab === "prepared" ? c.preparedSpells : tab === "cantrips" ? c.cantrips : tab === "spellbook" ? c.spellbook : c.knownSpells;
-  const collectionIds = new Set(collection.map(x=>String(x).toLowerCase()));
   const className = c.class?.name || "";
-  const knownLimit = state.lastDerived?.knownSpells ?? null;
-  // This is a spell library, not a cast-at-this-moment filter. Selection limits are enforced separately.
   const available = spells.filter(s => spellAvailableToCharacter(s, state.lastDerived)).slice(0, 2000);
+  const tabLabel = value => value === "prepared" ? `Prepared (${c.preparedSpells.length}/${maxPrepared ?? 0})` : value === "cantrips" ? `Cantrips (${c.cantrips.length}/${maxCantrips ?? 0})` : `Spellbook (${c.spellbook.length})`;
+  const automaticCount = (state.lastDerived?.alwaysPreparedSpells?.length || 0) + (state.lastDerived?.alwaysKnownSpells?.length || 0);
 
   app.innerHTML = `${pageHeader("SPELLBOOK", `${escapeHtml(c.name || "Character")} · Spells`, `${escapeHtml(className || "No class")} · 2024 official spell data`, `<button class="button" data-action="sheet">Character</button>`)}
-    <section class="card"><div class="tabbar"><button class="tab-inner ${tab==="prepared"?"active":""}" data-spell-tab="prepared">Prepared ${maxPrepared!=null?`(${c.preparedSpells.length}/${maxPrepared})`:""}</button><button class="tab-inner ${tab==="cantrips"?"active":""}" data-spell-tab="cantrips">Cantrips ${maxCantrips!=null?`(${c.cantrips.length}/${maxCantrips})`:""}</button><button class="tab-inner ${tab==="spellbook"?"active":""}" data-spell-tab="spellbook">Spellbook ${c.spellbook.length}</button><button class="tab-inner ${tab==="known"?"active":""}" data-spell-tab="known">Known ${knownLimit!=null?`(${c.knownSpells.length}/${knownLimit})`:""}</button></div><div class="spell-toolbar"><input id="spellSearch" type="search" placeholder="Search 2024 spells…"><select id="spellLevel"><option value="all">All levels</option>${Array.from({length:10},(_,i)=>`<option value="${i}">${i===0?"Cantrip":`Level ${i}`}</option>`).join("")}</select></div><div id="spellResults" class="spell-results"></div></section>`;
+    <section class="card">${availableTabs.length ? `<div class="tabbar">${availableTabs.map(value=>`<button class="tab-inner ${tab===value?"active":""}" data-spell-tab="${value}">${tabLabel(value)}</button>`).join("")}</div><p class="muted">Only spells on your class or subclass list and of a level you can currently prepare are shown.${usesWizardSpellbook(state.lastDerived) ? " Wizard prepared spells must first be in your spellbook." : ""}${automaticCount ? ` ${automaticCount} always-prepared or bonus spell${automaticCount===1?" is":"s are"} added automatically.` : ""}</p><div class="spell-toolbar"><input id="spellSearch" type="search" placeholder="Search eligible 2024 spells…"><select id="spellLevel"><option value="all">All levels</option>${Array.from({length:10},(_,i)=>`<option value="${i}">${i===0?"Cantrip":`Level ${i}`}</option>`).join("")}</select></div><div id="spellResults" class="spell-results"></div>` : `<div class="empty">This class and subclass do not currently grant spell selection.</div>`}</section>`;
   bindEvents();
-  renderSpellResults(available);
+  if (availableTabs.length) renderSpellResults(available);
 }
 
 function renderSpellResults(allSpells) {
@@ -4260,15 +4471,19 @@ function renderSpellResults(allSpells) {
   const q = (document.querySelector("#spellSearch")?.value || "").trim().toLowerCase();
   const level = document.querySelector("#spellLevel")?.value || "all";
   const tab = state.spellPickerTab;
-  const tabFilter = tab === "cantrips" ? s => s.level === 0 : s => s.level > 0;
-  const list = allSpells.filter(s => tabFilter(s) && (!q || s.name.toLowerCase().includes(q)) && (level === "all" || String(s.level) === level)).slice(0, 300);
+  const listName = tab === "prepared" ? "preparedSpells" : tab === "cantrips" ? "cantrips" : "spellbook";
+  const maxLevel = maxCastableSpellLevel(state.lastDerived);
+  const tabFilter = tab === "cantrips" ? s => s.level === 0 : s => s.level > 0 && s.level <= maxLevel;
+  const list = allSpells.filter(s => tabFilter(s) && spellSelectionAllowed(s, listName, state.lastDerived, state.character) && (!q || s.name.toLowerCase().includes(q)) && (level === "all" || String(s.level) === level)).slice(0, 300);
   const c = state.character;
-  const collection = state.spellPickerTab === "prepared" ? c.preparedSpells : state.spellPickerTab === "cantrips" ? c.cantrips : state.spellPickerTab === "spellbook" ? c.spellbook : c.knownSpells;
+  const collection = c[listName];
   const set = new Set(collection.map(x=>String(x).toLowerCase()));
+  const automatic = spellRefSet(tab === "cantrips" ? state.lastDerived?.alwaysKnownSpells : tab === "prepared" ? state.lastDerived?.alwaysPreparedSpells : []);
   root.innerHTML = list.map(s => {
     const id = `${s.name}|${s.source}`;
-    const checked = set.has(id.toLowerCase());
-    return `<div class="spell-row"><label class="spell-select"><input type="checkbox" data-spell-toggle="${escapeHtml(id)}" ${checked?"checked":""}> <span class="spell-title">${renderReferenceTag("spell", `${s.name}|${s.source}|${s.name}`)}</span></label><span class="spell-meta">${s.level===0?"Cantrip":`Lv ${s.level}`} · ${escapeHtml(spellSchoolName(s.school))}</span></div>`;
+    const isAutomatic = automatic.has(id.toLowerCase());
+    const checked = isAutomatic || set.has(id.toLowerCase());
+    return `<div class="spell-row"><label class="spell-select"><input type="checkbox" data-spell-toggle="${escapeHtml(id)}" ${checked?"checked":""} ${isAutomatic?"disabled":""}> <span class="spell-title">${renderReferenceTag("spell", `${s.name}|${s.source}|${s.name}`)}</span></label><span class="spell-meta">${s.level===0?"Cantrip":`Lv ${s.level}`} · ${escapeHtml(spellSchoolName(s.school))}${isAutomatic?" · Always prepared":""}</span></div>`;
   }).join("") || `<div class="empty">No matching spells.</div>`;
 }
 
@@ -4661,8 +4876,18 @@ function bindEvents() {
   document.querySelectorAll("[data-feat-mixed]").forEach(el => el.onchange = async () => { const key=el.dataset.featMixed; if (el.value) state.character.featMixedChoices[key]=el.value; else delete state.character.featMixedChoices[key]; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-expertise]").forEach(el => el.onchange = async () => { const key=el.dataset.featExpertise; if (el.value) state.character.featExpertiseChoices[key]=el.value; else delete state.character.featExpertiseChoices[key]; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-damage]").forEach(el => el.onchange = async () => { const key=el.dataset.featDamage; if (el.value) state.character.featDamageChoices[key]=el.value; else delete state.character.featDamageChoices[key]; await saveCharacter(); render(); });
-  document.querySelectorAll("[data-feat-spell-list]").forEach(el => el.onchange = async () => { const key=el.dataset.featSpellList; const cur=state.character.featSpellChoices[key]||{}; state.character.featSpellChoices[key]=el.value?{...cur,list:el.value}:{...cur}; if(!el.value) delete state.character.featSpellChoices[key].list; await saveCharacter(); render(); });
+  document.querySelectorAll("[data-feat-spell-list]").forEach(el => el.onchange = async () => { const key=el.dataset.featSpellList; const cur=state.character.featSpellChoices[key]||{}; state.character.featSpellChoices[key]=el.value?{...cur,list:el.value,picks:{}}:{...cur,picks:{}}; if(!el.value) delete state.character.featSpellChoices[key].list; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-spell-ability]").forEach(el => el.onchange = async () => { const key=el.dataset.featSpellAbility; const cur=state.character.featSpellChoices[key]||{}; state.character.featSpellChoices[key]=el.value?{...cur,ability:el.value}:{...cur}; if(!el.value) delete state.character.featSpellChoices[key].ability; await saveCharacter(); render(); });
+  document.querySelectorAll("[data-feat-spell-pick]").forEach(el => el.onchange = async () => {
+    const key=el.dataset.featSpellPick, choiceKey=el.dataset.featSpellChoice, index=Math.max(0,Number(el.dataset.featSpellIndex||0));
+    const cur=state.character.featSpellChoices[key]||{}, picks={...(cur.picks||{})}, values=Array.isArray(picks[choiceKey])?[...picks[choiceKey]]:[];
+    while(values.length<=index) values.push("");
+    values[index]=el.value||"";
+    picks[choiceKey]=values.filter(Boolean);
+    if(!picks[choiceKey].length) delete picks[choiceKey];
+    state.character.featSpellChoices[key]={...cur,picks};
+    await saveCharacter(); render();
+  });
   document.querySelectorAll("[data-species-choice]").forEach(el => el.onchange = async () => { const key=el.dataset.speciesChoice; const cur=state.character.speciesChoices[key]||{}; if(el.value) state.character.speciesChoices[key]={...cur,value:el.value}; else delete state.character.speciesChoices[key]; await saveCharacter(); render(); });
   document.querySelectorAll("[data-species-choice-ability]").forEach(el => el.onchange = async () => { const key=el.dataset.speciesChoiceAbility; const cur=state.character.speciesChoices[key]||{}; if(el.value) state.character.speciesChoices[key]={...cur,ability:el.value}; else { const next={...cur}; delete next.ability; if(next.value) state.character.speciesChoices[key]=next; else delete state.character.speciesChoices[key]; } await saveCharacter(); render(); });
   document.querySelectorAll("[data-class-skill]").forEach(el => el.onchange = async () => { const arr=state.character.classSkillChoices; toggleArray(arr,normalizeSkillKey(el.dataset.classSkill),el.checked); const max=state.lastDerived?.skillChoiceSpec?.count||0; if(arr.length>max){arr.splice(arr.indexOf(normalizeSkillKey(el.dataset.classSkill)),1);el.checked=false;showToast(`Choose only ${max} class skills.`);return;} await saveCharacter(); render(); });
@@ -4927,6 +5152,46 @@ function maxCastableSpellLevel(d = state.lastDerived) {
   for (let i = slots.length - 1; i >= 0; i--) if (Number(slots[i] || 0) > 0) return i + 1;
   return 0;
 }
+function spellRefSet(refs) { return new Set((refs || []).map(ref => String(ref).toLowerCase())); }
+function dedupeSpellRefs(refs) {
+  const seen = new Set(), out = [];
+  for (const raw of refs || []) {
+    const ref = normalizeSpellRef(raw);
+    const key = String(ref || "").toLowerCase();
+    if (ref && !seen.has(key)) { seen.add(key); out.push(ref); }
+  }
+  return out;
+}
+function usesWizardSpellbook(d = state.lastDerived) {
+  return normalizeRefName(d?.classObj?.name) === "wizard" && Boolean(d?.classObj?.spellcastingAbility);
+}
+function spellSelectionAllowed(spell, listName, d = state.lastDerived, c = state.character) {
+  if (!spell || !d?.spellcastingSource || !spellAvailableToCharacter(spell, d)) return false;
+  const maxLevel = maxCastableSpellLevel(d);
+  if (listName === "cantrips") return Number(spell.level) === 0;
+  if (Number(spell.level) < 1 || Number(spell.level) > maxLevel) return false;
+  if (listName === "spellbook") return usesWizardSpellbook(d);
+  if (listName === "preparedSpells" && usesWizardSpellbook(d)) {
+    const id = normalizeSpellRef(`${spell.name}|${spell.source}`)?.toLowerCase();
+    return spellRefSet(c?.spellbook).has(id) || spellRefSet(d?.alwaysPreparedSpells).has(id);
+  }
+  return listName === "preparedSpells";
+}
+function reconcileSpellSelections(c, d) {
+  c.cantrips = dedupeSpellRefs(c.cantrips);
+  c.preparedSpells = dedupeSpellRefs(c.preparedSpells);
+  c.spellbook = dedupeSpellRefs(c.spellbook);
+  c.knownSpells = [];
+  const loaded = getLoadedSpells();
+  if (!loaded.length || !state.data.spellSourceLookup) return;
+  const valid = (refs, listName) => refs.filter(ref => {
+    const spell = spellById(ref);
+    return spell && spellSelectionAllowed(spell, listName, d, c);
+  });
+  c.spellbook = valid(c.spellbook, "spellbook");
+  c.cantrips = valid(c.cantrips, "cantrips").slice(0, Number.isFinite(Number(d.cantrips)) ? Number(d.cantrips) : 0);
+  c.preparedSpells = valid(c.preparedSpells, "preparedSpells").slice(0, Number.isFinite(Number(d.maxPrepared)) ? Number(d.maxPrepared) : 0);
+}
 async function updateSpellResultFilter(){
   await loadSpellSource(state.version, DATA_SOURCE);
   mergeOfficialSpells();
@@ -4936,19 +5201,25 @@ async function updateSpellResultFilter(){
   renderSpellResults(available);
 }
 async function toggleSpellCollection(id, checked){
-  const listName = state.spellPickerTab === "prepared" ? "preparedSpells" : state.spellPickerTab === "cantrips" ? "cantrips" : state.spellPickerTab === "spellbook" ? "spellbook" : "knownSpells";
+  const listName = state.spellPickerTab === "prepared" ? "preparedSpells" : state.spellPickerTab === "cantrips" ? "cantrips" : "spellbook";
   const list = state.character[listName];
   const lower=id.toLowerCase();
   const idx=list.findIndex(x=>String(x).toLowerCase()===lower);
   const s=await getSpellById(id);
   if(checked){
     if(idx<0){
+      if(!spellSelectionAllowed(s,listName,state.lastDerived,state.character)) { showToast("That spell is not eligible for this character, list, or level."); updateSpellResultFilter(); return; }
       if(listName==="preparedSpells" && state.lastDerived?.maxPrepared!=null && list.length>=state.lastDerived.maxPrepared) { showToast(`Prepared spell limit reached (${state.lastDerived.maxPrepared}).`); updateSpellResultFilter(); return; }
       if(listName==="cantrips" && state.lastDerived?.cantrips!=null && list.length>=state.lastDerived.cantrips) { showToast(`Cantrip limit reached (${state.lastDerived.cantrips}).`); updateSpellResultFilter(); return; }
-      if(listName==="knownSpells" && state.lastDerived?.knownSpells!=null && list.length>=state.lastDerived.knownSpells) { showToast(`Known spell limit reached (${state.lastDerived.knownSpells}).`); updateSpellResultFilter(); return; }
       if(s)list.push(id);
     }
-  } else if(idx>=0) list.splice(idx,1);
+  } else if(idx>=0) {
+    list.splice(idx,1);
+    if(listName==="spellbook" && usesWizardSpellbook(state.lastDerived)) {
+      const key=String(id).toLowerCase();
+      state.character.preparedSpells=state.character.preparedSpells.filter(ref=>String(ref).toLowerCase()!==key);
+    }
+  }
   await saveCharacter(); updateSpellResultFilter();
 }
 

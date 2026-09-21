@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased — rules conformance expansion
+- Repaired 2024 spell selection by loading the pinned 5etools spell-source lookup instead of treating missing per-spell class metadata as universal access.
+- Restricted cantrip, prepared-spell, and Wizard spellbook choices by class/subclass list and current spell level, with invalid saved choices reconciled safely.
+- Added Eldritch Knight and Arcane Trickster spellcasting ability, cantrip, prepared-spell, and slot progressions.
+- Added automatic class/subclass spells that do not count against prepared limits, including fixed bonus cantrips.
+- Added complete PHB feat spell pickers for Magic Initiate, Blessed Warrior, Druidic Warrior, Fey-Touched, Shadow-Touched, Ritual Caster, Telekinetic, and Telepathic.
+- Migrated legacy 2024 "known spell" selections into the unified prepared-spell model and added an 18-test pinned-corpus spell-selection matrix.
 - Added all twelve level-19 Epic Boon feat slots and enforced feat level, ability, armor-training, spellcasting, and repeatability prerequisites in selectors.
 - Added persistent PHB feat effects for armor/weapon training, Speedy, Boon of Speed, Boon of Fortitude, Durable, War Caster, Medium Armor Master, and Weapon Master.
 - Added distinct damage-type and resistance choices for Elemental Adept and Boon of Energy Resistance, including repeatable-feat duplicate protection.

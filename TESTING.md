@@ -36,6 +36,13 @@ effects and choices receive behavioral assertions; combat-only rules that need
 a target, trigger, or die roll remain available through the linked feat rules
 rather than being approximated as static bonuses.
 
+The spell layer loads the pinned generated spell-source lookup alongside the
+spell descriptions. Its corpus tests verify class and subclass eligibility,
+current spell-level limits, Wizard spellbook preparation, always-prepared
+spells, Eldritch Knight and Arcane Trickster progression, and every structured
+PHB feat spell choice. Missing class metadata is never interpreted as access to
+every spell list.
+
 ### 4. Browser/UI integration
 
 This is the next layer to expand. These tests should use a real browser against the actual PWA and exercise the same paths a player uses: character creation, selection controls, equipment, spell selection, save/skill displays, notes, rests, and touch interaction.
@@ -91,7 +98,7 @@ The most important browser scenarios are:
 - Character creation with each of the 12 classes; standard array placement, class skills, background ability increases, languages, species choices, subclass, feats, optional class features, and weapon mastery.
 - Derived sheet verification for saves, skills, AC, HP, speed, initiative, senses, resistances, resources, attacks, spellcasting, and rest/reset behavior.
 - Equipment search/add/equip/wield with Dagger, Quarterstaff, armor, shields, tools, and starting-equipment references.
-- Spell selection for cantrips, prepared spells, known spells, and spellbook limits once that subsystem is repaired.
+- Spell selection for cantrips, prepared spells, Wizard spellbooks, subclass spellcasting, always-prepared spells, and feat-granted spells.
 - Notes and rule-reference interaction with mouse click, touch click, and long press.
 - Offline reload after synchronization, including the complete item and spell catalog.
 

@@ -21,8 +21,9 @@ test("rules coverage registry is internally consistent", () => {
   }
 });
 
-test("spell selection remains explicitly tracked as a gap until fixed", () => {
+test("spell selection is no longer an unimplemented gap", () => {
   const spellSelection = registry.domains.find(x => x.id === "spell-selection");
   assert.ok(spellSelection);
-  assert.equal(spellSelection.status, "gap");
+  assert.equal(spellSelection.status, "partial");
+  assert.match(spellSelection.notes, /class\/subclass lists/i);
 });
