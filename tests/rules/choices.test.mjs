@@ -13,12 +13,13 @@ test('background ability choices support both +2/+1 and +1/+1/+1', () => {
   assert.equal(spec.supportsThree, true);
 });
 
-test('feat choice parsers expose ability, save, skill, mixed, expertise and spell choices', () => {
+test('feat choice parsers expose ability, save, skill, tool, mixed, expertise and spell choices', () => {
   const feat = {
     name:'Comprehensive Test', source:'XPHB',
     ability:[{choose:{from:['intelligence','wisdom'], count:1, amount:1}}],
     savingThrowProficiencies:[{choose:{from:['dexterity','wisdom'], count:1}}],
     skillProficiencies:[{choose:{from:['arcana','history'], count:1}}],
+    toolProficiencies:[{choose:{from:["smith's tools","tinker's tools"],count:1}}],
     skillToolLanguageProficiencies:[{choose:{from:['anySkill','anyTool','anystandard'], count:3}}],
     expertise:[{choose:{from:['arcana','history'], count:1}}],
     additionalSpells:[{names:['Cleric','Druid','Wizard'], ability:{choose:{from:['intelligence','wisdom','charisma']}}}],
@@ -26,6 +27,7 @@ test('feat choice parsers expose ability, save, skill, mixed, expertise and spel
   assert.equal(a.featAbilitySpecs(feat).length, 1);
   assert.equal(a.featSaveSpecs(feat).length, 1);
   assert.equal(a.featSkillSpecs(feat).length, 1);
+  assert.equal(a.featToolSpecs(feat).length, 1);
   assert.equal(a.featMixedChoiceSpecs(feat).length, 3);
   assert.equal(a.featExpertiseSpecs(feat).length, 1);
   assert.equal(a.featAdditionalSpellChoiceSpecs(feat).length, 1);
@@ -33,7 +35,7 @@ test('feat choice parsers expose ability, save, skill, mixed, expertise and spel
 
 test('unresolved feat choices remain blank instead of silently selecting the first option', () => {
   const c = {
-    featAbilityChoices:{}, featSaveChoices:{}, featSkillChoices:{}, featMixedChoices:{},
+    featAbilityChoices:{}, featSaveChoices:{}, featSkillChoices:{}, featToolChoices:{}, featMixedChoices:{},
     featSpellChoices:{}, featExpertiseChoices:{},
   };
   const feat = {name:'Test Feat', source:'XPHB'};

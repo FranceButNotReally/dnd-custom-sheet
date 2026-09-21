@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased — rules conformance expansion
+- Completed structured PHB feat choices in the builder, including Crafter and Musician tool selections, Skilled's three distinct skill/tool selections, proficiency-aware Expertise, duplicate prevention, and Resilient's linked ability/save choice.
+- Added an explicit model for all fifteen PHB conditions, applying Speed 0, attack/check/save/Initiative states, inherited Incapacitated/Prone effects, Concentration loss, Petrified resistance/immunity, Exhaustion, and persistent UI state.
 - Added reconciled subclass and optional-feature choices for Circle of the Land terrain spells and resistance, all three Wild Heart option groups, Fiendish Resilience, Iron Mind's fallback save, College of Lore Magical Discoveries, every Wizard Savant spell progression, invocation cantrip targets, Pact of the Tome's three cantrips plus two rituals, and distinct Origin feats from repeatable Lessons of the First Ones.
 - Added feature-granted prepared, cantrip, and spellbook collections without consuming ordinary preparation limits, including fixed invocation spells and selected off-list spells in the spell UI.
 - Corrected Darkvision-extending subclass features to add 60 feet to an existing range and surfaced Wild Heart Climb/Swim speeds on the sheet.

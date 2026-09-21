@@ -73,6 +73,18 @@ effect and structured-choice system. Feature-granted spells are kept separate
 from ordinary prepared-spell limits and invalid saved choices are removed when
 their class, level, prerequisite, or selected cantrip changes.
 
+The feat layer accounts for all 77 PHB feats and now gives every structured
+ability, saving-throw, skill, tool, mixed skill/tool, Expertise, damage,
+resistance, and spell choice a persistent reconciled slot. Corpus cases cover
+multi-slot duplicate prevention, the shared Resilient ability/save choice,
+Crafter, Musician, Skilled, and proficiency-aware Expertise. Chromium exercises
+the complete choice surface through IndexedDB save/reload.
+
+All fifteen PHB conditions have an explicit sheet-effects classification.
+Tests cover inherited conditions, Speed 0, attack/check/save and Initiative
+states, automatic save failures, Concentration loss, Petrified resistance and
+Poisoned immunity, Exhaustion scaling, condition controls, and persistence.
+
 ### 4. Browser/UI integration
 
 `npm run test:browser` runs the actual PWA in Chromium against the pinned
@@ -83,7 +95,8 @@ IndexedDB save/reload; Wizard spellbook/prepared/cantrip selection; equipment
 add/wield/attune state; persisted schema migration; Short and Long Rest controls;
 critical damage at 0 HP; service-worker offline reload; and touch tap/long-press
 behavior. It also verifies Battle Master maneuver slots and dependency-gated
-Eldritch Invocations, Circle of the Land spell groups, Pact of the Tome spell
+Eldritch Invocations, the complete structured feat-choice surface, PHB
+condition effects, Circle of the Land spell groups, Pact of the Tome spell
 choices, invocation cantrip targets, and Lessons of the First Ones Origin feats
 through save/reload. GitHub Actions
 installs Chromium and runs this suite after the pure rules and pinned-data

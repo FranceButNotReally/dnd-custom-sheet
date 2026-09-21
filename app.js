@@ -46,6 +46,23 @@ const SKILLS = {
   survival: ["wis", "Survival"],
 };
 const CONDITIONS = ["Blinded", "Charmed", "Deafened", "Exhaustion", "Frightened", "Grappled", "Incapacitated", "Invisible", "Paralyzed", "Petrified", "Poisoned", "Prone", "Restrained", "Stunned", "Unconscious"];
+const CONDITION_RULES = {
+  Blinded: { attackDisadvantage:true, incomingAttackAdvantage:true, tags:["Can't see", "Automatically fails sight-based checks"] },
+  Charmed: { tags:["Can't harm the charmer", "Charmer has Advantage on social checks"] },
+  Deafened: { tags:["Can't hear", "Automatically fails hearing-based checks"] },
+  Exhaustion: { tags:["−2 to D20 Tests and −5 ft. Speed per level", "Death at level 6"] },
+  Frightened: { conditionalAttackDisadvantage:true, conditionalAbilityCheckDisadvantage:true, tags:["Disadvantage on attacks and checks while the source is in sight", "Can't willingly approach the source"] },
+  Grappled: { speedZero:true, conditionalAttackDisadvantage:true, tags:["Speed 0", "Disadvantage attacking targets other than the grappler"] },
+  Incapacitated: { incapacitated:true, concentrationBroken:true, initiativeDisadvantage:true, tags:["No actions, Bonus Actions, or Reactions", "Can't speak"] },
+  Invisible: { conditionalAttackAdvantage:true, conditionalIncomingAttackDisadvantage:true, initiativeAdvantage:true, tags:["Attack benefits apply only against creatures that can't see you", "Concealed from effects that require sight"] },
+  Paralyzed: { implies:["Incapacitated"], speedZero:true, autoFailSaves:["str","dex"], incomingAttackAdvantage:true, nearbyCriticals:true, tags:["Speed 0"] },
+  Petrified: { implies:["Incapacitated"], speedZero:true, autoFailSaves:["str","dex"], incomingAttackAdvantage:true, allDamageResistance:true, conditionImmunities:["Poisoned"], tags:["Speed 0", "Resistance to all damage"] },
+  Poisoned: { attackDisadvantage:true, abilityCheckDisadvantage:true, tags:["Disadvantage on attacks and ability checks"] },
+  Prone: { attackDisadvantage:true, conditionalIncomingAttackAdvantage:true, conditionalIncomingAttackDisadvantage:true, restrictedMovement:true, tags:["Own attacks have Disadvantage", "Attacks within 5 feet have Advantage; farther attacks have Disadvantage", "Crawl or spend half Speed to stand"] },
+  Restrained: { speedZero:true, attackDisadvantage:true, incomingAttackAdvantage:true, saveDisadvantage:["dex"], tags:["Speed 0"] },
+  Stunned: { implies:["Incapacitated"], autoFailSaves:["str","dex"], incomingAttackAdvantage:true, tags:["Automatically fails Strength and Dexterity saves"] },
+  Unconscious: { implies:["Incapacitated","Prone"], speedZero:true, autoFailSaves:["str","dex"], incomingAttackAdvantage:true, nearbyCriticals:true, tags:["Speed 0", "Unaware of surroundings"] },
+};
 const SPECIAL_SENSES = ["Blindsight", "Darkvision", "Tremorsense", "Truesight"];
 const SPECIAL_SENSE_FALLBACKS = {
   Blindsight: { name: "Blindsight", source: "XPHB", entries: ["A creature with Blindsight can perceive its surroundings without relying on sight within the specified range."] },
@@ -124,7 +141,7 @@ let dbPromise;
 
 function emptyCharacter() {
   return {
-    schema: 18,
+    schema: 19,
     id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     name: "New Character",
     player: "",
@@ -141,6 +158,7 @@ function emptyCharacter() {
     featAbilityModes: {},
     featSaveChoices: {},
     featSkillChoices: {},
+    featToolChoices: {},
     featMixedChoices: {},
     featSpellChoices: {},
     featExpertiseChoices: {},
@@ -212,7 +230,7 @@ function migrateCharacter(raw) {
   const base = emptyCharacter();
   if (!raw || typeof raw !== "object") return base;
   const c = { ...base, ...raw };
-  c.schema = 18;
+  c.schema = 19;
   c.baseStats = { ...base.baseStats, ...(raw.baseStats || raw.stats || {}) };
   c.xp = Math.max(0, Number(raw.xp || 0));
   c.manualAbilityBonuses = { ...base.manualAbilityBonuses, ...(raw.manualAbilityBonuses || {}) };
@@ -242,7 +260,7 @@ function migrateCharacter(raw) {
     const duplicate = arr.findIndex((other, j) => j < i && other && other.toLowerCase() === String(value).toLowerCase());
     return duplicate >= 0 ? null : value;
   });
-  c.conditions = Array.isArray(raw.conditions) ? raw.conditions : [];
+  c.conditions = Array.isArray(raw.conditions) ? [...new Set(raw.conditions.filter(name => CONDITIONS.includes(name) && name !== "Exhaustion"))] : [];
   c.spellbook = Array.isArray(raw.spellbook) ? raw.spellbook : [];
   c.knownSpells = Array.isArray(raw.knownSpells) ? raw.knownSpells : [];
   c.preparedSpells = Array.isArray(raw.preparedSpells) ? raw.preparedSpells : [];
@@ -289,6 +307,7 @@ function migrateCharacter(raw) {
   c.featAbilityModes = { ...(raw.featAbilityModes || {}) };
   c.featSaveChoices = { ...(raw.featSaveChoices || {}) };
   c.featSkillChoices = { ...(raw.featSkillChoices || {}) };
+  c.featToolChoices = { ...(raw.featToolChoices || {}) };
   c.featMixedChoices = { ...(raw.featMixedChoices || {}) };
   c.featSpellChoices = { ...(raw.featSpellChoices || {}) };
   c.featExpertiseChoices = { ...(raw.featExpertiseChoices || {}) };
@@ -299,6 +318,7 @@ function migrateCharacter(raw) {
   c.heroicInspiration = Boolean(raw.heroicInspiration);
   c.exhaustion = clamp(Number(raw.exhaustion || 0), 0, 6);
   c.concentration = raw.concentration ? String(raw.concentration) : null;
+  if (conditionEffects(c).concentrationBroken) c.concentration = null;
   if (raw.hpCurrent == null && raw.hp != null) c.hpCurrent = raw.hp;
   // Legacy builds stored calculated AC as `ac`; never turn that into a permanent manual override.
   // Older prototypes could also persist `acOverride` while it was only a calculated value.
@@ -1852,7 +1872,7 @@ function featSaveSpecs(feat) {
     if (choose) {
       const from = Array.isArray(choose.from) ? choose.from.map(normalizeAbilityKey).filter(Boolean) : [];
       const count = Math.max(1, Number(choose.count || 1));
-      for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, count: 1 });
+      for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, count: 1, linkedAbility: textNorm(feat?.name) === "resilient" });
       continue;
     }
     for (const [ability, value] of Object.entries(entry || {})) if (value) { const key = normalizeAbilityKey(ability); if (key) specs.push({ index, choiceIndex: 0, from: [key], count: 1, fixed: true }); }
@@ -1881,15 +1901,46 @@ function featSkillSpecs(feat) {
   return specs;
 }
 
+function featToolSpecs(feat) {
+  const specs = [];
+  const normalizeTool = value => {
+    const wanted = textNorm(value);
+    return TOOL_GENERIC_OPTIONS.find(tool => textNorm(tool) === wanted) || canonicalLabel(value);
+  };
+  for (const [index, entry] of (Array.isArray(feat?.toolProficiencies) ? feat.toolProficiencies : []).entries()) {
+    const choose = entry?.choose;
+    if (choose && !Array.isArray(choose)) {
+      const from = (Array.isArray(choose.from) ? choose.from : []).map(normalizeTool).filter(Boolean);
+      const count = Math.max(1, Number(choose.count || 1));
+      for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, fixed:false, key:`${featInstanceKey(feat)}|tool|${index}|${choiceIndex}` });
+      continue;
+    }
+    for (const [tool, value] of Object.entries(entry || {})) {
+      if (tool === "choose" || !value) continue;
+      const count = Math.max(1, Number(value) || 1);
+      const generic = /^anyMusicalInstrument$/i.test(tool) ? MUSICAL_INSTRUMENT_OPTIONS
+        : /^anyArtisans?Tools?$/i.test(tool) ? ARTISAN_TOOL_OPTIONS
+          : /^anyTool/i.test(tool) ? TOOL_GENERIC_OPTIONS : null;
+      if (generic) {
+        for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from:[...generic], fixed:false, key:`${featInstanceKey(feat)}|tool|${index}|${choiceIndex}` });
+      } else {
+        specs.push({ index, choiceIndex:0, from:[normalizeTool(tool)], fixed:true, key:`${featInstanceKey(feat)}|tool|${index}|0` });
+      }
+    }
+  }
+  return specs;
+}
+
 function featMixedChoiceSpecs(feat) {
   const specs = [];
   const groups = Array.isArray(feat?.skillToolLanguageProficiencies) ? feat.skillToolLanguageProficiencies : [];
   for (const [index, entry] of groups.entries()) {
-    const choose = entry?.choose;
-    if (!choose) continue;
-    const from = Array.isArray(choose.from) ? choose.from.map(String) : [];
-    const count = Math.max(1, Number(choose.count || 1));
-    for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, key: `${featInstanceKey(feat)}|mixed|${index}|${choiceIndex}` });
+    const alternatives = Array.isArray(entry?.choose) ? entry.choose : entry?.choose ? [entry.choose] : [];
+    for (const choose of alternatives) {
+      const from = Array.isArray(choose?.from) ? choose.from.map(String) : [];
+      const count = Math.max(1, Number(choose?.count || 1));
+      for (let choiceIndex = 0; choiceIndex < count; choiceIndex++) specs.push({ index, choiceIndex, from, key: `${featInstanceKey(feat)}|mixed|${index}|${choiceIndex}` });
+    }
   }
   return specs;
 }
@@ -2191,14 +2242,16 @@ function reconcileFeatChoices(c, feats) {
   c.featAbilityModes = { ...(c.featAbilityModes || {}) };
   c.featSaveChoices = { ...(c.featSaveChoices || {}) };
   c.featSkillChoices = { ...(c.featSkillChoices || {}) };
+  c.featToolChoices = { ...(c.featToolChoices || {}) };
   c.featMixedChoices = { ...(c.featMixedChoices || {}) };
   c.featSpellChoices = { ...(c.featSpellChoices || {}) };
   c.featExpertiseChoices = { ...(c.featExpertiseChoices || {}) };
   c.featDamageChoices = { ...(c.featDamageChoices || {}) };
-  const validAbility = new Set(), validModes = new Set(), validSave = new Set(), validSkill = new Set(), validMixed = new Set(), validSpell = new Set(), validExpertise = new Set(), validDamage = new Set();
+  const validAbility = new Set(), validModes = new Set(), validSave = new Set(), validSkill = new Set(), validTool = new Set(), validMixed = new Set(), validSpell = new Set(), validExpertise = new Set(), validDamage = new Set();
   const elementalAdeptTypes = new Set();
   for (const feat of feats || []) {
     const featDamageTypes = new Set();
+    const featAbilityValues = new Set(), featSkillValues = new Set(), featToolValues = new Set(), featMixedValues = new Set(), featExpertiseValues = new Set();
     if (isAbilityScoreImprovementFeat(feat)) {
       const modeKey = featInstanceKey(feat);
       validModes.add(modeKey);
@@ -2208,20 +2261,49 @@ function reconcileFeatChoices(c, feats) {
       const key=featSpecKey(feat,spec); validAbility.add(key);
       if (spec.fixed) c.featAbilityChoices[key]=spec.from[0];
       else if (!spec.from.includes(c.featAbilityChoices[key])) delete c.featAbilityChoices[key];
+      const selected = c.featAbilityChoices[key];
+      if (selected && featAbilityValues.has(selected)) delete c.featAbilityChoices[key];
+      else if (selected) featAbilityValues.add(selected);
     }
     for (const spec of featSaveSpecs(feat)) {
       const key=featSpecKey(feat,spec); validSave.add(key);
-      if (spec.fixed) c.featSaveChoices[key]=spec.from[0];
+      if (spec.linkedAbility) {
+        const ability = c.featAbilityChoices[key];
+        if (spec.from.includes(ability)) c.featSaveChoices[key] = ability;
+        else delete c.featSaveChoices[key];
+      } else if (spec.fixed) c.featSaveChoices[key]=spec.from[0];
       else if (!spec.from.includes(c.featSaveChoices[key])) delete c.featSaveChoices[key];
     }
     for (const spec of featSkillSpecs(feat)) {
       const key=featSpecKey(feat,spec); validSkill.add(key);
       if (spec.fixed) c.featSkillChoices[key]=spec.from[0];
       else if (!spec.from.includes(c.featSkillChoices[key])) delete c.featSkillChoices[key];
+      const selected = c.featSkillChoices[key];
+      if (selected && featSkillValues.has(selected)) delete c.featSkillChoices[key];
+      else if (selected) featSkillValues.add(selected);
     }
-    for (const spec of featMixedChoiceSpecs(feat)) validMixed.add(spec.key);
+    for (const spec of featToolSpecs(feat)) {
+      validTool.add(spec.key);
+      if (spec.fixed) c.featToolChoices[spec.key] = spec.from[0];
+      else if (!spec.from.includes(c.featToolChoices[spec.key])) delete c.featToolChoices[spec.key];
+      const selected = c.featToolChoices[spec.key];
+      if (selected && featToolValues.has(textNorm(selected))) delete c.featToolChoices[spec.key];
+      else if (selected) featToolValues.add(textNorm(selected));
+    }
+    for (const spec of featMixedChoiceSpecs(feat)) {
+      validMixed.add(spec.key);
+      const options = new Set(mixedChoiceOptions(spec).map(option => `${option.kind}:${option.value}`));
+      const selected = c.featMixedChoices[spec.key];
+      if (!options.has(selected) || featMixedValues.has(String(selected).toLowerCase())) delete c.featMixedChoices[spec.key];
+      else featMixedValues.add(String(selected).toLowerCase());
+    }
     for (const spec of featAdditionalSpellChoiceSpecs(feat, c.level)) { validSpell.add(spec.key); reconcileFeatSpellSelection(c, spec); }
-    for (const spec of featExpertiseSpecs(feat)) validExpertise.add(spec.key);
+    for (const spec of featExpertiseSpecs(feat)) {
+      validExpertise.add(spec.key);
+      const selected = c.featExpertiseChoices[spec.key];
+      if (!spec.from.includes(selected) || featExpertiseValues.has(selected)) delete c.featExpertiseChoices[spec.key];
+      else featExpertiseValues.add(selected);
+    }
     for (const spec of featDamageChoiceSpecs(feat)) {
       validDamage.add(spec.key);
       const selected = c.featDamageChoices[spec.key];
@@ -2240,6 +2322,7 @@ function reconcileFeatChoices(c, feats) {
   for (const key of Object.keys(c.featAbilityModes)) if (!validModes.has(key)) delete c.featAbilityModes[key];
   for (const key of Object.keys(c.featSaveChoices)) if (!validSave.has(key)) delete c.featSaveChoices[key];
   for (const key of Object.keys(c.featSkillChoices)) if (!validSkill.has(key)) delete c.featSkillChoices[key];
+  for (const key of Object.keys(c.featToolChoices)) if (!validTool.has(key)) delete c.featToolChoices[key];
   for (const key of Object.keys(c.featMixedChoices)) if (!validMixed.has(key)) delete c.featMixedChoices[key];
   for (const key of Object.keys(c.featSpellChoices)) if (!validSpell.has(key)) delete c.featSpellChoices[key];
   for (const key of Object.keys(c.featExpertiseChoices)) if (!validExpertise.has(key)) delete c.featExpertiseChoices[key];
@@ -3277,8 +3360,15 @@ function parseProficiencyDisplay(classObj, backgroundObj, speciesObj, featObjs =
     }
   }
   for (const obj of [classObj?.startingProficiencies, backgroundObj, speciesObj, ...featList]) {
-    for (const map of obj?.toolProficiencies || []) tools.push(...Object.entries(map || {}).map(([k,v]) => `${friendlyProficiencyKey(k)}${Number(v) > 1 ? ` ×${v}` : ""}`));
+    const isFeat = featList.includes(obj);
+    for (const map of obj?.toolProficiencies || []) tools.push(...Object.entries(map || {})
+      .filter(([key, value]) => key !== "choose" && !(isFeat && /^any/i.test(key)) && value)
+      .map(([k,v]) => `${friendlyProficiencyKey(k)}${Number(v) > 1 ? ` ×${v}` : ""}`));
     for (const map of obj?.languageProficiencies || []) languages.push(...languageChoicesFromMap(map));
+  }
+  for (const feat of featList) for (const spec of featToolSpecs(feat)) {
+    const selected = spec.fixed ? spec.from[0] : state.character.featToolChoices?.[spec.key];
+    if (selected) tools.push(selected);
   }
   const inferred = inferSpeciesProficiencyEntries(speciesObj);
   weapons.push(...inferred.weapons); tools.push(...inferred.tools); languages.push(...inferred.languages);
@@ -3450,9 +3540,17 @@ function weaponAttackProfile(item, d, wieldedWeapons = [], owned = null) {
   }
   if (d.effects?.damageBonuses?.thrown && flags.thrown) extraDamage += Number(d.effects.damageBonuses.thrown || 0);
   const warnings = [];
+  const advantageReasons = [], disadvantageReasons = [];
   const heavy = heavyWeaponRequirement(item);
-  if (heavy && Number(d.stats?.[heavy.ability] || 0) < heavy.score) warnings.push(`Disadvantage: Heavy requires ${ABILITY_LABELS[heavy.ability]} ${heavy.score}.`);
-  if (d.armorTrainingPenalty && ["str", "dex"].includes(ability)) warnings.push("Disadvantage: wearing armor without training.");
+  if (heavy && Number(d.stats?.[heavy.ability] || 0) < heavy.score) disadvantageReasons.push(`Heavy requires ${ABILITY_LABELS[heavy.ability]} ${heavy.score}`);
+  if (d.armorTrainingPenalty && ["str", "dex"].includes(ability)) disadvantageReasons.push("wearing armor without training");
+  if (d.conditionEffects?.attackDisadvantage) disadvantageReasons.push("current condition");
+  if (d.conditionEffects?.attackAdvantage) advantageReasons.push("current condition");
+  warnings.push(...disadvantageReasons.map(reason => `Disadvantage: ${reason}.`), ...advantageReasons.map(reason => `Advantage: ${reason}.`));
+  if (d.conditionEffects?.conditionalAttackDisadvantage) warnings.push("Conditional Disadvantage: check the active condition's target or line-of-sight restriction.");
+  if (d.conditionEffects?.conditionalAttackAdvantage) warnings.push("Conditional Advantage: applies only when the target can't see you.");
+  if (advantageReasons.length && disadvantageReasons.length) warnings.push("Advantage and Disadvantage cancel on this attack roll.");
+  if (d.conditionEffects?.incapacitated) warnings.unshift("Unavailable: Incapacitated creatures can't take actions, Bonus Actions, or Reactions.");
   if (!proficient) warnings.push("Proficiency Bonus is not included.");
   return {
     ability,
@@ -3460,6 +3558,8 @@ function weaponAttackProfile(item, d, wieldedWeapons = [], owned = null) {
     flags,
     attackBonus,
     damage: weaponDamageText(item, Number(d.mods?.[ability] || 0), extraDamage),
+    attackBlocked: Boolean(d.conditionEffects?.incapacitated),
+    attackRollState: advantageReasons.length && disadvantageReasons.length ? "" : advantageReasons.length ? "advantage" : disadvantageReasons.length ? "disadvantage" : "",
     warnings,
   };
 }
@@ -3475,10 +3575,14 @@ async function getAttackRows(d) {
     if (!item || !item.weaponCategory) continue;
     const wieldedWeapons = (state.character.inventory || []).filter(x => x?.equipped && x.wielding !== false && x?.name).map(x => officialItems.find(it => it.name === x.name && (!x.source || it.source === x.source)) || officialItems.find(it => it.name === x.name)).filter(it => it?.weaponCategory);
     const profile = weaponAttackProfile(item, d, wieldedWeapons, owned);
-    rows.push({ nameHtml: renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`), name: item.name, attackBonus: `${formatMod(profile.attackBonus)}${profile.proficient ? "" : "*"}${profile.warnings.some(x=>x.startsWith("Disadvantage")) ? " DIS" : ""}`, damage: profile.damage, notePayload: weaponNotePayload(item, profile.warnings) });
+    rows.push({ nameHtml: renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`), name: item.name, attackBonus: `${formatMod(profile.attackBonus)}${profile.proficient ? "" : "*"}${profile.attackBlocked ? " BLOCKED" : profile.attackRollState === "advantage" ? " ADV" : profile.attackRollState === "disadvantage" ? " DIS" : ""}`, damage: profile.damage, notePayload: weaponNotePayload(item, profile.warnings) });
   }
   for (const custom of state.character.attacks || []) rows.push({ name: custom.name || "Attack", attackBonus: custom.attackBonus || "—", damage: custom.damage || "—", notePayload: custom.range || custom.notes ? customNotePayload([custom.range, custom.notes].filter(Boolean).join(" · "), `${custom.name || "Attack"} · Notes`) : null });
-  for (const spell of (state.character.cantrips || []).map(spellById).filter(Boolean)) rows.push({ nameHtml: renderReferenceTag("spell", `${spell.name}|${spell.source}|${spell.name}`), name: spell.name, attackBonus: d.spellcastingAbility ? formatMod(d.pb + d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—", damage: (spell.damageInflict || []).map(damageTypeName).join(", ") || "Cantrip", notePayload: spellNotePayload(spell) });
+  for (const spell of (state.character.cantrips || []).map(spellById).filter(Boolean)) {
+    const advantage = Boolean(d.conditionEffects?.attackAdvantage), disadvantage = Boolean(d.conditionEffects?.attackDisadvantage);
+    const suffix = d.conditionEffects?.incapacitated ? " BLOCKED" : advantage === disadvantage ? "" : advantage ? " ADV" : " DIS";
+    rows.push({ nameHtml: renderReferenceTag("spell", `${spell.name}|${spell.source}|${spell.name}`), name: spell.name, attackBonus: d.spellcastingAbility ? `${formatMod(d.pb + d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0))}${suffix}` : "—", damage: (spell.damageInflict || []).map(damageTypeName).join(", ") || "Cantrip", notePayload: spellNotePayload(spell) });
+  }
   return rows.slice(0, 12);
 }
 
@@ -3691,6 +3795,47 @@ function applyDarkvisionBonus(senseRefs, bonus) {
   }, 0);
   refs.push({ tag:"sense", name:"Darkvision", source:DATA_SOURCE, label:`Darkvision ${existing + amount} ft.` });
   return refs;
+}
+
+function conditionEffects(c) {
+  const selected = new Set((c?.conditions || []).filter(name => CONDITION_RULES[name] && name !== "Exhaustion"));
+  if (Number(c?.exhaustion || 0) > 0) selected.add("Exhaustion");
+  const effective = new Set(selected);
+  const queue = [...selected];
+  while (queue.length) {
+    const name = queue.shift();
+    for (const implied of CONDITION_RULES[name]?.implies || []) if (!effective.has(implied)) {
+      effective.add(implied);
+      queue.push(implied);
+    }
+  }
+  const out = {
+    selected, effective, active: [], speedZero:false, incapacitated:false, concentrationBroken:false,
+    initiativeAdvantage:false, initiativeDisadvantage:false, attackAdvantage:false, attackDisadvantage:false,
+    incomingAttackAdvantage:false, incomingAttackDisadvantage:false, abilityCheckDisadvantage:false,
+    conditionalAttackAdvantage:false, conditionalAttackDisadvantage:false, conditionalIncomingAttackAdvantage:false, conditionalIncomingAttackDisadvantage:false, conditionalAbilityCheckDisadvantage:false,
+    restrictedMovement:false, nearbyCriticals:false, allDamageResistance:false,
+    saveDisadvantages:new Set(), autoFailSaves:new Set(), conditionImmunities:new Set(),
+  };
+  for (const name of effective) {
+    const rule = CONDITION_RULES[name] || {};
+    for (const key of ["speedZero","incapacitated","concentrationBroken","initiativeAdvantage","initiativeDisadvantage","attackAdvantage","attackDisadvantage","incomingAttackAdvantage","incomingAttackDisadvantage","abilityCheckDisadvantage","conditionalAttackAdvantage","conditionalAttackDisadvantage","conditionalIncomingAttackAdvantage","conditionalIncomingAttackDisadvantage","conditionalAbilityCheckDisadvantage","restrictedMovement","nearbyCriticals","allDamageResistance"]) if (rule[key]) out[key] = true;
+    for (const ability of rule.saveDisadvantage || []) out.saveDisadvantages.add(ability);
+    for (const ability of rule.autoFailSaves || []) out.autoFailSaves.add(ability);
+    for (const condition of rule.conditionImmunities || []) out.conditionImmunities.add(condition);
+  }
+  for (const name of selected) {
+    if (name === "Exhaustion") {
+      const level = Number(c?.exhaustion || 0);
+      out.active.push(`Exhaustion ${level}: −${level * 2} to D20 Tests; −${level * 5} ft. Speed${level >= 6 ? "; Dead" : ""}`);
+      continue;
+    }
+    const rule = CONDITION_RULES[name];
+    const details = [...(rule?.tags || [])];
+    if (rule?.implies?.length) details.unshift(`Also ${rule.implies.join(" and ")}`);
+    out.active.push(`${name}: ${details.join("; ")}`);
+  }
+  return out;
 }
 
 function buildDerivedEffects(c, d, featObjs) {
@@ -3916,6 +4061,7 @@ function buildDerivedEffects(c, d, featObjs) {
       effects.passiveInvestigationBonus += 5;
       effects.active.push("Observant (2014): +5 passive Perception and Investigation");
     }
+    for (const map of feat.skillProficiencies || []) for (const key of grantedSkillsFromMap([map])) effects.skills.add(key);
     for (const spec of featSaveSpecs(feat)) {
       const selected = c.featSaveChoices?.[featSpecKey(feat, spec)];
       if (selected) effects.savingThrows.add(selected);
@@ -3927,6 +4073,10 @@ function buildDerivedEffects(c, d, featObjs) {
         else effects.skills.add(selected);
       }
     }
+    for (const spec of featToolSpecs(feat)) {
+      const selected = spec.fixed ? spec.from[0] : c.featToolChoices?.[spec.key];
+      if (selected) effects.tools.push(selected);
+    }
     for (const spec of featMixedChoiceSpecs(feat)) {
       const selected = c.featMixedChoices?.[spec.key]; if (!selected) continue;
       const [kind, value] = String(selected).split(":");
@@ -3934,14 +4084,16 @@ function buildDerivedEffects(c, d, featObjs) {
       else if (kind === "Tool") effects.tools.push(value);
       else if (kind === "Language") effects.languages.push(value);
     }
-    for (const spec of featExpertiseSpecs(feat)) { const selected=c.featExpertiseChoices?.[spec.key]; if (selected) effects.expertise.add(selected); }
+    for (const spec of featExpertiseSpecs(feat)) {
+      const selected=c.featExpertiseChoices?.[spec.key];
+      if (selected && (d.skillProficiencies?.has?.(selected) || effects.skills.has(selected))) effects.expertise.add(selected);
+    }
     for (const spec of featDamageChoiceSpecs(feat)) {
       const selected = c.featDamageChoices?.[spec.key];
       if (!selected) continue;
       if (spec.kind === "resistance") effects.resistances.push(selected);
       if (spec.kind === "elemental-adept") { effects.flags.add(`elementalAdept:${textNorm(selected)}`); effects.active.push(`Elemental Adept: ${selected}`); }
     }
-    for (const map of feat.skillProficiencies || []) for (const key of grantedSkillsFromMap([map])) effects.skills.add(key);
     for (const r of feat.resist || []) {
       if (typeof r === "string") effects.resistances.push(canonicalLabel(stripTags(r)));
       else if (r && typeof r === "object" && !r.choose) for (const [type, enabled] of Object.entries(r)) if (enabled) effects.resistances.push(canonicalLabel(type));
@@ -4291,11 +4443,12 @@ async function deriveCharacter() {
   for (const s of normalizeSkillArray(c.customSkillProficiencies)) d.skillProficiencies.add(s);
   for (const s of d.speciesObj?.skillProficiencies ? grantedSkillsFromMap(d.speciesObj.skillProficiencies) : []) d.skillProficiencies.add(s);
   d.effects = buildDerivedEffects(c, d, featObjs);
+  d.conditionEffects = conditionEffects(c);
   for (const save of d.effects.savingThrows) d.savingThrowProficiencies.add(save);
   d.savingThrowAdvantages = new Set(d.effects.savingThrowAdvantages || []);
-  d.activeEffects = [...(d.effects.active || [])];
-  if (c.exhaustion) d.activeEffects.push(`Exhaustion ${c.exhaustion}: ${Math.abs(d.d20Penalty)} penalty to D20 Tests; -${5 * c.exhaustion} ft. Speed`);
+  d.activeEffects = [...(d.effects.active || []), ...(d.conditionEffects.active || [])];
   for (const value of d.effects.resistances || []) if (value && !d.resistances.includes(value)) d.resistances.push(value);
+  if (d.conditionEffects.allDamageResistance && !d.resistances.includes("All damage")) d.resistances.push("All damage");
   const speciesResists = Array.isArray(d.speciesObj?.resist) ? d.speciesObj.resist : [];
   for (const value of speciesResists) { const label = canonicalLabel(stripTags(String(value))); if (label && !d.resistances.includes(label)) d.resistances.push(label); }
   if (d.speciesObj?.darkvision) d.senseRefs.push({ tag: "sense", name: "Darkvision", source: DATA_SOURCE, label: `Darkvision ${d.speciesObj.darkvision} ft.` });
@@ -4376,6 +4529,7 @@ async function deriveCharacter() {
   const fastMovementBonus = d.effects.flags.has("fastMovement") && !d.heavyArmorWorn ? 10 : 0;
   const rovingBonus = d.effects.flags.has("roving") && !d.heavyArmorWorn ? 10 : 0;
   d.speed = Number(c.speedOverride ?? Math.max(0, Math.max(dfltSpeed(d.speciesObj) + Number(d.effects.speedBonus || 0), Number(d.effects.speedMinimum || 0)) + fastMovementBonus + rovingBonus - 5 * Number(c.exhaustion || 0) - Number(d.armorSpeedPenalty || 0)));
+  if (d.conditionEffects.speedZero) d.speed = 0;
   d.movementModes = {
     climb: d.effects.movementModes?.climb === "speed" || d.effects.flags.has("roving") ? d.speed : null,
     swim: d.effects.movementModes?.swim === "speed" || d.effects.flags.has("roving") ? d.speed : null,
@@ -4729,17 +4883,22 @@ async function renderSheet(app) {
   const page = state.sheetPage || 1;
   const classLine = [c.class?.name, c.subclass?.name].filter(Boolean).join(" · ");
   const identityLine = [c.background?.name, c.species?.name].filter(Boolean).join(" · ");
+  const saveState = ability => ({
+    autoFail: d.conditionEffects?.autoFailSaves?.has?.(ability) || false,
+    advantage: d.savingThrowAdvantages?.has(ability) || false,
+    disadvantage: (d.armorTrainingPenalty && ["str", "dex"].includes(ability)) || d.conditionEffects?.saveDisadvantages?.has?.(ability) || false,
+  });
+  const rollBadges = roll => roll.autoFail ? ` <sup class="save-advantage">FAIL</sup>` : `${roll.advantage ? ` <sup class="save-advantage">ADV</sup>` : ""}${roll.disadvantage ? ` <sup class="save-advantage">DIS</sup>` : ""}`;
   const saves = ABILITIES.map(a => {
-    const prof = d.savingThrowProficiencies.has(a), adv = d.savingThrowAdvantages?.has(a);
-    const dis = d.armorTrainingPenalty && ["str", "dex"].includes(a);
-    return `<div class="sheet-save-row"><span class="check-circle ${prof ? "on" : ""}"></span><span>${ABILITY_NAMES[a]} Save${adv ? ` <sup class="save-advantage">ADV</sup>` : ""}${dis ? ` <sup class="save-advantage">DIS</sup>` : ""}</span><strong>${formatMod(d.mods[a] + (prof ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>`;
+    const prof = d.savingThrowProficiencies.has(a), roll = saveState(a);
+    return `<div class="sheet-save-row"><span class="check-circle ${prof ? "on" : ""}"></span><span>${ABILITY_NAMES[a]} Save${rollBadges(roll)}</span><strong>${roll.autoFail ? "Fail" : formatMod(d.mods[a] + (prof ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>`;
   }).join("");
   const skillsByAbility = Object.fromEntries(ABILITIES.map(a => [a, []]));
   for (const [key,[ability,name]] of Object.entries(SKILLS)) skillsByAbility[ability].push({ key, name, prof: d.skillProficiencies.has(key), exp: d.effectiveExpertise?.has(key) || false, bonus: d.mods[ability] + (d.skillProficiencies.has(key) ? d.pb : Number(d.effects?.unproficientSkillBonus || 0)) + (d.effectiveExpertise?.has(key) ? d.pb : 0) + Number(d.effects?.skillBonuses?.[key] || 0) + Number(d.d20Penalty || 0) });
   const abilityBoxes = ABILITIES.map(a => `<section class="ability-box">
       <div class="ability-head"><span>${ABILITY_LABELS[a]}</span><strong>${d.stats[a]}</strong><em>${formatMod(d.mods[a])}</em></div>
-      <div class="ability-save"><span class="check-circle ${d.savingThrowProficiencies.has(a) ? "on" : ""}"></span><b>Saving Throw${d.savingThrowAdvantages?.has(a) ? ` <sup class="save-advantage">ADV</sup>` : ""}${d.armorTrainingPenalty && ["str","dex"].includes(a) ? ` <sup class="save-advantage">DIS</sup>` : ""}</b><strong>${formatMod(d.mods[a] + (d.savingThrowProficiencies.has(a) ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>
-      <div class="skill-stack">${skillsByAbility[a].map(sk => `<div class="sheet-skill-row"><span class="check-circle ${sk.prof ? "on" : ""}"></span><span>${escapeHtml(sk.name)}${sk.exp ? " <sup>EX</sup>" : ""}${d.armorTrainingPenalty && ["str","dex"].includes(a) ? ` <sup class="save-advantage">DIS</sup>` : ""}</span><strong>${formatMod(sk.bonus)}</strong></div>`).join("")}</div>
+      <div class="ability-save"><span class="check-circle ${d.savingThrowProficiencies.has(a) ? "on" : ""}"></span><b>Saving Throw${rollBadges(saveState(a))}</b><strong>${saveState(a).autoFail ? "Fail" : formatMod(d.mods[a] + (d.savingThrowProficiencies.has(a) ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>
+      <div class="skill-stack">${skillsByAbility[a].map(sk => `<div class="sheet-skill-row"><span class="check-circle ${sk.prof ? "on" : ""}"></span><span>${escapeHtml(sk.name)}${sk.exp ? " <sup>EX</sup>" : ""}${(d.armorTrainingPenalty && ["str","dex"].includes(a)) || d.conditionEffects?.abilityCheckDisadvantage ? ` <sup class="save-advantage">DIS</sup>` : d.conditionEffects?.conditionalAbilityCheckDisadvantage ? ` <sup class="save-advantage">DIS*</sup>` : ""}</span><strong>${formatMod(sk.bonus)}</strong></div>`).join("")}</div>
     </section>`).join("");
   const featureRows = [...d.classFeatures.map(f => ({...f, kind:"Class"})), ...d.subclassFeatures.map(f => ({...f, kind:"Subclass"}))]
     .sort((a,b) => Number(a.level)-Number(b.level) || a.name.localeCompare(b.name))
@@ -4768,7 +4927,7 @@ async function renderSheet(app) {
       <div class="identity-stat-box"><span>Hit Dice</span><strong>${Math.max(0,Number(c.level||1)-Number(c.hitDiceUsed||0))}d${hitDieFaces(d.classObj)}</strong><small>${c.hitDiceUsed} spent · spend during Short Rest</small></div>
       <div class="identity-stat-box"><span>Death Saves${d.effects?.deathSaveAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${c.deathSaves.success} ✓ · ${c.deathSaves.failure} ✕</strong><small>${escapeHtml(deathStateLabel)}${currentDeathState === "dying" ? ` · <button data-action="death" data-type="success">Success</button> <button data-action="death" data-type="failure">Failure</button>` : ""}</small></div>
     </div>
-    <div class="sheet-metrics"><div><span>Initiative${d.effects?.initiativeAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}${d.armorTrainingPenalty ? ` <sup class="save-advantage">DIS</sup>` : ""}</span><strong>${formatMod(d.mods.dex + Number(d.effects?.initiativeBonus || 0) + Number(d.d20Penalty || 0))}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong>${d.movementModes?.climb ? `<small>Climb ${d.movementModes.climb} ft.</small>` : ""}${d.movementModes?.swim ? `<small>Swim ${d.movementModes.swim} ft.</small>` : ""}</div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—"}</strong></div></div>${d.activeEffects?.length || d.optionalFeatureObjects?.length || d.weaponMasteryCount ? `<section class="sheet-panel derived-effects-panel"><div class="sheet-panel-title">Active Rules Effects</div><div class="active-effect-list">${d.activeEffects.map(x=>`<span class="active-effect-chip">${escapeHtml(x)}</span>`).join("")}${d.optionalFeatureObjects.map(x=>`<button class="active-effect-chip effect-link" data-action="optional-feature-detail" data-name="${encodeURIComponent(`${x.name}|${x.source}`)}">${escapeHtml(x.name)}</button>`).join("")}${d.weaponMasteryCount ? `<span class="active-effect-chip">Weapon Mastery ${Math.min(selectedWeaponMasteryRefs(c).length,d.weaponMasteryCount)}/${d.weaponMasteryCount}</span>` : ""}</div></section>` : ""}
+    <div class="sheet-metrics"><div><span>Initiative${d.effects?.initiativeAdvantage || d.conditionEffects?.initiativeAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}${d.armorTrainingPenalty || d.conditionEffects?.initiativeDisadvantage ? ` <sup class="save-advantage">DIS</sup>` : ""}</span><strong>${formatMod(d.mods.dex + Number(d.effects?.initiativeBonus || 0) + Number(d.d20Penalty || 0))}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong>${d.movementModes?.climb ? `<small>Climb ${d.movementModes.climb} ft.</small>` : ""}${d.movementModes?.swim ? `<small>Swim ${d.movementModes.swim} ft.</small>` : ""}</div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? `${formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0))}${d.conditionEffects?.attackAdvantage && !d.conditionEffects?.attackDisadvantage ? " ADV" : d.conditionEffects?.attackDisadvantage && !d.conditionEffects?.attackAdvantage ? " DIS" : ""}` : "—"}</strong></div></div>${d.activeEffects?.length || d.optionalFeatureObjects?.length || d.weaponMasteryCount ? `<section class="sheet-panel derived-effects-panel"><div class="sheet-panel-title">Active Rules Effects</div><div class="active-effect-list">${d.activeEffects.map(x=>`<span class="active-effect-chip">${escapeHtml(x)}</span>`).join("")}${d.optionalFeatureObjects.map(x=>`<button class="active-effect-chip effect-link" data-action="optional-feature-detail" data-name="${encodeURIComponent(`${x.name}|${x.source}`)}">${escapeHtml(x.name)}</button>`).join("")}${d.weaponMasteryCount ? `<span class="active-effect-chip">Weapon Mastery ${Math.min(selectedWeaponMasteryRefs(c).length,d.weaponMasteryCount)}/${d.weaponMasteryCount}</span>` : ""}</div></section>` : ""}
     <div class="sheet-grid-main"><div class="ability-column">${abilityBoxes}</div><div class="sheet-right-column">
       <section class="sheet-panel"><div class="sheet-panel-title">Weapons & Damage Cantrips <button class="sheet-mini-btn" data-action="manage-attacks">Manage</button></div><div class="weapon-table head"><span>Name</span><span>Atk</span><span>Damage</span><span>Notes</span></div>${attackHtml}</section>
       ${d.weaponMasteryCount ? `<section class="sheet-panel"><div class="sheet-panel-title">Weapon Masteries</div><div class="selection-count">${selectedWeaponMasteryRefs(c).length} / ${d.weaponMasteryCount}</div>${selectedWeaponMasteryRefs(c).map(ref => { const item = findOfficialItemByName(splitRefId(ref).name, splitRefId(ref).source); return item ? `<div class="mastery-sheet-row"><span>${renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`)}</span><span>${masteryObjects(item).map(x=>renderWeaponMasteryLink(x.name)).join(", ") || "—"}</span></div>` : `<div class="mastery-sheet-row"><span>${escapeHtml(splitRefId(ref).name)}</span><span>—</span></div>`; }).join("") || `<div class="sheet-empty">No Weapon Masteries selected.</div>`}</section>` : ""}
@@ -4839,11 +4998,14 @@ async function renderBuilder(app) {
       const key=featSpecKey(feat,spec);
       if (spec.fixed || !spec.from.length) return "";
       const selected = c.featAbilityChoices?.[key] || "";
-      return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Ability increase (+${spec.amount})<select data-feat-ability="${escapeHtml(key)}"><option value="">— Select —</option>${spec.from.map(a=>`<option value="${a}" ${selected===a?"selected":""}>${ABILITY_NAMES[a]}</option>`).join("")}</select></label></div>`;
+      const used = new Set(Object.entries(c.featAbilityChoices || {}).filter(([other])=>other!==key&&other.startsWith(`${featInstanceKey(feat)}|`)).map(([,value])=>value));
+      const options = spec.from.filter(value => value === selected || !used.has(value));
+      const label = textNorm(feat.name) === "resilient" ? "Ability increase and saving throw proficiency" : `Ability increase (+${spec.amount})`;
+      return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · ${escapeHtml(label)}<select data-feat-ability="${escapeHtml(key)}"><option value="">— Select —</option>${options.map(a=>`<option value="${a}" ${selected===a?"selected":""}>${ABILITY_NAMES[a]}</option>`).join("")}</select></label></div>`;
     }),
     ...featSaveSpecs(feat).map(spec => {
       const key=featSpecKey(feat,spec);
-      if (spec.fixed || !spec.from.length) return "";
+      if (spec.fixed || spec.linkedAbility || !spec.from.length) return "";
       const selected = c.featSaveChoices?.[key] || "";
       return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Saving throw proficiency<select data-feat-save="${escapeHtml(key)}"><option value="">— Select —</option>${spec.from.map(a=>`<option value="${a}" ${selected===a?"selected":""}>${ABILITY_NAMES[a]}</option>`).join("")}</select></label></div>`;
     }),
@@ -4851,15 +5013,26 @@ async function renderBuilder(app) {
       const key=featSpecKey(feat,spec);
       if (spec.fixed || !spec.from.length) return "";
       const selected = c.featSkillChoices?.[key] || "";
-      return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Skill proficiency<select data-feat-skill="${escapeHtml(key)}"><option value="">— Select —</option>${spec.from.map(sk=>`<option value="${sk}" ${selected===sk?"selected":""}>${escapeHtml(SKILLS[sk]?.[1]||sk)}</option>`).join("")}</select></label></div>`;
+      const used = new Set(Object.entries(c.featSkillChoices || {}).filter(([other])=>other!==key&&other.startsWith(`${featInstanceKey(feat)}|`)).map(([,value])=>value));
+      const options = spec.from.filter(value => value === selected || !used.has(value));
+      return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Skill proficiency<select data-feat-skill="${escapeHtml(key)}"><option value="">— Select —</option>${options.map(sk=>`<option value="${sk}" ${selected===sk?"selected":""}>${escapeHtml(SKILLS[sk]?.[1]||sk)}</option>`).join("")}</select></label></div>`;
+    }),
+    ...featToolSpecs(feat).map(spec => {
+      if (spec.fixed || !spec.from.length) return "";
+      const selected=c.featToolChoices?.[spec.key]||"";
+      const used=new Set(Object.entries(c.featToolChoices||{}).filter(([key])=>key!==spec.key&&key.startsWith(`${featInstanceKey(feat)}|tool|`)).map(([,value])=>textNorm(value)));
+      const options=spec.from.filter(value=>value===selected||!used.has(textNorm(value)));
+      return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Tool proficiency<select data-feat-tool="${escapeHtml(spec.key)}"><option value="">— Select —</option>${options.map(value=>`<option value="${escapeHtml(value)}" ${selected===value?"selected":""}>${escapeHtml(value)}</option>`).join("")}</select></label></div>`;
     }),
     ...featMixedChoiceSpecs(feat).map(spec => {
-      const selected=c.featMixedChoices?.[spec.key]||"", options=mixedChoiceOptions(spec);
+      const selected=c.featMixedChoices?.[spec.key]||"", used=new Set(Object.entries(c.featMixedChoices||{}).filter(([key])=>key!==spec.key&&key.startsWith(`${featInstanceKey(feat)}|mixed|`)).map(([,value])=>String(value).toLowerCase())), options=mixedChoiceOptions(spec).filter(o=>{const value=`${o.kind}:${o.value}`;return value===selected||!used.has(value.toLowerCase())});
       return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Choose skill/tool/language<select data-feat-mixed="${escapeHtml(spec.key)}"><option value="">— Select —</option>${options.map(o=>{const val=`${o.kind}:${o.value}`; return `<option value="${escapeHtml(val)}" ${selected===val?"selected":""}>${escapeHtml(o.kind)} · ${escapeHtml(o.name)}</option>`}).join("")}</select></label></div>`;
     }),
     ...featExpertiseSpecs(feat).map(spec => {
       const selected=c.featExpertiseChoices?.[spec.key]||"";
-      return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Expertise<select data-feat-expertise="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.from.map(sk=>`<option value="${sk}" ${selected===sk?"selected":""}>${escapeHtml(SKILLS[sk]?.[1]||sk)}</option>`).join("")}</select></label></div>`;
+      const used=new Set(Object.entries(c.featExpertiseChoices||{}).filter(([key])=>key!==spec.key&&key.startsWith(`${featInstanceKey(feat)}|expertise|`)).map(([,value])=>value));
+      const options=spec.from.filter(sk=>sk===selected||(!used.has(sk)&&d.skillProficiencies.has(sk)));
+      return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Expertise<select data-feat-expertise="${escapeHtml(spec.key)}"><option value="">— Select —</option>${options.map(sk=>`<option value="${sk}" ${selected===sk?"selected":""}>${escapeHtml(SKILLS[sk]?.[1]||sk)}</option>`).join("")}</select></label></div>`;
     }),
     ...featDamageChoiceSpecs(feat).map(spec => {
       const selected=c.featDamageChoices?.[spec.key]||"";
@@ -5357,7 +5530,7 @@ function bindEvents() {
           recordDeathSave(state.character,el.dataset.type); await saveCharacter(); return render();
         }
         if (action === "death-reset") { state.character.deathSaves = { success: 0, failure: 0 }; await saveCharacter(); return render(); }
-        if (action === "condition") { if (el.dataset.suppressClick) { delete el.dataset.suppressClick; return; } const condition = el.dataset.condition; if (condition === "Exhaustion") { if (Number(state.character.exhaustion || 0) > 0) state.character.exhaustion = 0; else state.character.exhaustion = 1; } else toggleArray(state.character.conditions, condition); await saveCharacter(); return render(); }
+        if (action === "condition") { if (el.dataset.suppressClick) { delete el.dataset.suppressClick; return; } const condition = el.dataset.condition; if (condition === "Exhaustion") { if (Number(state.character.exhaustion || 0) > 0) state.character.exhaustion = 0; else state.character.exhaustion = 1; } else toggleArray(state.character.conditions, condition); if (conditionEffects(state.character).concentrationBroken) state.character.concentration = null; await saveCharacter(); return render(); }
         if (action === "clear-conditions") { state.character.conditions = []; state.character.exhaustion = 0; await saveCharacter(); return render(); }
         if (action === "attack-details") {
           try {
@@ -5535,6 +5708,7 @@ function bindEvents() {
   document.querySelectorAll("[data-feat-ability]").forEach(el => el.onchange = async () => { state.character.featAbilityChoices[el.dataset.featAbility] = el.value; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-save]").forEach(el => el.onchange = async () => { state.character.featSaveChoices[el.dataset.featSave] = el.value; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-skill]").forEach(el => el.onchange = async () => { state.character.featSkillChoices[el.dataset.featSkill] = el.value; await saveCharacter(); render(); });
+  document.querySelectorAll("[data-feat-tool]").forEach(el => el.onchange = async () => { const key=el.dataset.featTool; if(el.value) state.character.featToolChoices[key]=el.value; else delete state.character.featToolChoices[key]; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-mixed]").forEach(el => el.onchange = async () => { const key=el.dataset.featMixed; if (el.value) state.character.featMixedChoices[key]=el.value; else delete state.character.featMixedChoices[key]; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-expertise]").forEach(el => el.onchange = async () => { const key=el.dataset.featExpertise; if (el.value) state.character.featExpertiseChoices[key]=el.value; else delete state.character.featExpertiseChoices[key]; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-damage]").forEach(el => el.onchange = async () => { const key=el.dataset.featDamage; if (el.value) state.character.featDamageChoices[key]=el.value; else delete state.character.featDamageChoices[key]; await saveCharacter(); render(); });
@@ -5933,6 +6107,7 @@ function applyPointBuyDefault(){
 }
 function resetDeathSaves(){ state.character.deathSaves = { success: 0, failure: 0 }; }
 function deathState(c, maxHp = null) {
+  if (Number(c?.exhaustion || 0) >= 6) return "dead";
   const hp = Number(c?.hpCurrent ?? maxHp ?? 0);
   if (hp > 0) return "healthy";
   if (c?.deathSaves?.status === "dead" || Number(c?.deathSaves?.failure || 0) >= 3) return "dead";

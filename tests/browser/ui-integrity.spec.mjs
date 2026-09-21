@@ -165,7 +165,7 @@ test('legacy character migrations are persisted, not only applied in memory', as
   await expect(page.locator('.sheet-brandline h1')).toHaveText('Legacy Sentinel');
 
   const migrated = await currentCharacter(page);
-  expect(migrated.schema).toBe(18);
+  expect(migrated.schema).toBe(19);
   expect(migrated.knownSpells).toEqual([]);
   expect(migrated.preparedSpells).toEqual(expect.arrayContaining(['Bless|XPHB', 'Cure Wounds|XPHB']));
   expect(migrated.deathSaves).toEqual({ success: 0, failure: 0 });
@@ -418,6 +418,89 @@ test('subclass spell groups, Pact of the Tome, and invocation targets persist th
   saved = await currentCharacter(page);
   expect(Object.keys(saved.featureSpellChoices || {})).toHaveLength(2);
   expect(Object.values(saved.featureFeatChoices || {})).toContainEqual({ name:'Alert', source:'XPHB' });
+});
+
+test('all structured feat choice families persist through the builder', async ({ page }) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page, {
+    name:'Feat Sentinel', level:19, class:{name:'Wizard',source:'XPHB'}, subclass:{name:'Abjurer',source:'XPHB'},
+    feat:null, feats:[], classSkillChoices:['arcana'], progressionFeats:{},
+    additionalFeats:[
+      {name:'Ability Score Improvement',source:'XPHB'}, {name:'Resilient',source:'XPHB'},
+      {name:'Crafter',source:'XPHB'}, {name:'Skilled',source:'XPHB'},
+      {name:'Skill Expert',source:'XPHB'}, {name:'Elemental Adept',source:'XPHB'},
+      {name:'Magic Initiate',source:'XPHB'},
+    ],
+    featAbilityModes:{}, featAbilityChoices:{}, featSaveChoices:{}, featSkillChoices:{}, featToolChoices:{},
+    featMixedChoices:{}, featExpertiseChoices:{}, featDamageChoices:{}, featSpellChoices:{},
+  });
+  await page.reload();
+  await page.getByRole('button', { name:'Builder' }).click();
+
+  await page.locator('[data-feat-ability-mode]').selectOption('split');
+  let asiChoices=page.locator('label.field', {hasText:'Ability Score Improvement · Ability increase (+1)'}).locator('select');
+  await asiChoices.nth(0).selectOption('str');
+  asiChoices=page.locator('label.field', {hasText:'Ability Score Improvement · Ability increase (+1)'}).locator('select');
+  await asiChoices.nth(1).selectOption('dex');
+  await page.locator('label.field', {hasText:'Resilient · Ability increase and saving throw proficiency'}).locator('select').selectOption('con');
+
+  for(const [index,value] of [[0,"Smith's Tools"],[1,"Tinker's Tools"],[2,"Weaver's Tools"]]){
+    const tools=page.locator('label.field', {hasText:'Crafter · Tool proficiency'}).locator('select');
+    await tools.nth(index).selectOption(value);
+  }
+  for(const [index,value] of [[0,'Skill:history'],[1,"Tool:Smith's Tools"],[2,'Skill:perception']]){
+    const choices=page.locator('label.field', {hasText:'Skilled · Choose skill/tool/language'}).locator('select');
+    await choices.nth(index).selectOption(value);
+  }
+  await page.locator('label.field', {hasText:'Skill Expert · Skill proficiency'}).locator('select').selectOption('investigation');
+  await page.locator('label.field', {hasText:'Skill Expert · Expertise'}).locator('select').selectOption('arcana');
+  await page.locator('label.field', {hasText:'Elemental Adept · Elemental Adept damage type'}).locator('select').selectOption('Fire');
+
+  await page.locator('label.field', {hasText:'Magic Initiate · Spell list'}).locator('select').selectOption('Wizard');
+  await page.locator('label.field', {hasText:'Magic Initiate · Spellcasting ability'}).locator('select').selectOption('int');
+  const spellPicks=page.locator('[data-feat-spell-pick]');
+  await expect(spellPicks).toHaveCount(3);
+  await spellPicks.nth(0).selectOption({label:'Fire Bolt · Cantrip'});
+  await page.locator('[data-feat-spell-pick]').nth(1).selectOption({label:'Mage Hand · Cantrip'});
+  await page.locator('[data-feat-spell-pick]').nth(2).selectOption({label:'Magic Missile · Level 1'});
+
+  let saved=await currentCharacter(page);
+  expect(Object.values(saved.featAbilityChoices)).toEqual(expect.arrayContaining(['str','dex','con']));
+  expect(Object.values(saved.featSaveChoices)).toContain('con');
+  expect(Object.values(saved.featToolChoices)).toEqual(expect.arrayContaining(["Smith's Tools","Tinker's Tools","Weaver's Tools"]));
+  expect(Object.values(saved.featMixedChoices)).toEqual(expect.arrayContaining(['Skill:history',"Tool:Smith's Tools",'Skill:perception']));
+  expect(Object.values(saved.featExpertiseChoices)).toContain('arcana');
+  expect(Object.values(saved.featDamageChoices)).toContain('Fire');
+  expect(Object.values(saved.featSpellChoices).flatMap(choice=>Object.values(choice.picks||{}).flat())).toEqual(expect.arrayContaining(['Fire Bolt|XPHB','Mage Hand|XPHB','Magic Missile|XPHB']));
+
+  await page.reload();
+  saved=await currentCharacter(page);
+  expect(saved.schema).toBe(19);
+  expect(Object.keys(saved.featToolChoices)).toHaveLength(3);
+  expect(Object.keys(saved.featMixedChoices)).toHaveLength(3);
+});
+
+test('conditions apply sheet effects and break Concentration through the real controls', async ({ page }) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page, {
+    name:'Condition Sentinel', level:5, class:{name:'Wizard',source:'XPHB'}, subclass:{name:'Abjurer',source:'XPHB'},
+    species:{name:'Human',source:'XPHB'}, conditions:[], exhaustion:0, concentration:'Fly', speedOverride:null,
+  });
+  await page.reload();
+
+  await page.locator('[data-action="condition"][data-condition="Incapacitated"]').click();
+  await page.locator('[data-action="condition"][data-condition="Restrained"]').click();
+  await expect(page.locator('.sheet-metrics').getByText('0 ft.')).toBeVisible();
+  await expect(page.locator('.ability-box').filter({hasText:'DEX'})).toContainText('DIS');
+  await expect(page.locator('.derived-effects-panel')).toContainText('Incapacitated');
+  await expect(page.locator('.derived-effects-panel')).toContainText('Restrained');
+
+  let saved=await currentCharacter(page);
+  expect(saved.concentration).toBeNull();
+  expect(saved.conditions).toEqual(expect.arrayContaining(['Incapacitated','Restrained']));
+  await page.reload();
+  saved=await currentCharacter(page);
+  expect(saved.conditions).toEqual(expect.arrayContaining(['Incapacitated','Restrained']));
 });
 
 test('a synchronized installation reloads its shell and rules data offline', async ({ page, context }) => {

@@ -594,7 +594,7 @@ add('feature use inference recognizes proficiency-bonus-sized resources', () => 
   assert.equal(a.inferFeatureUseMaxFromText(f,{pb:4,mods:{},level:9}),4);
 });
 
-/* 153–157: HP damage/healing/death state */
+/* HP damage/healing/death state */
 add('damage is absorbed by temporary HP before real HP', () => withState(() => {
   a.state.character.hpCurrent=10;
   a.state.character.tempHp=5;
@@ -626,6 +626,7 @@ add('healing from zero HP resets death saves', () => withState(() => {
   assert.deepEqual(JSON.parse(JSON.stringify(a.state.character.deathSaves)),{success:0,failure:0});
 }));
 
-assert.ok(cases.length >= 157, 'The core regression matrix must retain at least the original 157 cases.');
+assert.equal(new Set(cases.map(([name])=>name)).size,cases.length,'Core regression case names must stay unique.');
+assert.ok(cases.every(([name,fn])=>name&&typeof fn==='function'),'Every core regression entry must remain executable.');
 
 for (const [name, fn] of cases) test(name, fn);

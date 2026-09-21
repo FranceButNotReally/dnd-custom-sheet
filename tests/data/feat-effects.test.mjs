@@ -137,6 +137,74 @@ test('Boon of Skill exposes its any-proficient-skill Expertise choice',()=>{
   assert.equal(specs[0].from.length,Object.keys(a.SKILLS).length);
 });
 
+test('every PHB feat proficiency choice is expanded into distinct persistent slots',()=>{
+  const crafter=a.featToolSpecs(feat('Crafter'));
+  assert.equal(crafter.length,3);
+  assert.ok(crafter.every(spec=>spec.from.length===8));
+  const musician=a.featToolSpecs(feat('Musician'));
+  assert.equal(musician.length,3);
+  assert.ok(musician.every(spec=>spec.from.length>5));
+  assert.deepEqual(JSON.parse(JSON.stringify(a.featToolSpecs(feat('Chef')).map(spec=>spec.from[0]))),["Cook's Utensils"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(a.featToolSpecs(feat('Poisoner')).map(spec=>spec.from[0]))),["Poisoner's Kit"]);
+
+  const skilled=a.featMixedChoiceSpecs(feat('Skilled'));
+  assert.equal(skilled.length,3);
+  assert.ok(skilled.every(spec=>a.mixedChoiceOptions(spec).some(option=>option.kind==='Skill')));
+  assert.ok(skilled.every(spec=>a.mixedChoiceOptions(spec).some(option=>option.kind==='Tool')));
+});
+
+test('feat reconciliation links Resilient and removes duplicate multi-slot choices',()=>{
+  const asi={...feat('Ability Score Improvement'),_instanceKey:'asi-slot',_abilityMode:'split'};
+  const resilient=feat('Resilient');
+  const crafter=feat('Crafter');
+  const skilled=feat('Skilled');
+  const c=a.emptyCharacter();
+
+  const asiSpecs=a.featAbilitySpecs(asi);
+  c.featAbilityModes[a.featInstanceKey(asi)]='split';
+  c.featAbilityChoices[a.featSpecKey(asi,asiSpecs[0])]='str';
+  c.featAbilityChoices[a.featSpecKey(asi,asiSpecs[1])]='str';
+
+  const resilientAbility=a.featAbilitySpecs(resilient)[0];
+  c.featAbilityChoices[a.featSpecKey(resilient,resilientAbility)]='con';
+
+  const toolSpecs=a.featToolSpecs(crafter);
+  c.featToolChoices[toolSpecs[0].key]="Smith's Tools";
+  c.featToolChoices[toolSpecs[1].key]="Smith's Tools";
+  c.featToolChoices[toolSpecs[2].key]="Tinker's Tools";
+
+  const mixedSpecs=a.featMixedChoiceSpecs(skilled);
+  c.featMixedChoices[mixedSpecs[0].key]='Skill:arcana';
+  c.featMixedChoices[mixedSpecs[1].key]='Skill:arcana';
+  c.featMixedChoices[mixedSpecs[2].key]="Tool:Smith's Tools";
+
+  a.reconcileFeatChoices(c,[asi,resilient,crafter,skilled]);
+  assert.equal(Object.values(c.featAbilityChoices).filter(value=>value==='str').length,1);
+  const resilientSave=a.featSaveSpecs(resilient)[0];
+  assert.equal(c.featSaveChoices[a.featSpecKey(resilient,resilientSave)],'con');
+  assert.equal(Object.values(c.featToolChoices).filter(value=>value==="Smith's Tools").length,1);
+  assert.equal(Object.values(c.featMixedChoices).filter(value=>value==='Skill:arcana').length,1);
+});
+
+test('selected feat tools and only valid proficient-skill Expertise reach derived effects',()=>{
+  const crafter=feat('Crafter');
+  const skillExpert=feat('Skill Expert');
+  const c=a.emptyCharacter();
+  a.state.character=c;
+  const toolSpecs=a.featToolSpecs(crafter);
+  c.featToolChoices[toolSpecs[0].key]="Smith's Tools";
+  c.featToolChoices[toolSpecs[1].key]="Tinker's Tools";
+  c.featToolChoices[toolSpecs[2].key]="Weaver's Tools";
+  const expertise=a.featExpertiseSpecs(skillExpert)[0];
+  c.featExpertiseChoices[expertise.key]='arcana';
+
+  let e=a.buildDerivedEffects(c,derived(),[crafter,skillExpert]);
+  assert.deepEqual([...new Set(e.tools)].sort(),["Smith's Tools","Tinker's Tools","Weaver's Tools"]);
+  assert.equal(e.expertise.has('arcana'),false);
+  e=a.buildDerivedEffects(c,derived(4,{skillProficiencies:new Set(['arcana'])}),[crafter,skillExpert]);
+  assert.equal(e.expertise.has('arcana'),true);
+});
+
 test('rest-limited PHB feat resources remain separate and scale correctly',()=>{
   const selected=['Chef','Lucky','Mage Slayer','Magic Initiate','Ritual Caster','Fey-Touched','Shadow-Touched','Telepathic','Boon of Fate','Boon of Recovery'].map(feat);
   const resources=a.featResourceSpecs(selected,derived(19,{pb:6}));

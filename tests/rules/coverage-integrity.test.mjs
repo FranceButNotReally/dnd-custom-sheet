@@ -67,3 +67,15 @@ test("subclass and optional-feature coverage records the exhaustive pinned corpu
   assert.match(optional.notes, /invocation cantrip targets/i);
   assert.match(optional.notes, /Lessons of the First Ones/i);
 });
+
+test("feat choices and conditions have complete behavioral and browser coverage", () => {
+  const feats = registry.domains.find(x => x.id === "feat-choices");
+  const conditions = registry.domains.find(x => x.id === "conditions");
+  assert.equal(feats?.status, "covered");
+  assert.match(feats.notes, /77 PHB feats/i);
+  assert.match(feats.notes, /tool/i);
+  assert.match(feats.notes, /Chromium/i);
+  assert.equal(conditions?.status, "covered");
+  assert.match(conditions.notes, /fifteen PHB conditions/i);
+  assert.match(conditions.notes, /Concentration/i);
+});
