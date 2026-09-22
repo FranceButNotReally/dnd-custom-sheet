@@ -21,8 +21,79 @@ test("rules coverage registry is internally consistent", () => {
   }
 });
 
-test("spell selection remains explicitly tracked as a gap until fixed", () => {
-  const spellSelection = registry.domains.find(x => x.id === "spell-selection");
-  assert.ok(spellSelection);
-  assert.equal(spellSelection.status, "gap");
+test("spell selection and spell collections have hard logic and browser coverage", () => {
+  for (const id of ["spell-selection", "cantrips", "prepared-known-spells"]) {
+    const domain = registry.domains.find(x => x.id === id);
+    assert.ok(domain, id);
+    assert.equal(domain.status, "covered", id);
+  }
+});
+
+test("the PHB equipment tables have hard behavioral coverage", () => {
+  for (const id of ["weapon-attacks", "weapon-properties", "weapon-mastery", "armor-and-shields", "equipment"]) {
+    const domain = registry.domains.find(x => x.id === id);
+    assert.ok(domain, id);
+    assert.equal(domain.status, "covered", id);
+  }
+  assert.equal(registry.domains.find(x => x.id === "equipment-effects")?.status, "partial");
+  assert.match(registry.domains.find(x => x.id === "weapon-mastery").notes, /all eight PHB mastery/i);
+  assert.match(registry.domains.find(x => x.id === "weapon-mastery").notes, /Topple save DC/i);
+});
+
+test("rest, Hit Dice, and death-state transitions have hard behavioral coverage", () => {
+  for (const id of ["resources", "rests", "hit-dice", "death-saves", "hp-state"]) {
+    const domain = registry.domains.find(x => x.id === id);
+    assert.ok(domain, id);
+    assert.equal(domain.status, "covered", id);
+  }
+  assert.match(registry.domains.find(x => x.id === "resources").notes, /all 48 PHB subclasses/i);
+  assert.match(registry.domains.find(x => x.id === "resources").notes, /Arcane Ward/i);
+});
+
+test("browser-backed persistence, touch, and offline behavior are hard coverage", () => {
+  for (const id of ["ui-choices", "touch-interactions", "save-load-migration", "offline-cache"]) {
+    const domain = registry.domains.find(x => x.id === id);
+    assert.ok(domain, id);
+    assert.equal(domain.status, "covered", id);
+  }
+  assert.match(registry.domains.find(x => x.id === "ui-choices").notes, /Primal Companion/i);
+});
+
+test("subclass and optional-feature coverage records the exhaustive pinned corpus honestly", () => {
+  const subclasses = registry.domains.find(x => x.id === "subclass-choices");
+  const optional = registry.domains.find(x => x.id === "optional-class-features");
+  assert.equal(subclasses?.status, "covered");
+  assert.match(subclasses.notes, /48 PHB subclasses/i);
+  assert.match(subclasses.notes, /309 subclass-feature records/i);
+  assert.match(subclasses.notes, /73 subclass features/i);
+  assert.match(subclasses.notes, /12 stateful/i);
+  assert.equal(optional?.status, "covered");
+  assert.match(optional.notes, /58 PHB optional features/i);
+  assert.match(optional.notes, /Pact of the Tome/i);
+  assert.match(optional.notes, /invocation cantrip targets/i);
+  assert.match(optional.notes, /Lessons of the First Ones/i);
+});
+
+test("feat choices and conditions have complete behavioral and browser coverage", () => {
+  const feats = registry.domains.find(x => x.id === "feat-choices");
+  const conditions = registry.domains.find(x => x.id === "conditions");
+  assert.equal(feats?.status, "covered");
+  assert.match(feats.notes, /77 PHB feats/i);
+  assert.match(feats.notes, /tool/i);
+  assert.match(feats.notes, /Chromium/i);
+  assert.equal(conditions?.status, "covered");
+  assert.match(conditions.notes, /fifteen PHB conditions/i);
+  assert.match(conditions.notes, /Concentration/i);
+});
+
+test("all six derived character-math domains have corpus-backed golden coverage", () => {
+  for (const id of ["hit-points", "armor-class", "speed", "initiative", "senses", "resistances"]) {
+    const domain = registry.domains.find(x => x.id === id);
+    assert.ok(domain, id);
+    assert.equal(domain.status, "covered", id);
+  }
+  assert.match(registry.domains.find(x => x.id === "armor-class").notes, /Dual Wielder/i);
+  assert.match(registry.domains.find(x => x.id === "initiative").notes, /Dread Ambusher/i);
+  assert.match(registry.domains.find(x => x.id === "senses").notes, /Witch Sight/i);
+  assert.match(registry.domains.find(x => x.id === "resistances").notes, /Elemental Affinity/i);
 });

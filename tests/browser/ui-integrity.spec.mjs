@@ -1,0 +1,646 @@
+import { test, expect } from '@playwright/test';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const LOCK = JSON.parse(await fs.readFile(path.join(ROOT, 'tests/fixtures/5etools-version.json'), 'utf8'));
+const DATA = path.join(ROOT, 'tests/.cache', LOCK.version);
+const RAW_PREFIX = `/5etools-mirror-3/5etools-src/${LOCK.version}/`;
+
+async function mockRulesNetwork(page) {
+  await page.route('https://api.github.com/repos/5etools-mirror-3/5etools-src/releases/latest', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ tag_name: LOCK.version }),
+  }));
+  await page.route('https://raw.githubusercontent.com/5etools-mirror-3/5etools-src/**', async route => {
+    const pathname = decodeURIComponent(new URL(route.request().url()).pathname);
+    const marker = pathname.indexOf(RAW_PREFIX);
+    if (marker < 0) return route.abort('failed');
+    const relative = pathname.slice(marker + RAW_PREFIX.length);
+    const file = path.resolve(DATA, relative);
+    if (file !== DATA && !file.startsWith(`${DATA}${path.sep}`)) return route.abort('blockedbyclient');
+    try {
+      const body = await fs.readFile(file);
+      await route.fulfill({ status: 200, contentType: 'application/json', body });
+    } catch {
+      await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
+    }
+  });
+}
+
+async function openReadySheet(page) {
+  await mockRulesNetwork(page);
+  await page.goto('/index.html');
+  await expect(page.locator('#dataBadge')).toContainText(LOCK.version, { timeout: 60_000 });
+  await expect(page.locator('#cacheProgressRoot')).toBeHidden({ timeout: 60_000 });
+  await expect(page.locator('.sheet-stage')).toBeVisible();
+}
+
+async function currentCharacter(page) {
+  return page.evaluate(async () => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('dnd-2024-5etools-sheet', 5);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const get = (store, key) => new Promise((resolve, reject) => {
+      const request = db.transaction(store, 'readonly').objectStore(store).get(key);
+      request.onsuccess = () => resolve(request.result?.value ?? request.result ?? null);
+      request.onerror = () => reject(request.error);
+    });
+    const id = await get('kv', 'currentCharacterId');
+    return get('characters', id);
+  });
+}
+
+async function updateCurrentCharacter(page, changes) {
+  await page.evaluate(async patch => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('dnd-2024-5etools-sheet', 5);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const read = (store, key) => new Promise((resolve, reject) => {
+      const request = db.transaction(store, 'readonly').objectStore(store).get(key);
+      request.onsuccess = () => resolve(request.result?.value ?? request.result ?? null);
+      request.onerror = () => reject(request.error);
+    });
+    const id = await read('kv', 'currentCharacterId');
+    const current = await read('characters', id);
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('characters', 'readwrite');
+      tx.objectStore('characters').put({ ...current, ...patch, id });
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  }, changes);
+}
+
+async function seedCharacterDatabase(page, character) {
+  await page.goto('/manifest.webmanifest');
+  await page.evaluate(async raw => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('dnd-2024-5etools-sheet', 5);
+      request.onupgradeneeded = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains('kv')) database.createObjectStore('kv', { keyPath: 'key' });
+        if (!database.objectStoreNames.contains('data')) database.createObjectStore('data', { keyPath: 'key' });
+        if (!database.objectStoreNames.contains('characters')) database.createObjectStore('characters', { keyPath: 'id' });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(['kv', 'characters'], 'readwrite');
+      tx.objectStore('characters').put(raw);
+      tx.objectStore('kv').put({ key: 'currentCharacterId', value: raw.id });
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  }, character);
+}
+
+test('builder choices survive save and reload through IndexedDB', async ({ page }) => {
+  await openReadySheet(page);
+  await page.getByRole('button', { name: 'Builder' }).click();
+
+  const name = page.locator('[data-builder="name"]');
+  await name.fill('Browser Sentinel');
+  await name.press('Tab');
+
+  await page.locator('[data-builder="species"]').selectOption('Elf|XPHB');
+  await expect(page.locator('[data-species-choice]').first()).toBeVisible();
+  await page.locator('[data-species-choice]').first().selectOption({ label: 'High Elf' });
+
+  await page.locator('[data-builder="background"]').selectOption('Acolyte|XPHB');
+  await expect(page.locator('[data-builder="bgPlus2"]')).toBeVisible();
+  await page.locator('[data-builder="bgPlus2"]').selectOption('wis');
+  await page.locator('[data-builder="bgPlus1"]').selectOption('int');
+
+  await page.locator('[data-builder="class"]').selectOption('Cleric|XPHB');
+  await expect(page.locator('[data-class-feature-choice]').first()).toBeVisible();
+  await page.locator('[data-class-feature-choice]').first().selectOption({ label: 'Protector' });
+
+  await page.locator('[data-builder="standardLanguage1"]').selectOption('Draconic');
+  await page.locator('[data-builder="standardLanguage2"]').selectOption('Elvish');
+  await page.locator('[data-class-skill="medicine"]').check();
+  await page.locator('[data-class-skill="persuasion"]').check();
+  await page.getByRole('button', { name: 'Save' }).click();
+
+  await expect(page.locator('.sheet-brandline h1')).toHaveText('Browser Sentinel');
+  let saved = await currentCharacter(page);
+  expect(saved.species).toEqual({ name: 'Elf', source: 'XPHB' });
+  expect(saved.background).toEqual({ name: 'Acolyte', source: 'XPHB' });
+  expect(saved.class).toEqual({ name: 'Cleric', source: 'XPHB' });
+  expect(saved.standardLanguages).toEqual(['Draconic', 'Elvish']);
+  expect(saved.classSkillChoices).toEqual(expect.arrayContaining(['medicine', 'persuasion']));
+  expect(Object.values(saved.classFeatureChoices)).toContainEqual({ name: 'Protector', source: 'XPHB' });
+  expect(Object.values(saved.speciesChoices).some(choice => choice?.value === 'High Elf')).toBe(true);
+
+  await page.reload();
+  await expect(page.locator('#dataBadge')).toContainText(LOCK.version);
+  await expect(page.locator('.sheet-brandline h1')).toHaveText('Browser Sentinel');
+  saved = await currentCharacter(page);
+  expect(saved.name).toBe('Browser Sentinel');
+  expect(saved.standardLanguages).toEqual(['Draconic', 'Elvish']);
+});
+
+test('legacy character migrations are persisted, not only applied in memory', async ({ page }) => {
+  await mockRulesNetwork(page);
+  await seedCharacterDatabase(page, {
+    id: 'legacy-browser-character',
+    schema: 16,
+    name: 'Legacy Sentinel',
+    level: 1,
+    class: { name: 'Cleric', source: 'XPHB' },
+    hpCurrent: 8,
+    deathSaves: { success: 2, failure: 1 },
+    knownSpells: ['Cure Wounds|XPHB'],
+    preparedSpells: ['Bless|XPHB'],
+  });
+  await page.goto('/index.html');
+  await expect(page.locator('#dataBadge')).toContainText(LOCK.version, { timeout: 60_000 });
+  await expect(page.locator('.sheet-brandline h1')).toHaveText('Legacy Sentinel');
+
+  const migrated = await currentCharacter(page);
+  expect(migrated.schema).toBe(19);
+  expect(migrated.knownSpells).toEqual([]);
+  expect(migrated.preparedSpells).toEqual(expect.arrayContaining(['Bless|XPHB', 'Cure Wounds|XPHB']));
+  expect(migrated.deathSaves).toEqual({ success: 0, failure: 0 });
+});
+
+test('sheet controls persist Short Rest, Long Rest, and critical damage at 0 HP', async ({ page }) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page, {
+    name: 'State Sentinel',
+    level: 3,
+    class: { name: 'Fighter', source: 'XPHB' },
+    hpAuto: false,
+    hpMaxOverride: 30,
+    hpCurrent: 10,
+    hitDiceUsed: 0,
+    tempHp: 0,
+    resources: [
+      { name: 'Short Pool', max: 3, current: 1, recharge: 'short', mode: 'manual' },
+      { name: 'Long Pool', max: 4, current: 1, recharge: 'long', mode: 'manual' },
+    ],
+  });
+  await page.reload();
+  await expect(page.locator('.sheet-brandline h1')).toHaveText('State Sentinel');
+
+  const prompts = ['1', '5'];
+  page.on('dialog', async dialog => dialog.accept(prompts.shift() ?? '0'));
+  await page.getByRole('button', { name: 'Short Rest' }).click();
+  await expect(page.getByText('Short Pool').locator('..').getByText('3/3')).toBeVisible();
+  let saved = await currentCharacter(page);
+  expect(saved.hitDiceUsed).toBe(1);
+  expect(saved.hpCurrent).toBeGreaterThan(10);
+  expect(saved.resources.find(resource => resource.name === 'Long Pool').current).toBe(1);
+
+  await page.getByRole('button', { name: 'Long Rest' }).click();
+  await expect(page.getByText('30 / 30')).toBeVisible();
+  saved = await currentCharacter(page);
+  expect(saved.hitDiceUsed).toBe(0);
+  expect(saved.resources.find(resource => resource.name === 'Long Pool').current).toBe(4);
+
+  await updateCurrentCharacter(page, { hpCurrent: 0, deathSaves: { success: 0, failure: 0 } });
+  await page.reload();
+  await expect(page.getByText('Dying', { exact: false })).toBeVisible();
+  const damageDialogs = ['1', 'yes'];
+  page.removeAllListeners('dialog');
+  page.on('dialog', async dialog => {
+    const response = damageDialogs.shift();
+    if (dialog.type() === 'confirm') await dialog.accept();
+    else await dialog.accept(response ?? '1');
+  });
+  await page.getByRole('button', { name: 'Damage' }).click();
+  saved = await currentCharacter(page);
+  expect(saved.deathSaves.failure).toBe(2);
+});
+
+test('Wizard spellbook, prepared spell, and cantrip selections persist through the UI', async ({ page }) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page, {
+    name: 'Spell Sentinel',
+    level: 3,
+    class: { name: 'Wizard', source: 'XPHB' },
+    subclass: null,
+    spellbook: [],
+    preparedSpells: [],
+    knownSpells: [],
+    cantrips: [],
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Spells' }).click();
+
+  await page.getByRole('button', { name: /^Spellbook/ }).click();
+  await expect(page.getByRole('button', { name: /^Spellbook/ })).toHaveClass(/active/);
+  await page.locator('#spellSearch').fill('Magic Missile');
+  await page.locator('[data-spell-toggle="Magic Missile|XPHB"]').check();
+  await expect.poll(async () => (await currentCharacter(page)).spellbook).toContain('Magic Missile|XPHB');
+
+  await page.getByRole('button', { name: /^Prepared/ }).click();
+  await expect(page.getByRole('button', { name: /^Prepared/ })).toHaveClass(/active/);
+  await page.locator('#spellSearch').fill('Magic Missile');
+  await page.locator('[data-spell-toggle="Magic Missile|XPHB"]').check();
+  await expect.poll(async () => (await currentCharacter(page)).preparedSpells).toContain('Magic Missile|XPHB');
+
+  await page.getByRole('button', { name: /^Cantrips/ }).click();
+  await expect(page.getByRole('button', { name: /^Cantrips/ })).toHaveClass(/active/);
+  await page.locator('#spellSearch').fill('Mage Hand');
+  await page.locator('[data-spell-toggle="Mage Hand|XPHB"]').check();
+  await expect.poll(async () => (await currentCharacter(page)).cantrips).toContain('Mage Hand|XPHB');
+
+  let saved = await currentCharacter(page);
+  expect(saved.spellbook).toContain('Magic Missile|XPHB');
+  expect(saved.preparedSpells).toContain('Magic Missile|XPHB');
+  expect(saved.cantrips).toContain('Mage Hand|XPHB');
+
+  await page.reload();
+  await page.getByRole('button', { name: 'Spells' }).click();
+  await page.getByRole('button', { name: /^Cantrips/ }).click();
+  await expect(page.getByRole('button', { name: /^Cantrips/ })).toHaveClass(/active/);
+  await page.locator('#spellSearch').fill('Mage Hand');
+  await expect(page.locator('[data-spell-toggle="Mage Hand|XPHB"]')).toBeChecked();
+  saved = await currentCharacter(page);
+  expect(saved.knownSpells).toEqual([]);
+});
+
+test('equipment can be added, wielded, attuned, and reloaded from the real catalog UI', async ({ page }) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page, {
+    name: 'Equipment Sentinel',
+    level: 3,
+    class: { name: 'Fighter', source: 'XPHB' },
+    inventory: [],
+    weaponMasteries: ['Dagger|XPHB'],
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Equipment' }).click();
+
+  await page.getByRole('button', { name: 'Add item' }).click();
+  await page.locator('#itemSearch').fill('Dagger');
+  const daggerResult = page.locator('#itemResults .spell-row').filter({ hasText: 'Dagger' }).first();
+  await daggerResult.getByRole('button', { name: 'Add' }).click();
+  let daggerRow = page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Dagger' }).first();
+  await daggerRow.getByRole('button', { name: 'Wield' }).click();
+  daggerRow = page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Dagger' }).first();
+  await daggerRow.locator('[data-action="qty-plus"]').click();
+
+  await page.getByRole('button', { name: 'Add item' }).click();
+  await page.locator('#itemSearch').fill('Arrow-Catching Shield');
+  const shieldResult = page.locator('#itemResults .spell-row').filter({ hasText: 'Arrow-Catching Shield' }).first();
+  await shieldResult.getByRole('button', { name: 'Add' }).click();
+  const shieldRow = page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Arrow-Catching Shield' }).first();
+  await shieldRow.getByRole('button', { name: 'Attune' }).click();
+
+  let saved = await currentCharacter(page);
+  expect(saved.inventory.find(item => item.name === 'Dagger')).toMatchObject({ quantity: 2, equipped: true, wielding: true });
+  expect(saved.inventory.find(item => item.name === 'Arrow-Catching Shield')).toMatchObject({ attuned: true });
+
+  await page.reload();
+  const attackRow = page.locator('.weapon-row').filter({ hasText: 'Dagger' }).first();
+  await expect(attackRow).toContainText('+2');
+  await expect(attackRow).toContainText('1d4 Piercing');
+  await attackRow.getByRole('button', { name: 'Dagger · Notes' }).click();
+  await expect(page.locator('.modal')).toContainText('Nick');
+  await expect(page.locator('.modal')).toContainText('Current values:');
+  await expect(page.locator('.modal')).toContainText('Attack Action instead of a Bonus Action; once per turn.');
+  await page.locator('.modal').getByRole('button', { name: 'Close' }).click();
+
+  await page.getByRole('button', { name: 'Equipment' }).click();
+  await expect(page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Dagger' })).toContainText('×2');
+  await expect(page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Arrow-Catching Shield' })).toContainText('Attuned');
+  saved = await currentCharacter(page);
+  expect(saved.inventory).toHaveLength(2);
+});
+
+test('subclass progressions and invocation prerequisites work through the builder UI', async ({ page }) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page, {
+    name: 'Subclass Sentinel',
+    level: 3,
+    class: { name: 'Fighter', source: 'XPHB' },
+    subclass: { name: 'Battle Master', source: 'XPHB' },
+    optionalFeatureChoices: {},
+    progressionFeats: {},
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Builder' }).click();
+
+  let optionSlots = page.locator('[data-optional-feature]');
+  await expect(optionSlots).toHaveCount(3);
+  await optionSlots.nth(0).selectOption({ label: 'Ambush' });
+  optionSlots = page.locator('[data-optional-feature]');
+  await optionSlots.nth(1).selectOption({ label: 'Bait and Switch' });
+  optionSlots = page.locator('[data-optional-feature]');
+  await optionSlots.nth(2).selectOption({ label: "Commander's Strike" });
+  await expect.poll(async () => Object.values((await currentCharacter(page)).optionalFeatureChoices || {}).length).toBe(3);
+
+  await page.reload();
+  const superiorityDice = page.locator('.sheet-resource-card').filter({ hasText: 'Superiority Dice' });
+  await expect(superiorityDice).toContainText('4/4');
+  await expect(superiorityDice).toContainText('d8 dice');
+
+  await updateCurrentCharacter(page, {
+    level: 5,
+    class: { name: 'Warlock', source: 'XPHB' },
+    subclass: { name: 'Fiend Patron', source: 'XPHB' },
+    optionalFeatureChoices: {},
+    progressionFeats: {},
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Builder' }).click();
+
+  optionSlots = page.locator('[data-optional-feature]');
+  await expect(optionSlots).toHaveCount(5);
+  await expect(optionSlots.first().locator('option', { hasText: 'Ascendant Step' })).toHaveCount(1);
+  await expect(optionSlots.first().locator('option', { hasText: 'Devouring Blade' })).toHaveCount(0);
+  await expect(optionSlots.first().locator('option', { hasText: 'Thirsting Blade' })).toHaveCount(0);
+  await optionSlots.first().selectOption({ label: 'Pact of the Blade' });
+
+  optionSlots = page.locator('[data-optional-feature]');
+  await expect(optionSlots.nth(1).locator('option', { hasText: 'Thirsting Blade' })).toHaveCount(1);
+  await optionSlots.nth(1).selectOption({ label: 'Thirsting Blade' });
+  await expect.poll(async () => Object.values((await currentCharacter(page)).optionalFeatureChoices || {}).map(value => value.name)).toEqual(expect.arrayContaining(['Pact of the Blade', 'Thirsting Blade']));
+
+  await page.reload();
+  const saved = await currentCharacter(page);
+  expect(Object.values(saved.optionalFeatureChoices).map(value => value.name)).toEqual(expect.arrayContaining(['Pact of the Blade', 'Thirsting Blade']));
+});
+
+test('stateful subclass feature choices persist through their builder controls', async ({ page }) => {
+  await openReadySheet(page);
+  const cases = [
+    {
+      level: 7, className: 'Ranger', subclassName: 'Hunter',
+      picks: [
+        ["Hunter's Prey", 'Horde Breaker', 'Horde Breaker'],
+        ['Defensive Tactics', 'Multiattack Defense', 'Multiattack Defense'],
+      ],
+    },
+    {
+      level: 3, className: 'Ranger', subclassName: 'Beast Master',
+      picks: [['Primal Companion stat block', 'Beast of the Sky', 'Beast of the Sky']],
+    },
+    {
+      level: 3, className: 'Ranger', subclassName: 'Fey Wanderer',
+      picks: [['Feywild Gift', '5. Horns or antlers sprout from your head.', 'Horns or antlers sprout from your head.']],
+    },
+    {
+      level: 3, className: 'Sorcerer', subclassName: 'Clockwork Sorcery',
+      picks: [['Manifestation of Order', '1. Spectral cogwheels hover behind you.', 'Spectral cogwheels hover behind you.']],
+    },
+  ];
+
+  for (const scenario of cases) {
+    await updateCurrentCharacter(page, {
+      level: scenario.level,
+      class: { name: scenario.className, source: 'XPHB' },
+      subclass: { name: scenario.subclassName, source: 'XPHB' },
+      classFeatureChoices: {},
+      optionalFeatureChoices: {},
+      progressionFeats: {},
+    });
+    await page.reload();
+    await page.getByRole('button', { name: 'Builder' }).click();
+    for (const [label, optionLabel] of scenario.picks) {
+      const select = page.locator('label.field', { hasText: label }).locator('[data-class-feature-choice]');
+      await expect(select).toBeVisible();
+      await select.selectOption({ label: optionLabel });
+    }
+    const expected = scenario.picks.map(([, , storedName]) => storedName);
+    await expect.poll(async () => Object.values((await currentCharacter(page)).classFeatureChoices || {}).map(value => value.name)).toEqual(expect.arrayContaining(expected));
+    await page.reload();
+    const saved = await currentCharacter(page);
+    expect(Object.values(saved.classFeatureChoices || {}).map(value => value.name)).toEqual(expect.arrayContaining(expected));
+  }
+});
+
+test('subclass spell groups, Pact of the Tome, and invocation targets persist through the builder', async ({ page }) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page, {
+    name: 'Choice Sentinel',
+    level: 10,
+    class: { name: 'Druid', source: 'XPHB' },
+    subclass: { name: 'Circle of the Land', source: 'XPHB' },
+    classFeatureChoices: {},
+    featureSpellChoices: {},
+    featureFeatChoices: {},
+    optionalFeatureChoices: {},
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Builder' }).click();
+
+  const landChoice = page.locator('label.field', { hasText: 'Circle of the Land spell group' }).locator('select');
+  await expect(landChoice).toBeVisible();
+  await landChoice.selectOption({ label: 'Polar Land' });
+  await expect.poll(async () => Object.values((await currentCharacter(page)).classFeatureChoices || {}).map(value => value.name)).toContain('Polar Land');
+
+  await updateCurrentCharacter(page, {
+    level: 5,
+    class: { name: 'Warlock', source: 'XPHB' },
+    subclass: { name: 'Fiend Patron', source: 'XPHB' },
+    cantrips: ['Eldritch Blast|XPHB'],
+    classFeatureChoices: {},
+    featureSpellChoices: {},
+    featureFeatChoices: {},
+    optionalFeatureChoices: {},
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Builder' }).click();
+
+  let optionalSlots = page.locator('[data-optional-feature]');
+  await optionalSlots.first().selectOption({ label: 'Pact of the Tome' });
+  optionalSlots = page.locator('[data-optional-feature]');
+  await optionalSlots.nth(1).selectOption({ label: 'Agonizing Blast' });
+  optionalSlots = page.locator('[data-optional-feature]');
+  await optionalSlots.nth(2).selectOption({ label: 'Lessons of the First Ones' });
+  const lessonFeat = page.locator('label.field', { hasText: 'Lessons of the First Ones · Origin feat' }).locator('select');
+  await expect(lessonFeat).toBeVisible();
+  await lessonFeat.selectOption({ label: 'Alert' });
+
+  for (const [label, optionLabel] of [
+    ['Pact of the Tome cantrip 1', 'Guidance · Cantrip'], ['Pact of the Tome cantrip 2', 'Light · Cantrip'], ['Pact of the Tome cantrip 3', 'Mage Hand · Cantrip'],
+    ['Pact of the Tome ritual 1', 'Alarm · Level 1'], ['Pact of the Tome ritual 2', 'Detect Magic · Level 1'],
+    ['Agonizing Blast target cantrip', 'Eldritch Blast · Cantrip'],
+  ]) {
+    const select = page.locator('label.field', { hasText: label }).locator('select');
+    await expect(select).toBeVisible();
+    await select.selectOption({ label: optionLabel });
+  }
+
+  let saved = await currentCharacter(page);
+  const selectedSpells = Object.values(saved.featureSpellChoices || {}).flatMap(record => Object.values(record.picks || {}).flat());
+  expect(selectedSpells).toEqual(expect.arrayContaining(['Guidance|XPHB','Light|XPHB','Mage Hand|XPHB','Alarm|XPHB','Detect Magic|XPHB','Eldritch Blast|XPHB']));
+  expect(Object.values(saved.featureFeatChoices || {})).toContainEqual({ name:'Alert', source:'XPHB' });
+
+  await page.reload();
+  saved = await currentCharacter(page);
+  expect(Object.keys(saved.featureSpellChoices || {})).toHaveLength(2);
+  expect(Object.values(saved.featureFeatChoices || {})).toContainEqual({ name:'Alert', source:'XPHB' });
+});
+
+test('all structured feat choice families persist through the builder', async ({ page }) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page, {
+    name:'Feat Sentinel', level:19, class:{name:'Wizard',source:'XPHB'}, subclass:{name:'Abjurer',source:'XPHB'},
+    feat:null, feats:[], classSkillChoices:['arcana'], progressionFeats:{},
+    additionalFeats:[
+      {name:'Ability Score Improvement',source:'XPHB'}, {name:'Resilient',source:'XPHB'},
+      {name:'Crafter',source:'XPHB'}, {name:'Skilled',source:'XPHB'},
+      {name:'Skill Expert',source:'XPHB'}, {name:'Elemental Adept',source:'XPHB'},
+      {name:'Magic Initiate',source:'XPHB'},
+    ],
+    featAbilityModes:{}, featAbilityChoices:{}, featSaveChoices:{}, featSkillChoices:{}, featToolChoices:{},
+    featMixedChoices:{}, featExpertiseChoices:{}, featDamageChoices:{}, featSpellChoices:{},
+  });
+  await page.reload();
+  await page.getByRole('button', { name:'Builder' }).click();
+
+  await expect(page.locator('[data-feat-ability-mode]')).toHaveCount(1);
+  await page.locator('[data-feat-ability-mode]').selectOption('split');
+  let asiChoices=page.locator('label.field', {hasText:'Ability Score Improvement · Ability increase (+1)'}).locator('select');
+  await asiChoices.nth(0).selectOption('str');
+  asiChoices=page.locator('label.field', {hasText:'Ability Score Improvement · Ability increase (+1)'}).locator('select');
+  await asiChoices.nth(1).selectOption('dex');
+  await page.locator('label.field', {hasText:'Resilient · Ability increase and saving throw proficiency'}).locator('select').selectOption('con');
+
+  for(const [index,value] of [[0,"Smith's Tools"],[1,"Tinker's Tools"],[2,"Weaver's Tools"]]){
+    const tools=page.locator('label.field', {hasText:'Crafter · Tool proficiency'}).locator('select');
+    await tools.nth(index).selectOption(value);
+  }
+  for(const [index,value] of [[0,'Skill:history'],[1,"Tool:Smith's Tools"],[2,'Skill:perception']]){
+    const choices=page.locator('label.field', {hasText:'Skilled · Choose skill/tool/language'}).locator('select');
+    await choices.nth(index).selectOption(value);
+  }
+  await page.locator('label.field', {hasText:'Skill Expert · Skill proficiency'}).locator('select').selectOption('investigation');
+  await page.locator('label.field', {hasText:'Skill Expert · Expertise'}).locator('select').selectOption('arcana');
+  await page.locator('label.field', {hasText:'Elemental Adept · Elemental Adept damage type'}).locator('select').selectOption('Fire');
+
+  await page.locator('label.field', {hasText:'Magic Initiate · Spell list'}).locator('select').selectOption('Wizard Spells');
+  await page.locator('label.field', {hasText:'Magic Initiate · Spellcasting ability'}).locator('select').selectOption('int');
+  const spellPicks=page.locator('[data-feat-spell-pick]');
+  await expect(spellPicks).toHaveCount(3);
+  await spellPicks.nth(0).selectOption({label:'Fire Bolt · Cantrip'});
+  await page.locator('[data-feat-spell-pick]').nth(1).selectOption({label:'Mage Hand · Cantrip'});
+  await page.locator('[data-feat-spell-pick]').nth(2).selectOption({label:'Magic Missile · Level 1'});
+
+  let saved=await currentCharacter(page);
+  expect(Object.values(saved.featAbilityChoices)).toEqual(expect.arrayContaining(['str','dex','con']));
+  expect(Object.values(saved.featSaveChoices)).toContain('con');
+  expect(Object.values(saved.featToolChoices)).toEqual(expect.arrayContaining(["Smith's Tools","Tinker's Tools","Weaver's Tools"]));
+  expect(Object.values(saved.featMixedChoices)).toEqual(expect.arrayContaining(['Skill:history',"Tool:Smith's Tools",'Skill:perception']));
+  expect(Object.values(saved.featExpertiseChoices)).toContain('arcana');
+  expect(Object.values(saved.featDamageChoices)).toContain('Fire');
+  expect(Object.values(saved.featSpellChoices).flatMap(choice=>Object.values(choice.picks||{}).flat())).toEqual(expect.arrayContaining(['Fire Bolt|XPHB','Mage Hand|XPHB','Magic Missile|XPHB']));
+
+  await page.reload();
+  saved=await currentCharacter(page);
+  expect(saved.schema).toBe(19);
+  expect(Object.keys(saved.featToolChoices)).toHaveLength(3);
+  expect(Object.keys(saved.featMixedChoices)).toHaveLength(3);
+});
+
+test('conditions apply sheet effects and break Concentration through the real controls', async ({ page }) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page, {
+    name:'Condition Sentinel', level:5, class:{name:'Wizard',source:'XPHB'}, subclass:{name:'Abjurer',source:'XPHB'},
+    species:{name:'Human',source:'XPHB'}, conditions:[], exhaustion:0, concentration:'Fly', speedOverride:null,
+  });
+  await page.reload();
+
+  await page.locator('[data-action="condition"][data-condition="Incapacitated"]').click();
+  await page.locator('[data-action="condition"][data-condition="Restrained"]').click();
+  await expect(page.locator('.sheet-metrics').getByText('0 ft.')).toBeVisible();
+  await expect(page.locator('.ability-box').filter({hasText:'DEX'})).toContainText('DIS');
+  await expect(page.locator('.derived-effects-panel')).toContainText('Incapacitated');
+  await expect(page.locator('.derived-effects-panel')).toContainText('Restrained');
+
+  let saved=await currentCharacter(page);
+  expect(saved.concentration).toBeNull();
+  expect(saved.conditions).toEqual(expect.arrayContaining(['Incapacitated','Restrained']));
+  await page.reload();
+  saved=await currentCharacter(page);
+  expect(saved.conditions).toEqual(expect.arrayContaining(['Incapacitated','Restrained']));
+});
+
+test('derived character math is visible for HP, AC, initiative, movement, senses, and resistances', async ({ page }) => {
+  await openReadySheet(page);
+  const stats = {str:10,dex:14,con:14,int:10,wis:16,cha:10};
+  await updateCurrentCharacter(page, {
+    name:'Math Sentinel',
+    level:19,
+    class:{name:'Ranger',source:'XPHB'},
+    subclass:{name:'Gloom Stalker',source:'XPHB'},
+    species:{name:'Aasimar',source:'XPHB'},
+    background:null,
+    baseStats:stats,
+    stats,
+    manualAbilityBonuses:{str:0,dex:0,con:0,int:0,wis:0,cha:0},
+    progressionFeats:{},
+    additionalFeats:[
+      {name:'Alert',source:'XPHB'},
+      {name:'Athlete',source:'XPHB'},
+      {name:'Boon of Truesight',source:'XPHB'},
+    ],
+    hpAuto:true,
+    hpCurrent:null,
+    hpMaxOverride:null,
+    acOverride:null,
+    speedOverride:null,
+    conditions:[],
+    exhaustion:0,
+    inventory:[],
+  });
+  await page.reload();
+
+  await expect(page.locator('.identity-stat-box', {hasText:'Armor Class'})).toContainText('12');
+  await expect(page.locator('.identity-stat-box.hp')).toContainText('156 / 156');
+  await expect(page.locator('.sheet-metrics').locator('div', {hasText:'Initiative'})).toContainText('+11');
+  await expect(page.locator('.sheet-metrics').locator('div', {hasText:'Speed'})).toContainText('Climb 40 ft.');
+
+  await page.getByRole('button', {name:'Page 2'}).click();
+  await expect(page.locator('.derived-subgroup', {hasText:'Damage Resistances'})).toContainText('Necrotic, Radiant');
+  await expect(page.locator('.sense-list')).toContainText('Darkvision 120 ft.');
+  await expect(page.locator('.sense-list')).toContainText('Truesight 60 ft.');
+  await expect(page.locator('.sense-list')).toContainText('Blindsight 30 ft.');
+
+  await page.reload();
+  await expect(page.locator('.sheet-brandline h1')).toHaveText('Math Sentinel');
+  const saved = await currentCharacter(page);
+  expect(saved.hpCurrent).toBe(156);
+});
+
+test('a synchronized installation reloads its shell and rules data offline', async ({ page, context }) => {
+  await openReadySheet(page);
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await updateCurrentCharacter(page, { name: 'Offline Sentinel' });
+  await context.setOffline(true);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.locator('#networkBadge')).toContainText('Offline');
+  await expect(page.locator('#dataBadge')).toContainText(LOCK.version);
+  await expect(page.locator('.sheet-brandline h1')).toHaveText('Offline Sentinel');
+  await expect(page.locator('#cacheProgressRoot')).toBeHidden({ timeout: 60_000 });
+});
+
+test.describe('touch interactions', () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 820, height: 1180 } });
+
+  test('long-pressing a condition opens its cached rules reference', async ({ page }) => {
+    await openReadySheet(page);
+    const prone = page.locator('[data-action="condition"][data-condition="Prone"]');
+    await prone.dispatchEvent('pointerdown', { pointerType: 'touch', isPrimary: true });
+    await page.waitForTimeout(700);
+    await expect(page.locator('#modalRoot')).toContainText('Prone');
+    await expect(page.locator('#modalRoot')).toContainText(/condition/i);
+    await prone.dispatchEvent('pointerup', { pointerType: 'touch', isPrimary: true });
+    await prone.dispatchEvent('click');
+    await page.locator('[data-modal-close]').click();
+
+    const saved = await currentCharacter(page);
+    expect(saved.conditions).not.toContain('Prone');
+  });
+});

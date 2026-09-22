@@ -53,11 +53,12 @@ test('2024 Alert adds proficiency bonus to initiative', () => {
   assert.equal(effects.initiativeBonus, 4);
 });
 
-test('Dual Wielder activates the conditional AC flag', () => {
+test('2024 Dual Wielder does not invent the removed legacy AC bonus', () => {
   const c = baseCharacter();
   const feat = {name:'Dual Wielder', source:'XPHB', entries:[]};
   const effects = a.buildDerivedEffects(c, baseDerived(), [feat]);
-  assert.equal(effects.flags.has('dualWielder'), true);
+  assert.equal(effects.flags.has('dualWielder'), false);
+  assert.ok(effects.active.some(value => value.includes('Enhanced Dual Wielding')));
 });
 
 test('Defense fighting style adds +1 AC while armored', () => {

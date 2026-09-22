@@ -1,5 +1,51 @@
 # Changelog
 
+## Unreleased — rules conformance expansion
+- Completed PHB subclass-choice and UI-choice coverage by classifying all 73 choice-bearing subclass features, adding stateful Hunter, Primal Companion, Feywild Gift, and Manifestation of Order selectors, preserving their save/reload state, and keeping target/trigger/activation decisions linked instead of falsely permanent. Automatic subclass cantrips now free the ordinary selection they replace.
+- Completed PHB resource coverage with exact level-20 profiles for all 48 subclasses, every scaling dice breakpoint, split free-cast pools, alternate recovery routes, and Arcane Ward's empty-on-create, manually recharged, Long-Rest-reset HP lifecycle; resource dice and recovery guidance now render on the sheet.
+- Completed PHB weapon-attack and Weapon Mastery coverage: all 40 weapons now produce exact attack/damage profiles and all eight mastery properties produce deterministic trigger/outcome data, including live Cleave damage, Graze damage, and Topple save DC values rendered in weapon Notes.
+- Completed the deterministic Character Math pass for maximum HP, AC, Speed and movement modes, Initiative, special senses, and damage resistances with corpus-backed golden characters and rendered Chromium assertions.
+- Added Dread Ambusher's Wisdom-based Initiative, permanent Climb/Swim modes from Athlete, Gift of the Depths, Aquatic Affinity, and Second-Story Work, structured object-form senses, and permanent Psi Warrior, Ancients, Celestial, and Draconic resistance effects.
+- Corrected the 2024 Dual Wielder feat by removing the obsolete 2014 +1 AC behavior, and prevented resistance-ignoring attacks or unselected resistance choices from becoming character resistances.
+- Made Paladin aura bonuses and Aura of Warding resistances deactivate while the character is Incapacitated.
+- Completed structured PHB feat choices in the builder, including Crafter and Musician tool selections, Skilled's three distinct skill/tool selections, proficiency-aware Expertise, duplicate prevention, and Resilient's linked ability/save choice.
+- Added an explicit model for all fifteen PHB conditions, applying Speed 0, attack/check/save/Initiative states, inherited Incapacitated/Prone effects, Concentration loss, Petrified resistance/immunity, Exhaustion, and persistent UI state.
+- Added reconciled subclass and optional-feature choices for Circle of the Land terrain spells and resistance, all three Wild Heart option groups, Fiendish Resilience, Iron Mind's fallback save, College of Lore Magical Discoveries, every Wizard Savant spell progression, invocation cantrip targets, Pact of the Tome's three cantrips plus two rituals, and distinct Origin feats from repeatable Lessons of the First Ones.
+- Added feature-granted prepared, cantrip, and spellbook collections without consuming ordinary preparation limits, including fixed invocation spells and selected off-list spells in the spell UI.
+- Corrected Darkvision-extending subclass features to add 60 feet to an existing range and surfaced Wild Heart Climb/Swim speeds on the sheet.
+- Added an exhaustive PHB class/subclass corpus gate spanning 12 classes, 48 subclasses, 283 class-feature records, 309 subclass-feature records, and all 58 optional features.
+- Added subclass-owned progression support, restoring Battle Master maneuver slots and the Champion's extra Fighting Style to the builder.
+- Enforced Eldritch Invocation level, dependency, category, repeatability, and duplicate rules in reconciliation and in the live option lists.
+- Added subclass skill/tool choices for College of Lore, Battle Master, and Fey Wanderer, plus persistent subclass AC, HP, Initiative, Speed, sense, proficiency, save, and resistance effects.
+- Stopped conditional class and optional-feature text, such as Rage resistance and Extended Spell, from being applied as permanent sheet effects.
+- Added a real Chromium integration layer for builder choices, IndexedDB persistence and migration, rest/death controls, touch interactions, and complete offline service-worker reloads.
+- Added Playwright to the existing single GitHub Actions rules job so UI/data-integrity checks run with the pure rules and pinned-corpus suites without creating extra workflow fan-out.
+- Fixed dynamically rendered spell checkboxes so cantrip, spellbook, and prepared-spell selections now invoke their persistence handler.
+- Added deterministic resource-state transitions and a pinned-corpus matrix spanning every PHB class and its subclass resource features.
+- Preserved spent uses—not stale remaining uses—when a scaling class resource increases or decreases its maximum.
+- Added functional Short Rest Hit Dice spending with Constitution healing, availability limits, and maximum-HP clamping.
+- Added complete Long Rest transitions for HP, temporary HP, Hit Dice, spell slots, Exhaustion, Concentration, death saves, and rest-recharging resources, including the 1-HP eligibility rule.
+- Added explicit Healthy, Dying, Stable, and Dead states with damage-at-zero failures, critical-hit failures, massive-damage death, temporary-HP protection, and healing recovery.
+- Replaced impractical hundred-pip displays for large resource pools with compact numeric adjustment controls while retaining pips for small pools.
+- Added a pinned-corpus equipment matrix covering all 40 PHB table weapons, nine weapon properties, eight mastery properties, twelve armor suits, Shield, and every PHB artisan tool and instrument.
+- Corrected ranged-weapon detection to use the 5etools item type instead of misreading the `R` (Reach) property, and normalized Lance's object-form conditional Two-Handed property.
+- Added damage types, Versatile damage, Heavy ability requirements, magic weapon damage bonuses, and current Disadvantage warnings to generated attack rows.
+- Corrected armor behavior so untrained armor still supplies its AC while surfacing Strength/Dexterity D20 Test and spellcasting penalties; added Stealth Disadvantage and multiple-armor warnings.
+- Fixed heavy-armor Strength speed penalties against the pinned `strength` field and added inventory weight plus Strength-based carrying capacity.
+- Added three-item attunement tracking and gated attunement-required magic weapon/armor enhancements until the item is attuned.
+- Repaired 2024 spell selection by loading the pinned 5etools spell-source lookup instead of treating missing per-spell class metadata as universal access.
+- Restricted cantrip, prepared-spell, and Wizard spellbook choices by class/subclass list and current spell level, with invalid saved choices reconciled safely.
+- Added Eldritch Knight and Arcane Trickster spellcasting ability, cantrip, prepared-spell, and slot progressions.
+- Added automatic class/subclass spells that do not count against prepared limits, including fixed bonus cantrips.
+- Added complete PHB feat spell pickers for Magic Initiate, Blessed Warrior, Druidic Warrior, Fey-Touched, Shadow-Touched, Ritual Caster, Telekinetic, and Telepathic.
+- Migrated legacy 2024 "known spell" selections into the unified prepared-spell model and added an 18-test pinned-corpus spell-selection matrix.
+- Added all twelve level-19 Epic Boon feat slots and enforced feat level, ability, armor-training, spellcasting, and repeatability prerequisites in selectors.
+- Added persistent PHB feat effects for armor/weapon training, Speedy, Boon of Speed, Boon of Fortitude, Durable, War Caster, Medium Armor Master, and Weapon Master.
+- Added distinct damage-type and resistance choices for Elemental Adept and Boon of Energy Resistance, including repeatable-feat duplicate protection.
+- Added separate automatic resources for Lucky, Chef, Mage Slayer, Ritual Caster, Magic Initiate, Fey-Touched, Shadow-Touched, Telepathic, Boon of Fate, and Boon of Recovery.
+- Added a corpus-backed audit covering all 77 PHB feats while leaving target/trigger-dependent combat rules as linked references.
+- Repaired the ASI data contract so both explicit `+2` and `+1/+1` patterns are verified without introducing a hidden default.
+
 ## v0.37.0
 - Added structured species lineage/ancestry choice detection and character-creation selectors.
 - Added structured feat choice selectors for mixed skill/tool/language choices, expertise, saving throws, ability choices, and Magic Initiate-style spell-list/ability choices.

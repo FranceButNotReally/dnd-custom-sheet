@@ -15,6 +15,7 @@ const corePaths = [
   'data/languages.json',
   'data/optionalfeatures.json',
   'data/spells/index.json',
+  'data/generated/gendata-spell-source-lookup.json',
   'data/conditionsdiseases.json',
   'data/variantrules.json',
   'data/actions.json',

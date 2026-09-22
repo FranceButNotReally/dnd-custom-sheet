@@ -31,9 +31,96 @@ This layer catches changes in 5etools data shape as well as missing parser suppo
 
 The purpose is to make the remaining manual-rule-review surface visible. A new sheet-affecting construct should not silently appear without being classified.
 
+The PHB feat layer also has an exhaustive 77-feat contract. Persistent sheet
+effects and choices receive behavioral assertions; combat-only rules that need
+a target, trigger, or die roll remain available through the linked feat rules
+rather than being approximated as static bonuses.
+
+The spell layer loads the pinned generated spell-source lookup alongside the
+spell descriptions. Its corpus tests verify class and subclass eligibility,
+current spell-level limits, Wizard spellbook preparation, always-prepared
+spells, Eldritch Knight and Arcane Trickster progression, and every structured
+PHB feat spell choice. Missing class metadata is never interpreted as access to
+every spell list.
+
+The equipment layer exhaustively checks the 40 PHB table weapons, all nine
+weapon properties, all eight mastery properties, the twelve armor suits plus
+Shield, and every PHB artisan tool and instrument. Behavioral cases cover the
+real 5etools object form used by Lance, melee/ranged ability selection,
+Versatile damage, Heavy requirements, armor Dexterity caps, armor-training and
+Stealth penalties, heavy-armor Strength penalties, Shield stacking, equipment
+weight, carrying capacity, and attunement-gated weapon/armor enhancements.
+Every weapon now yields a complete mastery trigger/outcome profile. Cleave
+calculates its extra attack and modifier-limited damage, Graze exposes exact
+miss damage, Topple calculates its current save DC, and Nick, Push, Sap, Slow,
+and Vex expose their fixed action, movement, or roll effects. These current
+values are rendered in the weapon Notes dialog and exercised in Chromium.
+Conditional activated magic-item powers remain explicitly partial rather than
+being applied as unconditional static bonuses.
+
+The resource/state layer uses pure transitions for resource scaling, Short and
+Long Rests, Hit Dice, damage, healing, temporary Hit Points, and death saves.
+Its corpus contracts require every PHB class to expose an automatic resource
+by level 20 and every class's PHB subclasses to yield stable resource specs.
+Behavioral cases cover partial Short Rest recovery, preserving spent uses when
+a resource maximum changes, Long Rest eligibility and complete reset effects,
+Hit Dice healing, damage while at 0 Hit Points, critical-hit failures, massive
+damage, stabilization, death, and recovery through healing.
+
+The class-choice layer now gates all 48 PHB subclasses and all 58 optional
+features against the pinned corpus. Behavioral cases cover subclass-owned
+progressions, proficiency choices, Circle of the Land spell groups, Wild Heart
+options, Fiendish Resilience, Iron Mind's fallback save, Magical Discoveries,
+all four Wizard Savant spellbook progressions, invocation cantrip targets, and
+Pact of the Tome's three cantrips plus two rituals. Repeatable Lessons of the
+First Ones slots also grant distinct Origin feats through the normal feat
+effect and structured-choice system. Feature-granted spells are kept separate
+from ordinary prepared-spell limits and invalid saved choices are removed when
+their class, level, prerequisite, or selected cantrip changes.
+
+The feat layer accounts for all 77 PHB feats and now gives every structured
+ability, saving-throw, skill, tool, mixed skill/tool, Expertise, damage,
+resistance, and spell choice a persistent reconciled slot. Corpus cases cover
+multi-slot duplicate prevention, the shared Resilient ability/save choice,
+Crafter, Musician, Skilled, and proficiency-aware Expertise. Chromium exercises
+the complete choice surface through IndexedDB save/reload.
+
+All fifteen PHB conditions have an explicit sheet-effects classification.
+Tests cover inherited conditions, Speed 0, attack/check/save and Initiative
+states, automatic save failures, Concentration loss, Petrified resistance and
+Poisoned immunity, Exhaustion scaling, condition controls, and persistence.
+
+The derived character-math layer has corpus-backed golden cases for maximum Hit
+Points, Armor Class, Speed and movement modes, Initiative, special senses, and
+damage resistances. These cases include stacked persistent bonuses and the
+complete PHB set of passive Climb/Swim, subclass resistance, and structured
+sense sources. Triggered, target-dependent, resource-activated, and temporary
+combat effects stay available through linked rules instead of being presented
+as unconditional sheet values. The suite also guards against two false-positive
+classes: the removed 2014 Dual Wielder AC bonus and offense that ignores a
+target's Resistance being mistaken for a resistance granted to the character.
+
 ### 4. Browser/UI integration
 
-This is the next layer to expand. These tests should use a real browser against the actual PWA and exercise the same paths a player uses: character creation, selection controls, equipment, spell selection, save/skill displays, notes, rests, and touch interaction.
+`npm run test:browser` runs the actual PWA in Chromium against the pinned
+5etools corpus. Network requests are fulfilled from the same deterministic test
+cache used by the data contracts. The suite currently exercises representative
+species, background, class-feature, language, and skill choices through an
+IndexedDB save/reload; Wizard spellbook/prepared/cantrip selection; equipment
+add/wield/attune state; persisted schema migration; Short and Long Rest controls;
+critical damage at 0 HP; service-worker offline reload; and touch long-press
+behavior. It also verifies Battle Master maneuver slots and dependency-gated
+Eldritch Invocations, the complete structured feat-choice surface, PHB
+condition effects, Circle of the Land spell groups, Pact of the Tome spell
+choices, invocation cantrip targets, and Lessons of the First Ones Origin feats
+through save/reload. Stateful subclass controls cover rest-changeable Hunter
+options, Primal Companion stat blocks, and persistent cosmetic choices in
+addition to Circle of the Land. Battle Master's exact Superiority Dice count and die size
+are checked on the rendered sheet. A golden Ranger sheet verifies visible AC, HP, Initiative,
+Climb Speed, resistances, and structured special senses through IndexedDB
+save/reload. GitHub Actions
+installs Chromium and runs this suite after the pure rules and pinned-data
+layers.
 
 Browser tests should be deterministic by supplying fixture data locally rather than depending on live 5etools during the test.
 
@@ -53,7 +140,10 @@ For high-value mechanics we should maintain small, fixed character fixtures with
 - Barbarian/Monk → correct Unarmored Defense formula.
 - A character with a Dagger → correct Finesse/Light/Thrown behavior and attack calculation.
 - A character with a mastered Quarterstaff → correct mastery availability and selection.
-- A character using Tough, Dual Wielder, Fighting Styles, and selected feat proficiencies → exact derived values.
+- A character using Tough, Fighting Styles, and selected feat proficiencies → exact derived values.
+- A 2024 Dual Wielder with two weapons → no obsolete +1 AC bonus.
+- Every one of the 48 PHB subclasses at level 20 → an exact resource profile, with breakpoint cases for scaling dice pools, split free casts, alternate recovery, and Arcane Ward's distinct HP lifecycle.
+- All 73 subclass features containing choice language → explicitly stateful, handled by another structured selector, or deliberately linked because the decision is target-, trigger-, or activation-specific.
 
 The important part is that the fixture starts from a known character state and asserts the complete relevant derived result, not merely that a parser returned something non-empty.
 
@@ -79,14 +169,15 @@ As the suite becomes more complete, branch protection should mark **Rules confor
 
 ## Browser test target
 
-When the current rule-engine layer is stable, add Playwright tests for the actual rendered PWA. The browser suite should run at least Chromium desktop plus a touch-emulated tablet profile. It should verify the complete user path, not implementation details: create a character, make a choice, save it, reload it, and verify the derived sheet.
+Continue expanding the Playwright coverage for the actual rendered PWA across Chromium desktop and the touch-emulated tablet profile. Scenarios should verify the complete user path, not implementation details: create a character, make a choice, save it, reload it, and verify the derived sheet.
 
-The most important browser scenarios are:
+The next browser scenarios to expand are:
 
 - Character creation with each of the 12 classes; standard array placement, class skills, background ability increases, languages, species choices, subclass, feats, optional class features, and weapon mastery.
-- Derived sheet verification for saves, skills, AC, HP, speed, initiative, senses, resistances, resources, attacks, spellcasting, and rest/reset behavior.
-- Equipment search/add/equip/wield with Dagger, Quarterstaff, armor, shields, tools, and starting-equipment references.
-- Spell selection for cantrips, prepared spells, known spells, and spellbook limits once that subsystem is repaired.
+- Derived sheet verification for saves, skills, resources, attacks, spellcasting, and rest/reset behavior; AC, HP, Speed, Initiative, senses, and resistances now have a golden rendered scenario.
+- Resource interaction with large numeric pools and every Healthy/Dying/Stable/Dead display; Short Rest Hit Dice, Long Rest, and critical damage at 0 HP now have browser coverage.
+- Equipment search/add/equip/wield/attune with Dagger, Quarterstaff, armor, shields, tools, starting-equipment references, weight/capacity, and visible training/Stealth/Heavy warnings.
+- Conditional and activated equipment effects with explicit active-state controls rather than inferred permanent bonuses.
 - Notes and rule-reference interaction with mouse click, touch click, and long press.
 - Offline reload after synchronization, including the complete item and spell catalog.
 
