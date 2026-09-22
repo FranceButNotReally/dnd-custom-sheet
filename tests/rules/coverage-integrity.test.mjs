@@ -79,3 +79,15 @@ test("feat choices and conditions have complete behavioral and browser coverage"
   assert.match(conditions.notes, /fifteen PHB conditions/i);
   assert.match(conditions.notes, /Concentration/i);
 });
+
+test("all six derived character-math domains have corpus-backed golden coverage", () => {
+  for (const id of ["hit-points", "armor-class", "speed", "initiative", "senses", "resistances"]) {
+    const domain = registry.domains.find(x => x.id === id);
+    assert.ok(domain, id);
+    assert.equal(domain.status, "covered", id);
+  }
+  assert.match(registry.domains.find(x => x.id === "armor-class").notes, /Dual Wielder/i);
+  assert.match(registry.domains.find(x => x.id === "initiative").notes, /Dread Ambusher/i);
+  assert.match(registry.domains.find(x => x.id === "senses").notes, /Witch Sight/i);
+  assert.match(registry.domains.find(x => x.id === "resistances").notes, /Elemental Affinity/i);
+});
