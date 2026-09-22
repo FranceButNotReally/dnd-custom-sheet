@@ -61,6 +61,63 @@ test('all eight mastery properties are represented and every PHB weapon has one'
   for(const weapon of weapons) assert.equal(a.masteryObjects(weapon).length,1,weapon.name);
 });
 
+test('every PHB weapon mastery produces a complete deterministic resolution profile',()=>{
+  const d=derived();
+  const expected=new Set(['cleave','graze','nick','push','sap','slow','topple','vex']);
+  const resolved=new Set();
+  for(const weapon of weapons){
+    const profile=a.weaponAttackProfile(weapon,d,[weapon],{equipped:true,wielding:true});
+    const mastery=a.weaponMasteryResolution(weapon,d,profile);
+    assert.ok(mastery,weapon.name);
+    assert.ok(mastery.trigger,weapon.name);
+    assert.ok(mastery.summary,weapon.name);
+    resolved.add(mastery.key);
+  }
+  assert.deepEqual(resolved,expected);
+});
+
+test('all eight mastery outcomes expose their exact sheet-resolvable values',()=>{
+  const d=derived();
+  const resolve=name=>{
+    const item=byName(name);
+    return a.weaponMasteryResolution(item,d,a.weaponAttackProfile(item,d,[item],{equipped:true,wielding:true}));
+  };
+  assert.deepEqual(
+    (({trigger,extraAttack,attackBonus,damage})=>({trigger,extraAttack,attackBonus,damage}))(resolve('Greataxe')),
+    {trigger:'hit',extraAttack:true,attackBonus:6,damage:'1d12 Slashing'},
+  );
+  assert.deepEqual(
+    (({trigger,damage,damageType})=>({trigger,damage,damageType}))(resolve('Glaive')),
+    {trigger:'miss',damage:3,damageType:'Slashing'},
+  );
+  assert.deepEqual(
+    (({trigger,action,usesPerTurn})=>({trigger,action,usesPerTurn}))(resolve('Dagger')),
+    {trigger:'light-extra-attack',action:'Attack Action',usesPerTurn:1},
+  );
+  assert.deepEqual(
+    (({trigger,distance,maximumTargetSize})=>({trigger,distance,maximumTargetSize}))(resolve('Greatclub')),
+    {trigger:'hit',distance:10,maximumTargetSize:'Large'},
+  );
+  assert.equal(resolve('Flail').nextAttackDisadvantage,true);
+  assert.deepEqual(
+    (({trigger,speedReduction,stacks})=>({trigger,speedReduction,stacks}))(resolve('Club')),
+    {trigger:'hit-and-damage',speedReduction:10,stacks:false},
+  );
+  assert.deepEqual(
+    (({trigger,saveAbility,saveDC,failureCondition})=>({trigger,saveAbility,saveDC,failureCondition}))(resolve('Battleaxe')),
+    {trigger:'hit',saveAbility:'Constitution',saveDC:14,failureCondition:'Prone'},
+  );
+  assert.equal(resolve('Rapier').nextAttackAdvantage,true);
+});
+
+test('Cleave omits a positive ability modifier but retains a negative one',()=>{
+  const item=byName('Greataxe');
+  const positive=derived({mods:{str:3,dex:0,con:0,int:0,wis:0,cha:0}});
+  const negative=derived({mods:{str:-1,dex:0,con:0,int:0,wis:0,cha:0}});
+  assert.equal(a.weaponMasteryResolution(item,positive).damage,'1d12 Slashing');
+  assert.equal(a.weaponMasteryResolution(item,negative).damage,'1d12 -1 Slashing');
+});
+
 test('every PHB weapon produces a finite proficient attack profile and damage line',()=>{
   const d=derived();
   for(const weapon of weapons){
@@ -69,6 +126,8 @@ test('every PHB weapon produces a finite proficient attack profile and damage li
     assert.equal(profile.proficient,true,weapon.name);
     assert.notEqual(profile.damage,'—',weapon.name);
     assert.match(profile.damage,/Bludgeoning|Piercing|Slashing/,weapon.name);
+    assert.equal(profile.abilityModifier,d.mods[profile.ability],weapon.name);
+    assert.equal(Number.isFinite(profile.damageBonus),true,weapon.name);
   }
 });
 

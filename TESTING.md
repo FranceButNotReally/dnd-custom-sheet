@@ -50,6 +50,11 @@ real 5etools object form used by Lance, melee/ranged ability selection,
 Versatile damage, Heavy requirements, armor Dexterity caps, armor-training and
 Stealth penalties, heavy-armor Strength penalties, Shield stacking, equipment
 weight, carrying capacity, and attunement-gated weapon/armor enhancements.
+Every weapon now yields a complete mastery trigger/outcome profile. Cleave
+calculates its extra attack and modifier-limited damage, Graze exposes exact
+miss damage, Topple calculates its current save DC, and Nick, Push, Sap, Slow,
+and Vex expose their fixed action, movement, or roll effects. These current
+values are rendered in the weapon Notes dialog and exercised in Chromium.
 Conditional activated magic-item powers remain explicitly partial rather than
 being applied as unconditional static bonuses.
 

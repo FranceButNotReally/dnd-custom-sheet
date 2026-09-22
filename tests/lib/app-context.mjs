@@ -44,7 +44,7 @@ export function loadAppTestContext() {
     'featAdditionalSpellChoiceSpecs', 'parseSpellChoiceFilter', 'fixedSpellRefsInAdditionalGroup', 'spellMatchesChoiceFilter', 'featSpellChoiceOptions', 'activeFeatSpellPlan', 'featGrantedSpellRefs', 'reconcileFeatSpellSelection', 'classFeatureSpellChoiceSpecs', 'optionalFeatureSpellChoiceSpecs', 'featureSpellChoiceOptions', 'reconcileFeatureSpellChoices', 'featureGrantedSpellRefs', 'featDamageChoiceSpecs', 'mixedChoiceOptions', 'speciesChoiceSpecs', 'reconcileSpeciesChoices',
     'reconcileFeatChoices', 'backgroundAbilitySpec', 'reconcileBackgroundAbilityChoices', 'backgroundFeatNames', 'calculateFinalStats',
     'proficiencyChoiceSpecs', 'proficiencyOverlaps', 'hasWeaponProficiency', 'weaponPropertyCode', 'weaponPropertyCodes', 'weaponAbility', 'weaponFlags',
-    'itemTypeCode', 'equipmentCategory', 'numericItemBonus', 'itemRequiresAttunement', 'itemEffectActive', 'reconcileAttunement', 'inventoryWeight', 'carryingCapacity', 'heavyWeaponRequirement', 'weaponDamageText', 'weaponAttackProfile',
+    'itemTypeCode', 'equipmentCategory', 'numericItemBonus', 'itemRequiresAttunement', 'itemEffectActive', 'reconcileAttunement', 'inventoryWeight', 'carryingCapacity', 'heavyWeaponRequirement', 'weaponDamageText', 'weaponAttackProfile', 'weaponMasteryResolution',
     'hasArmorTraining', 'calcAutoAc', 'classTableNumericValue', 'getUnarmoredDefenseFormula', 'applyTextualRulesEffects',
     'applySelectedSpeciesOptionEffects', 'applyDarkvisionBonus', 'collectSenseRefs', 'conditionEffects', 'buildDerivedEffects', 'featureRechargeDetails', 'featureResourceSpecs',
     'classTableResourceSpecs', 'featResourceSpecs', 'reconcileResources', 'weaponMasteryCount', 'masteryObjects', 'masteryLabel',

@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased — rules conformance expansion
+- Completed PHB weapon-attack and Weapon Mastery coverage: all 40 weapons now produce exact attack/damage profiles and all eight mastery properties produce deterministic trigger/outcome data, including live Cleave damage, Graze damage, and Topple save DC values rendered in weapon Notes.
 - Completed the deterministic Character Math pass for maximum HP, AC, Speed and movement modes, Initiative, special senses, and damage resistances with corpus-backed golden characters and rendered Chromium assertions.
 - Added Dread Ambusher's Wisdom-based Initiative, permanent Climb/Swim modes from Athlete, Gift of the Depths, Aquatic Affinity, and Second-Story Work, structured object-form senses, and permanent Psi Warrior, Ancients, Celestial, and Draconic resistance effects.
 - Corrected the 2024 Dual Wielder feat by removing the obsolete 2014 +1 AC behavior, and prevented resistance-ignoring attacks or unselected resistance choices from becoming character resistances.

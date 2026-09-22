@@ -3532,10 +3532,11 @@ function weaponDamageText(item, abilityDamage = 0, extraDamage = 0) {
 
 function weaponAttackProfile(item, d, wieldedWeapons = [], owned = null) {
   const ability = weaponAbility(item, d.mods);
+  const abilityModifier = Number(d.mods?.[ability] || 0);
   const proficient = hasWeaponProficiency(item, d.proficiencies?.weapons || []);
   const flags = weaponFlags(item);
   const itemBonus = itemEffectActive(owned, item) ? numericItemBonus(item.attackBonus ?? item.bonusWeapon ?? 0) : 0;
-  let attackBonus = Number(d.mods?.[ability] || 0) + (proficient ? Number(d.pb || 0) : 0) + itemBonus + Number(d.d20Penalty || 0);
+  let attackBonus = abilityModifier + (proficient ? Number(d.pb || 0) : 0) + itemBonus + Number(d.d20Penalty || 0);
   if (flags.ranged) attackBonus += Number(d.effects?.attackBonuses?.ranged || 0);
   let extraDamage = itemBonus;
   if (d.effects?.damageBonuses?.dueling && flags.melee && !flags.twoHanded && wieldedWeapons.filter(other => other !== item).length === 0) {
@@ -3557,14 +3558,45 @@ function weaponAttackProfile(item, d, wieldedWeapons = [], owned = null) {
   if (!proficient) warnings.push("Proficiency Bonus is not included.");
   return {
     ability,
+    abilityModifier,
     proficient,
     flags,
+    itemBonus,
+    damageBonus: extraDamage,
     attackBonus,
-    damage: weaponDamageText(item, Number(d.mods?.[ability] || 0), extraDamage),
+    damage: weaponDamageText(item, abilityModifier, extraDamage),
     attackBlocked: Boolean(d.conditionEffects?.incapacitated),
     attackRollState: advantageReasons.length && disadvantageReasons.length ? "" : advantageReasons.length ? "advantage" : disadvantageReasons.length ? "disadvantage" : "",
     warnings,
   };
+}
+
+function weaponMasteryResolution(item, d, profile = null) {
+  const mastery = masteryObjects(item)[0];
+  if (!mastery?.name) return null;
+  const resolvedProfile = profile || weaponAttackProfile(item, d);
+  const key = textNorm(mastery.name);
+  const abilityModifier = Number(resolvedProfile.abilityModifier ?? d?.mods?.[resolvedProfile.ability] ?? 0);
+  const base = { name: canonicalLabel(mastery.name), key, trigger: "", summary: "" };
+  if (key === "cleave") {
+    const damage = weaponDamageText(item, Math.min(0, abilityModifier), Number(resolvedProfile.damageBonus || 0));
+    return { ...base, trigger: "hit", extraAttack: true, attackBonus: resolvedProfile.attackBonus, damage, summary: `On a hit: make the qualifying extra attack at ${formatMod(resolvedProfile.attackBonus)}; ${damage} damage (a positive ability modifier is omitted).` };
+  }
+  if (key === "graze") {
+    const damage = Math.max(0, abilityModifier);
+    const damageType = damageTypeName(item?.dmgType);
+    return { ...base, trigger: "miss", damage, damageType, summary: `On a miss: deal ${damage} ${damageType} damage from the attack ability modifier.` };
+  }
+  if (key === "nick") return { ...base, trigger: "light-extra-attack", action: "Attack Action", usesPerTurn: 1, summary: "The Light extra attack becomes part of the Attack Action instead of a Bonus Action; once per turn." };
+  if (key === "push") return { ...base, trigger: "hit", distance: 10, maximumTargetSize: "Large", summary: "On a hit: push a Large or smaller target up to 10 feet directly away." };
+  if (key === "sap") return { ...base, trigger: "hit", nextAttackDisadvantage: true, summary: "On a hit: the target has Disadvantage on its next attack roll before your next turn starts." };
+  if (key === "slow") return { ...base, trigger: "hit-and-damage", speedReduction: 10, stacks: false, summary: "On a damaging hit: reduce the target's Speed by 10 feet until your next turn starts; repeated hits don't stack." };
+  if (key === "topple") {
+    const saveDC = 8 + Number(d?.pb || 0) + abilityModifier;
+    return { ...base, trigger: "hit", saveAbility: "Constitution", saveDC, failureCondition: "Prone", summary: `On a hit: Constitution save DC ${saveDC}; failure applies Prone.` };
+  }
+  if (key === "vex") return { ...base, trigger: "hit-and-damage", nextAttackAdvantage: true, summary: "On a damaging hit: gain Advantage on your next attack roll against that target before your next turn ends." };
+  return null;
 }
 
 async function getAttackRows(d) {
@@ -3578,7 +3610,7 @@ async function getAttackRows(d) {
     if (!item || !item.weaponCategory) continue;
     const wieldedWeapons = (state.character.inventory || []).filter(x => x?.equipped && x.wielding !== false && x?.name).map(x => officialItems.find(it => it.name === x.name && (!x.source || it.source === x.source)) || officialItems.find(it => it.name === x.name)).filter(it => it?.weaponCategory);
     const profile = weaponAttackProfile(item, d, wieldedWeapons, owned);
-    rows.push({ nameHtml: renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`), name: item.name, attackBonus: `${formatMod(profile.attackBonus)}${profile.proficient ? "" : "*"}${profile.attackBlocked ? " BLOCKED" : profile.attackRollState === "advantage" ? " ADV" : profile.attackRollState === "disadvantage" ? " DIS" : ""}`, damage: profile.damage, notePayload: weaponNotePayload(item, profile.warnings) });
+    rows.push({ nameHtml: renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`), name: item.name, attackBonus: `${formatMod(profile.attackBonus)}${profile.proficient ? "" : "*"}${profile.attackBlocked ? " BLOCKED" : profile.attackRollState === "advantage" ? " ADV" : profile.attackRollState === "disadvantage" ? " DIS" : ""}`, damage: profile.damage, notePayload: weaponNotePayload(item, profile.warnings, profile, d) });
   }
   for (const custom of state.character.attacks || []) rows.push({ name: custom.name || "Attack", attackBonus: custom.attackBonus || "—", damage: custom.damage || "—", notePayload: custom.range || custom.notes ? customNotePayload([custom.range, custom.notes].filter(Boolean).join(" · "), `${custom.name || "Attack"} · Notes`) : null });
   for (const spell of (state.character.cantrips || []).map(spellById).filter(Boolean)) {
@@ -4822,7 +4854,7 @@ function normalizeWeaponPropertyCode(value) {
   return byLabel ? byLabel[0] : raw.toUpperCase();
 }
 
-function weaponNotePayload(item, warnings = []) {
+function weaponNotePayload(item, warnings = [], profile = null, d = null) {
   const properties = [];
   const codes = [];
   for (const value of Array.isArray(item?.property) ? item.property : []) {
@@ -4843,7 +4875,8 @@ function weaponNotePayload(item, warnings = []) {
     shorthand: codes.map(code => ({ code, label: WEAPON_PROPERTY_INFO[code].label })),
     mastery: masteryNames.map(name => ({
       name: canonicalLabel(name),
-      description: WEAPON_MASTERY_INFO[textNorm(name)] || "This weapon has this Weapon Mastery property in the 2024 rules."
+      description: WEAPON_MASTERY_INFO[textNorm(name)] || "This weapon has this Weapon Mastery property in the 2024 rules.",
+      resolution: profile && d ? weaponMasteryResolution(item, d, profile) : null,
     })),
     mastered: Boolean(state.character && hasSelectedWeaponMastery(state.character, item)),
     warnings: (warnings || []).filter(Boolean),
@@ -4902,7 +4935,7 @@ function renderAttackNoteDialog(payload) {
     const warnings = (payload.warnings || []).length ? `<section class="note-section"><h3>Current Warnings</h3>${payload.warnings.map(x=>`<p class="choice-warning">${escapeHtml(x)}</p>`).join("")}</section>` : "";
     const propertyRows = (payload.properties || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.label)} <small>(${escapeHtml(x.code)})</small></strong><span>${renderNoteText(x.description)}</span></div>`).join("");
     const shorthand = (payload.shorthand || []).map(x => `<span class="note-chip"><b>${escapeHtml(x.code)}</b><span>${escapeHtml(x.label)}</span></span>`).join("");
-    const masteryRows = (payload.mastery || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.name)}</strong><span>${renderNoteText(x.description)}</span></div>`).join("");
+    const masteryRows = (payload.mastery || []).map(x => `<div class="note-definition"><strong>${escapeHtml(x.name)}</strong><span>${renderNoteText(x.description)}${x.resolution?.summary ? `<small class="mastery-resolution"><b>Current values:</b> ${renderNoteText(x.resolution.summary)}</small>` : ""}</span></div>`).join("");
     const masteryStatus = payload.mastery?.length ? `<p class="note-status">${payload.mastered ? "You currently have this weapon mastery selected." : "You do not currently have this weapon mastery selected."}</p>` : "";
     return openModal(payload.title || "Weapon Notes", `<div class="rules-text formatted-rules note-dialog-content">${warnings}${range}${propertyRows ? `<section class="note-section"><h3>Weapon Properties</h3>${propertyRows}</section>` : ""}${shorthand ? `<section class="note-section"><h3>Shorthand</h3><div class="note-chip-row">${shorthand}</div></section>` : ""}${masteryRows ? `<section class="note-section"><h3>Weapon Mastery</h3>${masteryRows}${masteryStatus}</section>` : ""}</div>`);
   }

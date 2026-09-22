@@ -30,12 +30,14 @@ test("spell selection and spell collections have hard logic and browser coverage
 });
 
 test("the PHB equipment tables have hard behavioral coverage", () => {
-  for (const id of ["weapon-properties", "armor-and-shields", "equipment"]) {
+  for (const id of ["weapon-attacks", "weapon-properties", "weapon-mastery", "armor-and-shields", "equipment"]) {
     const domain = registry.domains.find(x => x.id === id);
     assert.ok(domain, id);
     assert.equal(domain.status, "covered", id);
   }
   assert.equal(registry.domains.find(x => x.id === "equipment-effects")?.status, "partial");
+  assert.match(registry.domains.find(x => x.id === "weapon-mastery").notes, /all eight PHB mastery/i);
+  assert.match(registry.domains.find(x => x.id === "weapon-mastery").notes, /Topple save DC/i);
 });
 
 test("rest, Hit Dice, and death-state transitions have hard behavioral coverage", () => {

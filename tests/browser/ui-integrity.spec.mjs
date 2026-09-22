@@ -275,6 +275,7 @@ test('equipment can be added, wielded, attuned, and reloaded from the real catal
     level: 3,
     class: { name: 'Fighter', source: 'XPHB' },
     inventory: [],
+    weaponMasteries: ['Dagger|XPHB'],
   });
   await page.reload();
   await page.getByRole('button', { name: 'Equipment' }).click();
@@ -300,6 +301,15 @@ test('equipment can be added, wielded, attuned, and reloaded from the real catal
   expect(saved.inventory.find(item => item.name === 'Arrow-Catching Shield')).toMatchObject({ attuned: true });
 
   await page.reload();
+  const attackRow = page.locator('.weapon-row').filter({ hasText: 'Dagger' }).first();
+  await expect(attackRow).toContainText('+2');
+  await expect(attackRow).toContainText('1d4 Piercing');
+  await attackRow.getByRole('button', { name: 'Dagger · Notes' }).click();
+  await expect(page.locator('.modal')).toContainText('Nick');
+  await expect(page.locator('.modal')).toContainText('Current values:');
+  await expect(page.locator('.modal')).toContainText('Attack Action instead of a Bonus Action; once per turn.');
+  await page.locator('.modal').getByRole('button', { name: 'Close' }).click();
+
   await page.getByRole('button', { name: 'Equipment' }).click();
   await expect(page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Dagger' })).toContainText('×2');
   await expect(page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Arrow-Catching Shield' })).toContainText('Attuned');
