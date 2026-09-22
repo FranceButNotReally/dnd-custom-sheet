@@ -46,7 +46,7 @@ export function loadAppTestContext() {
     'proficiencyChoiceSpecs', 'proficiencyOverlaps', 'hasWeaponProficiency', 'weaponPropertyCode', 'weaponPropertyCodes', 'weaponAbility', 'weaponFlags',
     'itemTypeCode', 'equipmentCategory', 'numericItemBonus', 'itemRequiresAttunement', 'itemEffectActive', 'reconcileAttunement', 'inventoryWeight', 'carryingCapacity', 'heavyWeaponRequirement', 'weaponDamageText', 'weaponAttackProfile',
     'hasArmorTraining', 'calcAutoAc', 'classTableNumericValue', 'getUnarmoredDefenseFormula', 'applyTextualRulesEffects',
-    'applySelectedSpeciesOptionEffects', 'applyDarkvisionBonus', 'conditionEffects', 'buildDerivedEffects', 'featureRechargeDetails', 'featureResourceSpecs',
+    'applySelectedSpeciesOptionEffects', 'applyDarkvisionBonus', 'collectSenseRefs', 'conditionEffects', 'buildDerivedEffects', 'featureRechargeDetails', 'featureResourceSpecs',
     'classTableResourceSpecs', 'featResourceSpecs', 'reconcileResources', 'weaponMasteryCount', 'masteryObjects', 'masteryLabel',
     'resetDeathSaves', 'deathState', 'recordDeathSave', 'applyDamage', 'applyHealing', 'restoreResourceForRest', 'applyShortRest', 'spendHitDice', 'applyLongRest', 'countSlotUsed', 'setSlotUsed',
     'normalizeAbilityKey', 'normalizeSkillKey', 'grantedSkillsFromMap', 'friendlyProficiencyKey', 'normalizedProficiencyLabel',
