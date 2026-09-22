@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased — rules conformance expansion
+- Completed the deterministic Character Math pass for maximum HP, AC, Speed and movement modes, Initiative, special senses, and damage resistances with corpus-backed golden characters and rendered Chromium assertions.
+- Added Dread Ambusher's Wisdom-based Initiative, permanent Climb/Swim modes from Athlete, Gift of the Depths, Aquatic Affinity, and Second-Story Work, structured object-form senses, and permanent Psi Warrior, Ancients, Celestial, and Draconic resistance effects.
+- Corrected the 2024 Dual Wielder feat by removing the obsolete 2014 +1 AC behavior, and prevented resistance-ignoring attacks or unselected resistance choices from becoming character resistances.
+- Made Paladin aura bonuses and Aura of Warding resistances deactivate while the character is Incapacitated.
 - Completed structured PHB feat choices in the builder, including Crafter and Musician tool selections, Skilled's three distinct skill/tool selections, proficiency-aware Expertise, duplicate prevention, and Resilient's linked ability/save choice.
 - Added an explicit model for all fifteen PHB conditions, applying Speed 0, attack/check/save/Initiative states, inherited Incapacitated/Prone effects, Concentration loss, Petrified resistance/immunity, Exhaustion, and persistent UI state.
 - Added reconciled subclass and optional-feature choices for Circle of the Land terrain spells and resistance, all three Wild Heart option groups, Fiendish Resilience, Iron Mind's fallback save, College of Lore Magical Discoveries, every Wizard Savant spell progression, invocation cantrip targets, Pact of the Tome's three cantrips plus two rituals, and distinct Origin feats from repeatable Lessons of the First Ones.

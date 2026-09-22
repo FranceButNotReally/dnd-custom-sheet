@@ -85,6 +85,16 @@ Tests cover inherited conditions, Speed 0, attack/check/save and Initiative
 states, automatic save failures, Concentration loss, Petrified resistance and
 Poisoned immunity, Exhaustion scaling, condition controls, and persistence.
 
+The derived character-math layer has corpus-backed golden cases for maximum Hit
+Points, Armor Class, Speed and movement modes, Initiative, special senses, and
+damage resistances. These cases include stacked persistent bonuses and the
+complete PHB set of passive Climb/Swim, subclass resistance, and structured
+sense sources. Triggered, target-dependent, resource-activated, and temporary
+combat effects stay available through linked rules instead of being presented
+as unconditional sheet values. The suite also guards against two false-positive
+classes: the removed 2014 Dual Wielder AC bonus and offense that ignores a
+target's Resistance being mistaken for a resistance granted to the character.
+
 ### 4. Browser/UI integration
 
 `npm run test:browser` runs the actual PWA in Chromium against the pinned
@@ -98,7 +108,9 @@ behavior. It also verifies Battle Master maneuver slots and dependency-gated
 Eldritch Invocations, the complete structured feat-choice surface, PHB
 condition effects, Circle of the Land spell groups, Pact of the Tome spell
 choices, invocation cantrip targets, and Lessons of the First Ones Origin feats
-through save/reload. GitHub Actions
+through save/reload. A golden Ranger sheet verifies visible AC, HP, Initiative,
+Climb Speed, resistances, and structured special senses through IndexedDB
+save/reload. GitHub Actions
 installs Chromium and runs this suite after the pure rules and pinned-data
 layers.
 
@@ -120,7 +132,8 @@ For high-value mechanics we should maintain small, fixed character fixtures with
 - Barbarian/Monk → correct Unarmored Defense formula.
 - A character with a Dagger → correct Finesse/Light/Thrown behavior and attack calculation.
 - A character with a mastered Quarterstaff → correct mastery availability and selection.
-- A character using Tough, Dual Wielder, Fighting Styles, and selected feat proficiencies → exact derived values.
+- A character using Tough, Fighting Styles, and selected feat proficiencies → exact derived values.
+- A 2024 Dual Wielder with two weapons → no obsolete +1 AC bonus.
 
 The important part is that the fixture starts from a known character state and asserts the complete relevant derived result, not merely that a parser returned something non-empty.
 
@@ -151,7 +164,7 @@ Continue expanding the Playwright coverage for the actual rendered PWA across Ch
 The next browser scenarios to expand are:
 
 - Character creation with each of the 12 classes; standard array placement, class skills, background ability increases, languages, species choices, subclass, feats, optional class features, and weapon mastery.
-- Derived sheet verification for saves, skills, AC, HP, speed, initiative, senses, resistances, resources, attacks, spellcasting, and rest/reset behavior.
+- Derived sheet verification for saves, skills, resources, attacks, spellcasting, and rest/reset behavior; AC, HP, Speed, Initiative, senses, and resistances now have a golden rendered scenario.
 - Resource interaction with large numeric pools and every Healthy/Dying/Stable/Dead display; Short Rest Hit Dice, Long Rest, and critical damage at 0 HP now have browser coverage.
 - Equipment search/add/equip/wield/attune with Dagger, Quarterstaff, armor, shields, tools, starting-equipment references, weight/capacity, and visible training/Stealth/Heavy warnings.
 - Feat-choice UI for ability, proficiency, damage/resistance, and feat-granted spell choices across repeatable feat instances.

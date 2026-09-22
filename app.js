@@ -1197,6 +1197,9 @@ function subclassFeatureChoiceSpecs(classObj, subclassObj, features, existingSav
     if (name === "fiendishresilience") {
       add(feature, "damage-resistance", ["Acid","Bludgeoning","Cold","Fire","Lightning","Necrotic","Piercing","Poison","Psychic","Radiant","Slashing","Thunder"]);
     }
+    if (name === "elementalaffinity") {
+      add(feature, "damage-resistance", ["Acid","Cold","Fire","Lightning","Poison"]);
+    }
     if (name === "ironmind" && existingSaves.has("wis")) {
       add(feature, "saving-throw", [
         { name:"Intelligence", value:"int", source:feature.source || DATA_SOURCE },
@@ -3672,15 +3675,6 @@ function calcAutoAc(c, mods, itemsData = null, effects = null, proficiencies = n
       if (shieldAc) { best += shieldAc; breakdown.push(`shield +${shieldAc}`); reason += ` + shield`; }
     }
   }
-  let conditionalAcBonus = 0;
-  if (effects?.flags?.has?.("dualWielder")) {
-    const meleeWeapons = resolved.filter(({ owned, item }) => {
-      if (owned?.wielding === false || !item.weaponCategory) return false;
-      const flags = weaponFlags(item);
-      return flags.melee && !flags.twoHanded;
-    });
-    if (meleeWeapons.length >= 2) conditionalAcBonus += 1;
-  }
   let armorSpeedPenalty = 0;
   if (selectedArmor && itemTypeCode(selectedArmor) === "HA") {
     const req = Number(selectedArmor.strength ?? selectedArmor.str ?? selectedArmor.strRequirement ?? selectedArmor.strengthRequirement ?? 0);
@@ -3692,7 +3686,7 @@ function calcAutoAc(c, mods, itemsData = null, effects = null, proficiencies = n
     : sourceMode === "unarmored"
       ? Number(effects?.acBonus || 0) + Number(effects?.acBonusWhileUnarmored || 0)
       : Number(effects?.acBonus || 0);
-  const totalAcBonus = acBonus + conditionalAcBonus;
+  const totalAcBonus = acBonus;
   if (totalAcBonus) { best += totalAcBonus; breakdown.push(`other ${formatMod(totalAcBonus)}`); reason += ` + ${formatMod(totalAcBonus)}`; }
   const formulaText = sourceMode === "unarmored" ? breakdown.join(" ") + ` = ${best}` : reason;
   return {
@@ -3752,6 +3746,12 @@ function applyTextualRulesEffects(text, effects, sourceName = "Feature") {
   const damageTypes = ["Acid","Cold","Fire","Force","Lightning","Necrotic","Poison","Psychic","Radiant","Thunder","Bludgeoning","Piercing","Slashing"];
   for (const sentence of raw.split(/(?<=[.!?])\s+/)) {
     if (!/\bResistance\b/i.test(sentence)) continue;
+    // Only parse an unconditional grant. Rules that ignore Resistance, offer a
+    // choice, or merely mention a target's Resistance must not become a static
+    // resistance on the character sheet.
+    if (/\b(?:ignore|ignores|ignoring)\b[^.!?;]{0,80}\bResistance\b/i.test(sentence)) continue;
+    if (/\b(?:choose|choice)\b/i.test(sentence)) continue;
+    if (!/\b(?:you|wearer|creature|target)\b[^.!?;]{0,120}\b(?:have|has|gain|gains)\b[^.!?;]{0,40}\bResistance\b/i.test(sentence)) continue;
     for (const type of damageTypes) {
       if (new RegExp(`\\b${type}\\s+damage\\b`, "i").test(sentence) && !effects.resistances.includes(type)) effects.resistances.push(type);
     }
@@ -3848,6 +3848,7 @@ function buildDerivedEffects(c, d, featObjs) {
   const allFeatures = [...(d.classFeatures || []), ...(d.classFeatureOptionObjects || []), ...(d.subclassFeatures || [])];
   const speciesFeatures = (d.speciesObj?.entries || []).filter(x => x && x.name);
   const uad = getUnarmoredDefenseFormula(d.classObj, c.level);
+  const auraEnabled = !conditionEffects(c).incapacitated;
   if (uad) effects.acFormulas.push(uad);
 
   // Class/subclass features. Identity-based effects are deliberately conservative:
@@ -3866,14 +3867,20 @@ function buildDerivedEffects(c, d, featObjs) {
     }
     if (n === "fastmovement") { effects.flags.add("fastMovement"); effects.active.push("Fast Movement: +10 ft. while not wearing heavy armor"); }
     if (n === "feralinstinct") { effects.initiativeAdvantage = true; effects.active.push("Feral Instinct: Advantage on Initiative"); }
+    if (n === "dreadambusher") {
+      const bonus = Math.max(0, Number(d.mods?.wis || 0));
+      effects.initiativeBonus += bonus;
+      effects.active.push(`Dread Ambusher: ${formatMod(bonus)} to Initiative from Wisdom`);
+    }
     if (n === "dangersense") { effects.savingThrowAdvantages.add("dex"); effects.active.push("Danger Sense: Advantage on Dexterity saving throws while not Incapacitated"); }
     if (n === "remarkableathlete") { effects.initiativeAdvantage = true; effects.active.push("Remarkable Athlete: Advantage on Initiative and Strength (Athletics)"); }
     if (n === "assassinate") { effects.initiativeAdvantage = true; effects.active.push("Assassinate: Advantage on Initiative"); }
-    if (n === "auraofprotection") {
+    if (n === "auraofprotection" && auraEnabled) {
       effects.savingThrowBonus += Math.max(1, Number(d.mods?.cha || 0));
       effects.active.push(`Aura of Protection: +${Math.max(1, Number(d.mods?.cha || 0))} to saving throws`);
     }
-    if (n === "auraofalacrity") { effects.speedBonus += 10; effects.active.push("Aura of Alacrity: +10 ft. Speed"); }
+    if (n === "auraofalacrity" && auraEnabled) { effects.speedBonus += 10; effects.active.push("Aura of Alacrity: +10 ft. Speed"); }
+    if (["auraofprotection","auraofalacrity","auraofwarding"].includes(n) && !auraEnabled) effects.active.push(`${feature.name}: inactive while Incapacitated`);
     if (n === "roving") { effects.flags.add("roving"); effects.active.push("Roving: +10 ft. Speed while not wearing Heavy armor; Climb and Swim Speed equal Speed"); }
     if (n === "slipperymind") {
       effects.savingThrows.add("wis");
@@ -3961,9 +3968,29 @@ function buildDerivedEffects(c, d, featObjs) {
       effects.senses.push("Blindsight 30 ft.");
       effects.active.push("Feral Senses: Blindsight 30 ft.");
     }
+    if (n === "aquaticaffinity") {
+      effects.movementModes.swim = "speed";
+      effects.active.push("Aquatic Affinity: Swim Speed equal to Speed");
+    }
+    if (n === "secondstorywork") {
+      effects.movementModes.climb = "speed";
+      effects.active.push("Second-Story Work: Climb Speed equal to Speed");
+    }
     if (n === "psychicdefenses" || n === "thoughtshield") {
       if (!effects.resistances.includes("Psychic")) effects.resistances.push("Psychic");
       effects.active.push(`${feature.name}: Resistance to Psychic damage`);
+    }
+    if (n === "guardedmind") {
+      if (!effects.resistances.includes("Psychic")) effects.resistances.push("Psychic");
+      effects.active.push("Guarded Mind: Resistance to Psychic damage");
+    }
+    if (n === "radiantsoul") {
+      if (!effects.resistances.includes("Radiant")) effects.resistances.push("Radiant");
+      effects.active.push("Radiant Soul: Resistance to Radiant damage");
+    }
+    if (n === "auraofwarding" && auraEnabled) {
+      for (const type of ["Necrotic", "Psychic", "Radiant"]) if (!effects.resistances.includes(type)) effects.resistances.push(type);
+      effects.active.push("Aura of Warding: Resistance to Necrotic, Psychic, and Radiant damage while in your aura");
     }
     if (n === "avatarofbattle") {
       for (const type of ["Bludgeoning", "Piercing", "Slashing"]) if (!effects.resistances.includes(type)) effects.resistances.push(type);
@@ -3983,6 +4010,11 @@ function buildDerivedEffects(c, d, featObjs) {
       const resistance = canonicalLabel(selectedFeatureOption.name);
       if (resistance && resistance !== "Force" && !effects.resistances.includes(resistance)) effects.resistances.push(resistance);
       effects.active.push(`Fiendish Resilience: Resistance to ${resistance} damage`);
+    }
+    if (n === "elementalaffinity" && selectedFeatureOption) {
+      const resistance = canonicalLabel(selectedFeatureOption.name);
+      if (resistance && !effects.resistances.includes(resistance)) effects.resistances.push(resistance);
+      effects.active.push(`Elemental Affinity: Resistance to ${resistance} damage`);
     }
     if (n === "naturesward") {
       const land = selectedAdditionalSpellGroupName(c, d.classFeatureChoiceSpecs);
@@ -4009,6 +4041,7 @@ function buildDerivedEffects(c, d, featObjs) {
     if (n === "dueling") { effects.damageBonuses.dueling = 2; effects.active[effects.active.length - 1] += ": +2 damage with qualifying one-handed attacks"; }
     if (n === "thrownweaponfighting") { effects.damageBonuses.thrown = 2; effects.active[effects.active.length - 1] += ": +2 damage with thrown weapons"; }
     if (n === "blindfighting") { effects.senses.push("Blindsight 10 ft."); effects.active[effects.active.length - 1] += ": Blindsight 10 ft."; }
+    if (n === "giftofthedepths") { effects.movementModes.swim = "speed"; effects.active[effects.active.length - 1] += ": Swim Speed equal to Speed"; }
     if (["greatweaponfighting","twoweaponfighting","protection","interception"].includes(n)) effects.flags.add(n);
   }
 
@@ -4047,7 +4080,8 @@ function buildDerivedEffects(c, d, featObjs) {
     }
 
     if (n === "tough") { effects.hpPerLevel += 2; effects.active.push("Tough: +2 Hit Points per character level"); }
-    if (n === "dualwielder") { effects.flags.add("dualWielder"); effects.active.push("Dual Wielder: +1 AC while wielding a qualifying weapon in each hand"); }
+    if (n === "dualwielder") effects.active.push("Dual Wielder: Enhanced Dual Wielding and Quick Draw (see linked rules)");
+    if (n === "athlete") { effects.movementModes.climb = "speed"; effects.active.push("Athlete: Climb Speed equal to Speed"); }
     if (n === "alert" && String(feat.source || "").toLowerCase() === DATA_SOURCE.toLowerCase()) { effects.initiativeBonus += d.pb; effects.active.push("Alert: add Proficiency Bonus to Initiative"); }
     if (n === "speedy") { effects.speedBonus += 10; effects.active.push("Speedy: +10 ft. Speed"); }
     if (n === "boonofspeed") { effects.speedBonus += 30; effects.active.push("Boon of Speed: +30 ft. Speed"); }
@@ -4739,6 +4773,13 @@ function collectSenseRefs(source) {
         }
       }
       if (Array.isArray(value.senses)) value.senses.forEach(v => {
+        if (v && typeof v === "object") {
+          for (const [name, range] of Object.entries(v)) {
+            const n = senseName(name);
+            if (n) push(n, range != null && range !== true ? `${n} ${range} ft.` : n);
+          }
+          return;
+        }
         const match = String(v || "").match(/^(Blindsight|Darkvision|Tremorsense|Truesight)(?:\s+(.*))?$/i);
         if (match) push(match[1], match[2] ? `${match[1]} ${match[2]}` : match[1]);
         else scanText(v);
