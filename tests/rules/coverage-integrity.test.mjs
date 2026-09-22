@@ -51,20 +51,22 @@ test("rest, Hit Dice, and death-state transitions have hard behavioral coverage"
 });
 
 test("browser-backed persistence, touch, and offline behavior are hard coverage", () => {
-  for (const id of ["touch-interactions", "save-load-migration", "offline-cache"]) {
+  for (const id of ["ui-choices", "touch-interactions", "save-load-migration", "offline-cache"]) {
     const domain = registry.domains.find(x => x.id === id);
     assert.ok(domain, id);
     assert.equal(domain.status, "covered", id);
   }
-  assert.equal(registry.domains.find(x => x.id === "ui-choices")?.status, "partial");
+  assert.match(registry.domains.find(x => x.id === "ui-choices").notes, /Primal Companion/i);
 });
 
 test("subclass and optional-feature coverage records the exhaustive pinned corpus honestly", () => {
   const subclasses = registry.domains.find(x => x.id === "subclass-choices");
   const optional = registry.domains.find(x => x.id === "optional-class-features");
-  assert.equal(subclasses?.status, "partial");
+  assert.equal(subclasses?.status, "covered");
   assert.match(subclasses.notes, /48 PHB subclasses/i);
   assert.match(subclasses.notes, /309 subclass-feature records/i);
+  assert.match(subclasses.notes, /73 subclass features/i);
+  assert.match(subclasses.notes, /12 stateful/i);
   assert.equal(optional?.status, "covered");
   assert.match(optional.notes, /58 PHB optional features/i);
   assert.match(optional.notes, /Pact of the Tome/i);

@@ -1164,7 +1164,7 @@ function preSubclassSavingThrowProficiencies(c, classObj, featObjs = []) {
 
 function subclassFeatureChoiceSpecs(classObj, subclassObj, features, existingSaves = new Set()) {
   const specs = [];
-  const add = (feature, kind, options, label = feature?.name) => {
+  const add = (feature, kind, options, label = feature?.name, metadata = {}) => {
     const unique = [];
     for (const option of options || []) {
       const value = typeof option === "string" ? { name: option, source: feature?.source || DATA_SOURCE } : option;
@@ -1178,7 +1178,16 @@ function subclassFeatureChoiceSpecs(classObj, subclassObj, features, existingSav
       kind,
       options: unique,
       feature,
+      ...metadata,
     });
+  };
+  const tableOptions = (feature, caption) => {
+    const table = (Array.isArray(feature?.entries) ? feature.entries : []).find(entry => entry?.type === "table" && textNorm(entry.caption) === textNorm(caption));
+    return (table?.rows || []).map(row => {
+      const description = stripTags(entriesToText(row?.[1] || "")).trim();
+      const roll = stripTags(entriesToText(row?.[0] || "")).trim();
+      return description ? { name:description, label:roll ? `${roll}. ${description}` : description, source:feature?.source || DATA_SOURCE } : null;
+    }).filter(Boolean);
   };
 
   const namedSpellGroups = (subclassObj?.additionalSpells || []).filter(group => group?.name);
@@ -1190,15 +1199,38 @@ function subclassFeatureChoiceSpecs(classObj, subclassObj, features, existingSav
   for (const feature of features || []) {
     const name = textNorm(feature?.name);
     const subclass = textNorm(feature?.subclassShortName || subclassObj?.shortName);
-    const namedEntries = (Array.isArray(feature?.entries) ? feature.entries : []).filter(entry => entry?.type === "entries" && entry?.name).map(entry => ({ name:entry.name, source:feature.source || DATA_SOURCE, entry }));
+    const namedEntries = [];
+    const collectNamedEntries = value => {
+      if (Array.isArray(value)) { value.forEach(collectNamedEntries); return; }
+      if (!value || typeof value !== "object") return;
+      if (value.type === "entries" && value.name) {
+        namedEntries.push({ name:value.name, source:feature.source || DATA_SOURCE, entry:value });
+        return;
+      }
+      collectNamedEntries(value.entries);
+    };
+    collectNamedEntries(feature?.entries);
     if (subclass === "wildheart" && ["rageofthewilds","aspectofthewilds","powerofthewilds"].includes(name)) {
-      add(feature, "named-option", namedEntries);
+      const timing = name === "aspectofthewilds" ? "Choose after each Long Rest." : "Choose whenever you activate Rage.";
+      add(feature, "named-option", namedEntries, feature.name, { timing });
+    }
+    if (subclass === "beastmaster" && name === "primalcompanion") {
+      add(feature, "companion-stat-block", ["Beast of the Land","Beast of the Sea","Beast of the Sky"], "Primal Companion stat block", { timing:"Choose when summoned; you can replace the beast after a Long Rest." });
+    }
+    if (subclass === "feywanderer" && name === "feywandererspells") {
+      add(feature, "flavor-option", tableOptions(feature, "Feywild Gifts"), "Feywild Gift", { timing:"Choose or determine randomly when you gain the subclass." });
+    }
+    if (subclass === "hunter" && ["huntersprey","defensivetactics"].includes(name)) {
+      add(feature, "named-option", namedEntries, feature.name, { timing:"Choose when gained; you can replace it after a Short or Long Rest." });
+    }
+    if (subclass === "clockwork" && name === "clockworkspells") {
+      add(feature, "flavor-option", tableOptions(feature, "Manifestations of Order"), "Manifestation of Order", { timing:"Choose or determine randomly when you gain the subclass." });
     }
     if (name === "fiendishresilience") {
-      add(feature, "damage-resistance", ["Acid","Bludgeoning","Cold","Fire","Lightning","Necrotic","Piercing","Poison","Psychic","Radiant","Slashing","Thunder"]);
+      add(feature, "damage-resistance", ["Acid","Bludgeoning","Cold","Fire","Lightning","Necrotic","Piercing","Poison","Psychic","Radiant","Slashing","Thunder"], feature.name, { timing:"Choose after each Short or Long Rest." });
     }
     if (name === "elementalaffinity") {
-      add(feature, "damage-resistance", ["Acid","Cold","Fire","Lightning","Poison"]);
+      add(feature, "damage-resistance", ["Acid","Cold","Fire","Lightning","Poison"], feature.name, { timing:"Choose when you gain this feature." });
     }
     if (name === "ironmind" && existingSaves.has("wis")) {
       add(feature, "saving-throw", [
@@ -4048,6 +4080,9 @@ function buildDerivedEffects(c, d, featObjs) {
       if (resistance && !effects.resistances.includes(resistance)) effects.resistances.push(resistance);
       effects.active.push(`Elemental Affinity: Resistance to ${resistance} damage`);
     }
+    if (["primalcompanion","feywandererspells","huntersprey","defensivetactics","clockworkspells"].includes(n) && selectedFeatureOption) {
+      effects.active.push(`${feature.name}: ${selectedFeatureOption.name}`);
+    }
     if (n === "naturesward") {
       const land = selectedAdditionalSpellGroupName(c, d.classFeatureChoiceSpecs);
       const resistance = ({ aridland:"Fire", polarland:"Cold", temperateland:"Lightning", tropicalland:"Poison" })[textNorm(land)];
@@ -5246,7 +5281,7 @@ async function renderBuilder(app) {
   }).join("") : `<div class="empty">No general feat slot is granted by this class at the current level.</div>`;
   const persistentClassChoiceMarkup = persistentClassChoiceSpecs.length ? persistentClassChoiceSpecs.map(spec => {
     const selected = c.classFeatureChoices?.[spec.key];
-    return `<div class="feat-choice-row"><label class="field">${escapeHtml(spec.name)} (level ${spec.level})<select data-class-feature-choice="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.options.map(option=>`<option value="${escapeHtml(normalizeRefId(option.name,option.source))}" ${selected?.name===option.name&&selected?.source===option.source?"selected":""}>${escapeHtml(option.name)}</option>`).join("")}</select></label></div>`;
+    return `<div class="feat-choice-row"><label class="field">${escapeHtml(spec.name)} (level ${spec.level})<select data-class-feature-choice="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.options.map(option=>`<option value="${escapeHtml(normalizeRefId(option.name,option.source))}" ${selected?.name===option.name&&selected?.source===option.source?"selected":""}>${escapeHtml(option.label || option.name)}</option>`).join("")}</select>${spec.timing ? `<small class="field-help">${escapeHtml(spec.timing)}</small>` : ""}</label></div>`;
   }).join("") : "";
   const persistentClassProficiencyMarkup = persistentClassProficiencySpecs.length ? persistentClassProficiencySpecs.map(spec => {
     const selected = c.classProficiencyChoices?.[spec.key] || "";
@@ -6195,6 +6230,13 @@ function reconcileSpellSelections(c, d) {
   c.preparedSpells = dedupeSpellRefs(c.preparedSpells);
   c.spellbook = dedupeSpellRefs(c.spellbook);
   c.knownSpells = [];
+  const withoutAutomatic = (refs, automaticRefs) => {
+    const automatic = spellRefSet(automaticRefs);
+    return refs.filter(ref => !automatic.has(String(normalizeSpellRef(ref) || "").toLowerCase()));
+  };
+  c.cantrips = withoutAutomatic(c.cantrips, [...(d?.alwaysKnownSpells || []), ...(d?.alwaysPreparedSpells || []), ...(d?.featSpellRefs || [])]);
+  c.preparedSpells = withoutAutomatic(c.preparedSpells, [...(d?.alwaysPreparedSpells || []), ...(d?.featSpellRefs || [])]);
+  c.spellbook = withoutAutomatic(c.spellbook, d?.alwaysSpellbookSpells || []);
   const loaded = getLoadedSpells();
   if (!loaded.length || !state.data.spellSourceLookup) return;
   const valid = (refs, listName) => refs.filter(ref => {

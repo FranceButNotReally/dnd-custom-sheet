@@ -371,6 +371,54 @@ test('subclass progressions and invocation prerequisites work through the builde
   expect(Object.values(saved.optionalFeatureChoices).map(value => value.name)).toEqual(expect.arrayContaining(['Pact of the Blade', 'Thirsting Blade']));
 });
 
+test('stateful subclass feature choices persist through their builder controls', async ({ page }) => {
+  await openReadySheet(page);
+  const cases = [
+    {
+      level: 7, className: 'Ranger', subclassName: 'Hunter',
+      picks: [
+        ["Hunter's Prey", 'Horde Breaker', 'Horde Breaker'],
+        ['Defensive Tactics', 'Multiattack Defense', 'Multiattack Defense'],
+      ],
+    },
+    {
+      level: 3, className: 'Ranger', subclassName: 'Beast Master',
+      picks: [['Primal Companion stat block', 'Beast of the Sky', 'Beast of the Sky']],
+    },
+    {
+      level: 3, className: 'Ranger', subclassName: 'Fey Wanderer',
+      picks: [['Feywild Gift', '5. Horns or antlers sprout from your head.', 'Horns or antlers sprout from your head.']],
+    },
+    {
+      level: 3, className: 'Sorcerer', subclassName: 'Clockwork Sorcery',
+      picks: [['Manifestation of Order', '1. Spectral cogwheels hover behind you.', 'Spectral cogwheels hover behind you.']],
+    },
+  ];
+
+  for (const scenario of cases) {
+    await updateCurrentCharacter(page, {
+      level: scenario.level,
+      class: { name: scenario.className, source: 'XPHB' },
+      subclass: { name: scenario.subclassName, source: 'XPHB' },
+      classFeatureChoices: {},
+      optionalFeatureChoices: {},
+      progressionFeats: {},
+    });
+    await page.reload();
+    await page.getByRole('button', { name: 'Builder' }).click();
+    for (const [label, optionLabel] of scenario.picks) {
+      const select = page.locator('label.field', { hasText: label }).locator('[data-class-feature-choice]');
+      await expect(select).toBeVisible();
+      await select.selectOption({ label: optionLabel });
+    }
+    const expected = scenario.picks.map(([, , storedName]) => storedName);
+    await expect.poll(async () => Object.values((await currentCharacter(page)).classFeatureChoices || {}).map(value => value.name)).toEqual(expect.arrayContaining(expected));
+    await page.reload();
+    const saved = await currentCharacter(page);
+    expect(Object.values(saved.classFeatureChoices || {}).map(value => value.name)).toEqual(expect.arrayContaining(expected));
+  }
+});
+
 test('subclass spell groups, Pact of the Tome, and invocation targets persist through the builder', async ({ page }) => {
   await openReadySheet(page);
   await updateCurrentCharacter(page, {

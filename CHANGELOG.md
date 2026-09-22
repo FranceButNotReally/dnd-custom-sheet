@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased — rules conformance expansion
+- Completed PHB subclass-choice and UI-choice coverage by classifying all 73 choice-bearing subclass features, adding stateful Hunter, Primal Companion, Feywild Gift, and Manifestation of Order selectors, preserving their save/reload state, and keeping target/trigger/activation decisions linked instead of falsely permanent. Automatic subclass cantrips now free the ordinary selection they replace.
 - Completed PHB resource coverage with exact level-20 profiles for all 48 subclasses, every scaling dice breakpoint, split free-cast pools, alternate recovery routes, and Arcane Ward's empty-on-create, manually recharged, Long-Rest-reset HP lifecycle; resource dice and recovery guidance now render on the sheet.
 - Completed PHB weapon-attack and Weapon Mastery coverage: all 40 weapons now produce exact attack/damage profiles and all eight mastery properties produce deterministic trigger/outcome data, including live Cleave damage, Graze damage, and Topple save DC values rendered in weapon Notes.
 - Completed the deterministic Character Math pass for maximum HP, AC, Speed and movement modes, Initiative, special senses, and damage resistances with corpus-backed golden characters and rendered Chromium assertions.

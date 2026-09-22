@@ -7,6 +7,7 @@ import { loadAppTestContext, resetState } from '../lib/app-context.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LOCK = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests/fixtures/5etools-version.json'), 'utf8'));
+const CHOICE_COVERAGE = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests/fixtures/subclass-choice-coverage.json'), 'utf8'));
 const DATA = path.join(ROOT, 'tests/.cache', LOCK.version, 'data');
 const read = value => JSON.parse(fs.readFileSync(path.join(DATA, value), 'utf8'));
 const a = loadAppTestContext();
@@ -29,6 +30,7 @@ a.state.data.spellSourceLookup = read('generated/gendata-spell-source-lookup.jso
 
 const subclass = (key, name) => records[key].subclasses.find(value => value.name === name || value.shortName === name);
 const subclassFeatures = (key, name, level = 20) => a.getSubclassFeatures(records[key].file, subclass(key, name), level);
+const entryText = value => typeof value === 'string' ? value : Array.isArray(value) ? value.map(entryText).join(' ') : value && typeof value === 'object' ? Object.values(value).map(entryText).join(' ') : '';
 
 function derivedSubclassEffects(key, subclassName, level, names, mods = {}) {
   const rec = records[key];
@@ -313,6 +315,82 @@ test('remaining subclass choices are classified with their exact PHB options', (
   assert.equal(a.subclassFeatureChoiceSpecs(records.ranger.cls, gloom, subclassFeatures('ranger', 'Gloom Stalker', 7), new Set()).some(spec => spec.name.includes('Iron Mind')), false);
   const iron = a.subclassFeatureChoiceSpecs(records.ranger.cls, gloom, subclassFeatures('ranger', 'Gloom Stalker', 7), new Set(['wis'])).find(spec => spec.name.includes('Iron Mind'));
   assert.deepEqual(JSON.parse(JSON.stringify(iron.options.map(option => option.value))), ['int','cha']);
+
+  const beast = subclass('ranger', 'Beast Master');
+  const beastSpecs = a.subclassFeatureChoiceSpecs(records.ranger.cls, beast, subclassFeatures('ranger', 'Beast Master', 3));
+  assert.deepEqual(JSON.parse(JSON.stringify(beastSpecs[0].options.map(option => option.name))), ['Beast of the Land','Beast of the Sea','Beast of the Sky']);
+
+  const hunter = subclass('ranger', 'Hunter');
+  const hunterSpecs = a.subclassFeatureChoiceSpecs(records.ranger.cls, hunter, subclassFeatures('ranger', 'Hunter', 7));
+  assert.deepEqual(JSON.parse(JSON.stringify(hunterSpecs.map(spec => spec.options.map(option => option.name)))), [
+    ['Colossus Slayer','Horde Breaker'],
+    ['Escape the Horde','Multiattack Defense'],
+  ]);
+
+  const fey = subclass('ranger', 'Fey Wanderer');
+  const gift = a.subclassFeatureChoiceSpecs(records.ranger.cls, fey, subclassFeatures('ranger', 'Fey Wanderer', 3)).find(spec => spec.name === 'Feywild Gift');
+  assert.equal(gift.options.length,6);
+  assert.match(gift.options[4].name,/Horns or antlers/i);
+
+  const clockwork = subclass('sorcerer', 'Clockwork Sorcery');
+  const manifestation = a.subclassFeatureChoiceSpecs(records.sorcerer.cls, clockwork, subclassFeatures('sorcerer', 'Clockwork Sorcery', 3)).find(spec => spec.name === 'Manifestation of Order');
+  assert.equal(manifestation.options.length,6);
+  assert.match(manifestation.options[0].name,/cogwheels/i);
+});
+
+test('all 73 PHB subclass features containing choice language are explicitly classified', () => {
+  const discovered=[];
+  for(const rec of Object.values(records)) for(const feature of rec.file.subclassFeature || []) {
+    if(feature.source!=='XPHB'||feature.classSource!=='XPHB'||!(/\b(?:choose|choice|select)\b/i.test(entryText(feature.entries)))) continue;
+    discovered.push(`${feature.className}|${feature.subclassShortName}|${feature.name}`);
+  }
+  const classified=[...CHOICE_COVERAGE.stateful,...CHOICE_COVERAGE.structured,...CHOICE_COVERAGE.linked];
+  assert.equal(new Set(classified).size,classified.length,'choice classifications must not overlap');
+  assert.deepEqual(discovered.sort(),classified.sort());
+  assert.deepEqual([CHOICE_COVERAGE.stateful.length,CHOICE_COVERAGE.structured.length,CHOICE_COVERAGE.linked.length],[12,13,48]);
+});
+
+test('every stateful subclass choice has a level-gated sheet selector', () => {
+  const represented=[];
+  for(const rec of Object.values(records)) for(const sub of rec.subclasses) {
+    const specs=a.subclassFeatureChoiceSpecs(rec.cls,sub,a.getSubclassFeatures(rec.file,sub,20),new Set(['wis']));
+    for(const spec of specs) represented.push(`${spec.feature.className}|${spec.feature.subclassShortName}|${spec.feature.name}`);
+  }
+  assert.deepEqual([...new Set(represented)].sort(),[...CHOICE_COVERAGE.stateful].sort());
+});
+
+test('selected companion, Hunter, and cosmetic subclass choices reach the active sheet summary', () => {
+  const cases=[
+    ['ranger','Beast Master',3,'Primal Companion','Beast of the Sky'],
+    ['ranger','Hunter',7,"Hunter's Prey",'Horde Breaker'],
+    ['ranger','Fey Wanderer',3,'Fey Wanderer Spells','Horns or antlers sprout from your head.'],
+    ['sorcerer','Clockwork Sorcery',3,'Clockwork Spells','Spectral cogwheels hover behind you.'],
+  ];
+  for(const [key,subName,level,featureName,choiceName] of cases){
+    const rec=records[key],sub=subclass(key,subName),features=subclassFeatures(key,subName,level);
+    const specs=a.subclassFeatureChoiceSpecs(rec.cls,sub,features);
+    const spec=specs.find(value=>value.feature.name===featureName);
+    const character=a.emptyCharacter();
+    character.classFeatureChoices={[spec.key]:{name:choiceName,source:'XPHB'}};
+    const effects=a.buildDerivedEffects(character,{
+      classObj:rec.cls,classFeatures:[],classFeatureOptionObjects:[],classFeatureChoiceSpecs:specs,classProficiencyChoiceSpecs:[],
+      subclassFeatures:features,optionalFeatureObjects:[],speciesObj:null,skillProficiencies:new Set(),pb:a.proficiencyBonus(level),
+      mods:{str:0,dex:0,con:0,int:0,wis:0,cha:0},level,
+    },[]);
+    assert.ok(effects.active.some(value=>value.includes(choiceName)),`${subName}: ${choiceName}`);
+  }
+});
+
+test('automatic subclass cantrips do not consume ordinary cantrip selections', () => {
+  const character=a.emptyCharacter();
+  character.level=3;
+  character.cantrips=['Minor Illusion|XPHB','Light|XPHB','Mage Hand|XPHB'];
+  const wizard=records.wizard.cls;
+  a.reconcileSpellSelections(character,{
+    classObj:wizard,subclassObj:subclass('wizard','Illusionist'),spellcastingSource:wizard,level:3,
+    spellSlots:[4,2],cantrips:3,maxPrepared:6,alwaysKnownSpells:['Minor Illusion|XPHB'],alwaysPreparedSpells:[],alwaysSpellbookSpells:[],featSpellRefs:[],
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(character.cantrips)),['Light|XPHB','Mage Hand|XPHB']);
 });
 
 test('Circle of the Land choice grants only its selected spells and resistance', () => {

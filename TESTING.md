@@ -113,7 +113,9 @@ behavior. It also verifies Battle Master maneuver slots and dependency-gated
 Eldritch Invocations, the complete structured feat-choice surface, PHB
 condition effects, Circle of the Land spell groups, Pact of the Tome spell
 choices, invocation cantrip targets, and Lessons of the First Ones Origin feats
-through save/reload. Battle Master's exact Superiority Dice count and die size
+through save/reload. Stateful subclass controls cover rest-changeable Hunter
+options, Primal Companion stat blocks, and persistent cosmetic choices in
+addition to Circle of the Land. Battle Master's exact Superiority Dice count and die size
 are checked on the rendered sheet. A golden Ranger sheet verifies visible AC, HP, Initiative,
 Climb Speed, resistances, and structured special senses through IndexedDB
 save/reload. GitHub Actions
@@ -141,6 +143,7 @@ For high-value mechanics we should maintain small, fixed character fixtures with
 - A character using Tough, Fighting Styles, and selected feat proficiencies → exact derived values.
 - A 2024 Dual Wielder with two weapons → no obsolete +1 AC bonus.
 - Every one of the 48 PHB subclasses at level 20 → an exact resource profile, with breakpoint cases for scaling dice pools, split free casts, alternate recovery, and Arcane Ward's distinct HP lifecycle.
+- All 73 subclass features containing choice language → explicitly stateful, handled by another structured selector, or deliberately linked because the decision is target-, trigger-, or activation-specific.
 
 The important part is that the fixture starts from a known character state and asserts the complete relevant derived result, not merely that a parser returned something non-empty.
 
@@ -174,7 +177,7 @@ The next browser scenarios to expand are:
 - Derived sheet verification for saves, skills, resources, attacks, spellcasting, and rest/reset behavior; AC, HP, Speed, Initiative, senses, and resistances now have a golden rendered scenario.
 - Resource interaction with large numeric pools and every Healthy/Dying/Stable/Dead display; Short Rest Hit Dice, Long Rest, and critical damage at 0 HP now have browser coverage.
 - Equipment search/add/equip/wield/attune with Dagger, Quarterstaff, armor, shields, tools, starting-equipment references, weight/capacity, and visible training/Stealth/Heavy warnings.
-- Feat-choice UI for ability, proficiency, damage/resistance, and feat-granted spell choices across repeatable feat instances.
+- Conditional and activated equipment effects with explicit active-state controls rather than inferred permanent bonuses.
 - Notes and rule-reference interaction with mouse click, touch click, and long press.
 - Offline reload after synchronization, including the complete item and spell catalog.
 
