@@ -541,8 +541,9 @@ test('derived character math is visible for HP, AC, initiative, movement, senses
 
   await page.getByRole('button', {name:'Page 2'}).click();
   await expect(page.locator('.derived-subgroup', {hasText:'Damage Resistances'})).toContainText('Necrotic, Radiant');
-  await expect(page.locator('.sense-list')).toContainText('Darkvision 60 ft.');
+  await expect(page.locator('.sense-list')).toContainText('Darkvision 120 ft.');
   await expect(page.locator('.sense-list')).toContainText('Truesight 60 ft.');
+  await expect(page.locator('.sense-list')).toContainText('Blindsight 30 ft.');
 
   await page.reload();
   await expect(page.locator('.sheet-brandline h1')).toHaveText('Math Sentinel');
