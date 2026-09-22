@@ -504,6 +504,52 @@ test('conditions apply sheet effects and break Concentration through the real co
   expect(saved.conditions).toEqual(expect.arrayContaining(['Incapacitated','Restrained']));
 });
 
+test('derived character math is visible for HP, AC, initiative, movement, senses, and resistances', async ({ page }) => {
+  await openReadySheet(page);
+  const stats = {str:10,dex:14,con:14,int:10,wis:16,cha:10};
+  await updateCurrentCharacter(page, {
+    name:'Math Sentinel',
+    level:19,
+    class:{name:'Ranger',source:'XPHB'},
+    subclass:{name:'Gloom Stalker',source:'XPHB'},
+    species:{name:'Aasimar',source:'XPHB'},
+    background:null,
+    baseStats:stats,
+    stats,
+    manualAbilityBonuses:{str:0,dex:0,con:0,int:0,wis:0,cha:0},
+    progressionFeats:{},
+    additionalFeats:[
+      {name:'Alert',source:'XPHB'},
+      {name:'Athlete',source:'XPHB'},
+      {name:'Boon of Truesight',source:'XPHB'},
+    ],
+    hpAuto:true,
+    hpCurrent:null,
+    hpMaxOverride:null,
+    acOverride:null,
+    speedOverride:null,
+    conditions:[],
+    exhaustion:0,
+    inventory:[],
+  });
+  await page.reload();
+
+  await expect(page.locator('.identity-stat-box', {hasText:'Armor Class'})).toContainText('12');
+  await expect(page.locator('.identity-stat-box.hp')).toContainText('156 / 156');
+  await expect(page.locator('.sheet-metrics').locator('div', {hasText:'Initiative'})).toContainText('+11');
+  await expect(page.locator('.sheet-metrics').locator('div', {hasText:'Speed'})).toContainText('Climb 30 ft.');
+
+  await page.getByRole('button', {name:'Page 2'}).click();
+  await expect(page.locator('.derived-subgroup', {hasText:'Damage Resistances'})).toContainText('Necrotic, Radiant');
+  await expect(page.locator('.sense-list')).toContainText('Darkvision 60 ft.');
+  await expect(page.locator('.sense-list')).toContainText('Truesight 60 ft.');
+
+  await page.reload();
+  await expect(page.locator('.sheet-brandline h1')).toHaveText('Math Sentinel');
+  const saved = await currentCharacter(page);
+  expect(saved.hpCurrent).toBe(156);
+});
+
 test('a synchronized installation reloads its shell and rules data offline', async ({ page, context }) => {
   await openReadySheet(page);
   await page.evaluate(() => navigator.serviceWorker.ready);
