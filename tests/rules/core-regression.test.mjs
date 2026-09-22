@@ -471,10 +471,11 @@ add('legacy Alert is not treated as the 2024 Alert implementation', () => {
   const e=a.buildDerivedEffects(baseCharacter({level:9}),baseDerived({level:9}),[feat]);
   assert.equal(e.initiativeBonus,0);
 });
-add('Dual Wielder activates its sheet flag', () => {
+add('2024 Dual Wielder remains a linked combat rule without a legacy AC flag', () => {
   const feat={name:'Dual Wielder',source:'XPHB',entries:[]};
   const e=a.buildDerivedEffects(baseCharacter(),baseDerived(),[feat]);
-  assert.equal(e.flags.has('dualWielder'),true);
+  assert.equal(e.flags.has('dualWielder'),false);
+  assert.ok(e.active.some(value=>value.includes('Enhanced Dual Wielding')));
 });
 add('Defense fighting style adds armored AC bonus', () => {
   const feature={name:'Defense',source:'XPHB',entries:[]};
