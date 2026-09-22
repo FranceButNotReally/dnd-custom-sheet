@@ -537,7 +537,7 @@ test('derived character math is visible for HP, AC, initiative, movement, senses
   await expect(page.locator('.identity-stat-box', {hasText:'Armor Class'})).toContainText('12');
   await expect(page.locator('.identity-stat-box.hp')).toContainText('156 / 156');
   await expect(page.locator('.sheet-metrics').locator('div', {hasText:'Initiative'})).toContainText('+11');
-  await expect(page.locator('.sheet-metrics').locator('div', {hasText:'Speed'})).toContainText('Climb 30 ft.');
+  await expect(page.locator('.sheet-metrics').locator('div', {hasText:'Speed'})).toContainText('Climb 40 ft.');
 
   await page.getByRole('button', {name:'Page 2'}).click();
   await expect(page.locator('.derived-subgroup', {hasText:'Damage Resistances'})).toContainText('Necrotic, Radiant');
