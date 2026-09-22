@@ -4253,6 +4253,14 @@ function featureRechargeDetails(feature) {
 
 function featureRechargeFromText(feature) { return featureRechargeDetails(feature).recharge; }
 
+function resourceRecoveryNote(feature) {
+  const text = entriesToText(feature?.entries || "");
+  const sentence = text.split(/(?<=[.!?])\s+/).find(value =>
+    /unless[^.!?]*(?:expend|spend)[^.!?]*restore (?:your )?use|(?:also|alternatively)[^.!?]*(?:restore|regain)(?: your)? uses?[^.!?]*(?:expending|spending)/i.test(value)
+  );
+  return sentence ? stripTags(sentence).trim() : "";
+}
+
 function featureResourceSpecs(features, d, prefix) {
   const out = [];
   for (const f of features || []) {
@@ -4279,7 +4287,7 @@ function featureResourceSpecs(features, d, prefix) {
 
     if (!max || !details.recharge) continue;
     const id = `${prefix}:${f.source || DATA_SOURCE}:${f.name}`.toLowerCase();
-    out.push({ id, name: f.name, max, recharge: details.recharge, shortRestore: details.shortRestore, longRestore: details.longRestore, mode: "auto", origin: { type: prefix, name: f.name, source: f.source || DATA_SOURCE } });
+    out.push({ id, name: f.name, max, recharge: details.recharge, shortRestore: details.shortRestore, longRestore: details.longRestore, recoveryNote: resourceRecoveryNote(f), mode: "auto", origin: { type: prefix, name: f.name, source: f.source || DATA_SOURCE } });
   }
 
   // Font of Inspiration changes the recovery rule of the existing Bardic
@@ -4289,6 +4297,89 @@ function featureResourceSpecs(features, d, prefix) {
     if (bardic) { bardic.recharge = "both"; bardic.shortRestore = "all"; bardic.longRestore = "all"; }
   }
   return out;
+}
+
+function subclassResourceSpecs(subclassObj, features, d) {
+  const byId = new Map(featureResourceSpecs(features, d, "subclassfeature").map(spec => [spec.id, spec]));
+  const level = Math.max(1, Number(d?.level || 1));
+  const findFeature = name => (features || []).find(feature => textNorm(feature?.name) === textNorm(name));
+  const put = (featureName, name, max, recharge, extra = {}, suffix = "") => {
+    const feature = findFeature(featureName);
+    if (!feature || !Number.isFinite(Number(max)) || Number(max) <= 0) return;
+    const baseId = `subclassfeature:${feature.source || DATA_SOURCE}:${feature.name}`.toLowerCase();
+    const id = suffix ? `${baseId}:${suffix}` : baseId;
+    byId.set(id, {
+      id,
+      name,
+      max: Number(max),
+      recharge,
+      shortRestore: "all",
+      longRestore: "all",
+      recoveryNote: resourceRecoveryNote(feature),
+      mode: "auto",
+      origin: { type: "subclassfeature", name: feature.name, source: feature.source || DATA_SOURCE },
+      ...extra,
+    });
+  };
+  const removeBase = featureName => {
+    const feature = findFeature(featureName);
+    if (feature) byId.delete(`subclassfeature:${feature.source || DATA_SOURCE}:${feature.name}`.toLowerCase());
+  };
+
+  if (findFeature("Warrior of the Gods")) {
+    const dice = level >= 17 ? 7 : level >= 12 ? 6 : level >= 6 ? 5 : 4;
+    put("Warrior of the Gods", "Warrior of the Gods Dice", dice, "long", { die: "d12" });
+  }
+  if (findFeature("Combat Superiority")) {
+    const count = level >= 15 ? 6 : level >= 7 ? 5 : 4;
+    const die = level >= 18 ? "d12" : level >= 10 ? "d10" : "d8";
+    put("Combat Superiority", "Superiority Dice", count, "both", {
+      die,
+      recoveryNote: level >= 15 ? "When you roll Initiative with no Superiority Dice remaining, regain one die." : "",
+    });
+  }
+  if (findFeature("Psionic Power")) {
+    const count = level >= 17 ? 12 : level >= 13 ? 10 : level >= 9 ? 8 : level >= 5 ? 6 : 4;
+    const die = level >= 17 ? "d12" : level >= 11 ? "d10" : level >= 5 ? "d8" : "d6";
+    put("Psionic Power", "Psionic Energy Dice", count, "both", {
+      die,
+      shortRestore: "one",
+      recoveryNote: "Regain one expended die after a Short Rest and all expended dice after a Long Rest.",
+    });
+  }
+  if (findFeature("Healing Light")) put("Healing Light", "Healing Light Dice", level + 1, "long", { die: "d6" });
+  if (findFeature("Arcane Ward")) {
+    put("Arcane Ward", "Arcane Ward Hit Points", Math.max(1, 2 * level + Number(d?.mods?.int || 0)), "", {
+      initialCurrent: 0,
+      preserveCurrent: true,
+      longReset: "zero",
+      unit: "HP",
+      recoveryNote: "Create the ward by casting an Abjuration spell with a spell slot; recharge it with Abjuration spell slots or a spell slot spent as a Bonus Action.",
+    });
+  }
+  if (findFeature("Portent")) put("Portent", "Portent Rolls", findFeature("Greater Portent") ? 3 : 2, "long", { unit: "rolls" });
+  if (findFeature("Overchannel")) put("Overchannel", "Safe Overchannel", 1, "long", { unit: "use", recoveryNote: "Further uses before a Long Rest remain possible but deal the feature's escalating Necrotic damage." });
+  if (findFeature("Tides of Chaos")) put("Tides of Chaos", "Tides of Chaos", 1, "long", { recoveryNote: "Casting a Sorcerer spell with a spell slot also restores this use and triggers a Wild Magic Surge roll." });
+
+  if (findFeature("Natural Recovery")) {
+    removeBase("Natural Recovery");
+    put("Natural Recovery", "Circle Spell Free Cast", 1, "long", {}, "free-cast");
+    put("Natural Recovery", "Natural Recovery", 1, "long", { unit: `${Math.ceil(level / 2)} slot levels`, recoveryNote: "Use after a Short Rest to recover spell slots totaling up to half your Druid level (rounded up), with no slot above level 5." }, "slot-recovery");
+  }
+  if (findFeature("Telekinetic Master")) put("Telekinetic Master", "Telekinesis Free Cast", 1, "long", {}, "free-cast");
+  if (findFeature("Fey Reinforcements")) put("Fey Reinforcements", "Summon Fey Free Cast", 1, "long", {}, "free-cast");
+  if (findFeature("Dragon Companion")) put("Dragon Companion", "Summon Dragon Free Cast", 1, "long", {}, "free-cast");
+  if (findFeature("Phantasmal Creatures")) {
+    removeBase("Phantasmal Creatures");
+    put("Phantasmal Creatures", "Summon Beast Free Cast", 1, "long", {}, "summon-beast");
+    put("Phantasmal Creatures", "Summon Fey Free Cast", 1, "long", {}, "summon-fey");
+  }
+
+  if (findFeature("Improved Warding Flare")) {
+    const warding = [...byId.values()].find(spec => textNorm(spec.name) === "wardingflare");
+    if (warding) { warding.recharge = "both"; warding.shortRestore = "all"; }
+  }
+  return [...byId.values()];
 }
 
 function featResourceSpecs(feats, d) {
@@ -4374,11 +4465,12 @@ function reconcileResources(c, specs) {
   for (const spec of specs || []) unique.set(spec.id, spec);
   const auto = [...unique.values()].map(spec => {
     const prior = byId.get(spec.id);
-    if (!prior) return { ...spec, mode: "auto", current: spec.max };
+    if (!prior) return { ...spec, mode: "auto", current: clamp(Number(spec.initialCurrent ?? spec.max), 0, spec.max) };
     const priorMax = Math.max(0, Number(prior.max ?? spec.max));
     const priorCurrent = clamp(Number(prior.current ?? priorMax), 0, priorMax);
     const spent = Math.max(0, priorMax - priorCurrent);
-    return { ...spec, mode: "auto", current: clamp(Number(spec.max || 0) - spent, 0, spec.max) };
+    const current = spec.preserveCurrent ? clamp(priorCurrent, 0, spec.max) : clamp(Number(spec.max || 0) - spent, 0, spec.max);
+    return { ...spec, mode: "auto", current };
   });
   c.resources = [...manual, ...auto];
 }
@@ -4450,7 +4542,7 @@ async function deriveCharacter() {
       ...featureResourceSpecs(d.classFeatures, d, "classfeature"),
       ...classTableResourceSpecs(d.classObj, d.classFeatures, d),
       ...featureResourceSpecs(d.classFeatureOptionObjects, d, "classfeatureoption"),
-      ...featureResourceSpecs(d.subclassFeatures, d, "subclassfeature"),
+      ...subclassResourceSpecs(d.subclassObj, d.subclassFeatures, d),
       ...featResourceSpecs(d.featObjs, d),
       ...featureResourceSpecs(d.optionalFeatureObjects, d, "optionalfeature")
     ];
@@ -4844,7 +4936,8 @@ function renderSheetResources(c) {
     const controls = max <= 20
       ? `<div class="pips sheet-resource-pips">${Array.from({length:max},(_,idx)=>`<button class="pip ${idx<spent?"used":""}" data-action="resource-pip" data-resource="${i}" data-index="${idx}" aria-label="${escapeHtml(r.name||"Resource")} ${idx+1}"></button>`).join("")}</div>`
       : `<div class="resource-actions"><button class="sheet-nav" data-action="resource-adjust" data-resource="${i}" data-delta="-5">−5</button><button class="sheet-nav" data-action="resource-adjust" data-resource="${i}" data-delta="-1">−1</button><button class="sheet-nav" data-action="resource-adjust" data-resource="${i}" data-delta="1">+1</button><button class="sheet-nav" data-action="resource-adjust" data-resource="${i}" data-delta="5">+5</button></div>`;
-    return `<div class="sheet-resource-card"><div class="sheet-resource-head"><span>${escapeHtml(r.name || "Resource")}</span><strong>${current}/${max}</strong></div>${r.origin?.name ? `<small>${escapeHtml(r.origin.name)}</small>` : ""}${controls}<div class="resource-meta">${escapeHtml(r.recharge ? (r.recharge==="both"?"Short or Long Rest":`${r.recharge==="short"?"Short":"Long"} Rest`) : "Manual")}</div></div>`;
+    const unit = r.die ? `${r.die} dice` : r.unit || "";
+    return `<div class="sheet-resource-card"><div class="sheet-resource-head"><span>${escapeHtml(r.name || "Resource")}</span><strong>${current}/${max}</strong></div>${r.origin?.name ? `<small>${escapeHtml(r.origin.name)}</small>` : ""}${controls}<div class="resource-meta">${escapeHtml(r.recharge ? (r.recharge==="both"?"Short or Long Rest":`${r.recharge==="short"?"Short":"Long"} Rest`) : "Manual")}${unit ? ` · ${escapeHtml(unit)}` : ""}</div>${r.recoveryNote ? `<small class="resource-recovery-note">${escapeHtml(r.recoveryNote)}</small>` : ""}</div>`;
   }).join("")}</div>`;
 }
 
@@ -6238,6 +6331,7 @@ function applyHealing(amount, maxHp){
 }
 function restoreResourceForRest(resource, rest) {
   if (!resource || !["short", "long"].includes(rest)) return false;
+  if (rest === "long" && resource.longReset === "zero") { resource.current = 0; return true; }
   const recharge = String(resource.recharge || "");
   if (rest === "short" && recharge !== "short" && recharge !== "both") return false;
   if (rest === "long" && !["short", "long", "both"].includes(recharge)) return false;

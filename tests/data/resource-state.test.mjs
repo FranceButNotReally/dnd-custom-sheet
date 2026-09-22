@@ -41,6 +41,16 @@ test('resource reconciliation preserves manual pools and removes obsolete automa
   assert.equal(c.resources[0].current,7);
 });
 
+test('resource reconciliation supports empty-on-create pools that preserve their current value as maximums change',()=>{
+  const c=character();
+  const spec={id:'arcane-ward',name:'Arcane Ward Hit Points',mode:'auto',max:15,recharge:'',initialCurrent:0,preserveCurrent:true,longReset:'zero'};
+  a.reconcileResources(c,[spec]);
+  assert.equal(c.resources[0].current,0);
+  c.resources[0].current=9;
+  a.reconcileResources(c,[{...spec,max:21}]);
+  assert.equal(c.resources[0].current,9);
+});
+
 test('Short Rest restores one use for partial-recovery resources',()=>{
   const resource={max:3,current:0,recharge:'both',shortRestore:'one'};
   assert.equal(a.restoreResourceForRest(resource,'short'),true);
@@ -68,6 +78,12 @@ test('Long Rest restores short, long, and both-rest resources but not manual poo
   ];
   for(const resource of resources) a.restoreResourceForRest(resource,'long');
   assert.deepEqual(resources.map(x=>x.current),[2,3,4,1]);
+});
+
+test('Long Rest empties pools whose rules reset them to zero',()=>{
+  const resource={max:20,current:12,recharge:'',longReset:'zero'};
+  assert.equal(a.restoreResourceForRest(resource,'long'),true);
+  assert.equal(resource.current,0);
 });
 
 test('spending Hit Dice applies Constitution per die and consumes only available dice',()=>{
@@ -197,8 +213,11 @@ test('every PHB class has corpus-recognized subclass resources with unique stabl
   const index=read('class/index.json');
   for(const key of ['barbarian','bard','cleric','druid','fighter','monk','paladin','ranger','rogue','sorcerer','warlock','wizard']){
     const data=read('class/'+index[key]);
-    const features=(data.subclassFeature||[]).filter(x=>x.subclassSource==='XPHB'||x.source==='XPHB');
-    const specs=a.featureResourceSpecs(features,{level:20,pb:6,mods:{str:5,dex:5,con:5,int:5,wis:5,cha:5}},'subclassfeature');
+    const specs=[];
+    for(const subclass of (data.subclass||[]).filter(x=>x.source==='XPHB')){
+      const features=a.getSubclassFeatures(data,subclass,20);
+      specs.push(...a.subclassResourceSpecs(subclass,features,{level:20,pb:6,mods:{str:5,dex:5,con:5,int:5,wis:5,cha:5}}));
+    }
     assert.ok(specs.length>0,key);
     assert.equal(new Set(specs.map(x=>x.id)).size,specs.length,key);
   }

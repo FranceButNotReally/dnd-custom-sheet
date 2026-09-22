@@ -113,7 +113,8 @@ behavior. It also verifies Battle Master maneuver slots and dependency-gated
 Eldritch Invocations, the complete structured feat-choice surface, PHB
 condition effects, Circle of the Land spell groups, Pact of the Tome spell
 choices, invocation cantrip targets, and Lessons of the First Ones Origin feats
-through save/reload. A golden Ranger sheet verifies visible AC, HP, Initiative,
+through save/reload. Battle Master's exact Superiority Dice count and die size
+are checked on the rendered sheet. A golden Ranger sheet verifies visible AC, HP, Initiative,
 Climb Speed, resistances, and structured special senses through IndexedDB
 save/reload. GitHub Actions
 installs Chromium and runs this suite after the pure rules and pinned-data
@@ -139,6 +140,7 @@ For high-value mechanics we should maintain small, fixed character fixtures with
 - A character with a mastered Quarterstaff → correct mastery availability and selection.
 - A character using Tough, Fighting Styles, and selected feat proficiencies → exact derived values.
 - A 2024 Dual Wielder with two weapons → no obsolete +1 AC bonus.
+- Every one of the 48 PHB subclasses at level 20 → an exact resource profile, with breakpoint cases for scaling dice pools, split free casts, alternate recovery, and Arcane Ward's distinct HP lifecycle.
 
 The important part is that the fixture starts from a known character state and asserts the complete relevant derived result, not merely that a parser returned something non-empty.
 

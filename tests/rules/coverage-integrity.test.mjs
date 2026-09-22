@@ -41,11 +41,13 @@ test("the PHB equipment tables have hard behavioral coverage", () => {
 });
 
 test("rest, Hit Dice, and death-state transitions have hard behavioral coverage", () => {
-  for (const id of ["rests", "hit-dice", "death-saves", "hp-state"]) {
+  for (const id of ["resources", "rests", "hit-dice", "death-saves", "hp-state"]) {
     const domain = registry.domains.find(x => x.id === id);
     assert.ok(domain, id);
     assert.equal(domain.status, "covered", id);
   }
+  assert.match(registry.domains.find(x => x.id === "resources").notes, /all 48 PHB subclasses/i);
+  assert.match(registry.domains.find(x => x.id === "resources").notes, /Arcane Ward/i);
 });
 
 test("browser-backed persistence, touch, and offline behavior are hard coverage", () => {

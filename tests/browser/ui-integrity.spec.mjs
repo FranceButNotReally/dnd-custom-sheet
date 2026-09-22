@@ -339,6 +339,11 @@ test('subclass progressions and invocation prerequisites work through the builde
   await optionSlots.nth(2).selectOption({ label: "Commander's Strike" });
   await expect.poll(async () => Object.values((await currentCharacter(page)).optionalFeatureChoices || {}).length).toBe(3);
 
+  await page.reload();
+  const superiorityDice = page.locator('.sheet-resource-card').filter({ hasText: 'Superiority Dice' });
+  await expect(superiorityDice).toContainText('4/4');
+  await expect(superiorityDice).toContainText('d8 dice');
+
   await updateCurrentCharacter(page, {
     level: 5,
     class: { name: 'Warlock', source: 'XPHB' },

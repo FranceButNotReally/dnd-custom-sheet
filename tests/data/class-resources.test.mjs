@@ -16,8 +16,10 @@ const index = read('class/index.json');
 function record(key) {
   const data = read('class/' + index[key]);
   return {
+    data,
     cls:(data.class || []).find(x => x.source === 'XPHB'),
     features:(data.classFeature || []).filter(x => x.classSource === 'XPHB'),
+    subclasses:(data.subclass || []).filter(x => x.source === 'XPHB'),
   };
 }
 const records = Object.fromEntries(['barbarian','bard','cleric','druid','fighter','monk','paladin','ranger','rogue','sorcerer','warlock','wizard'].map(k => [k, record(k)]));
@@ -32,6 +34,16 @@ function tableResource(key, name, level, mods={}) {
 function featureResource(key, name, level, mods={}) {
   const specs = a.featureResourceSpecs(featuresThrough(key,level), d(level,mods), 'classfeature');
   return specs.find(x => x.name === name);
+}
+function subclassSpecs(key, name, level, mods={}) {
+  const record = records[key];
+  const subclass = record.subclasses.find(value => value.name === name);
+  if (!subclass) throw new Error(`Unknown ${key} subclass: ${name}`);
+  const features = a.getSubclassFeatures(record.data, subclass, level);
+  return a.subclassResourceSpecs(subclass, features, d(level,mods));
+}
+function subclassResource(key, subclass, resource, level, mods={}) {
+  return subclassSpecs(key,subclass,level,mods).find(value => value.name === resource);
 }
 
 test('Barbarian Rage tracks table uses and partial Short Rest recovery', () => {
@@ -143,4 +155,101 @@ test('Rogue Stroke of Luck is restored by a Short or Long Rest', () => {
   const spec=featureResource('rogue','Stroke of Luck',20);
   assert.equal(spec.max,1);
   assert.equal(spec.recharge,'both');
+});
+
+test('subclass dice pools follow every PHB scaling breakpoint', () => {
+  assert.deepEqual([3,6,12,17].map(level => subclassResource('barbarian','Path of the Zealot','Warrior of the Gods Dice',level).max),[4,5,6,7]);
+
+  const superiority = [3,7,10,15,18].map(level => {
+    const spec=subclassResource('fighter','Battle Master','Superiority Dice',level);
+    return [spec.max,spec.die];
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(superiority)),[[4,'d8'],[5,'d8'],[5,'d10'],[6,'d10'],[6,'d12']]);
+
+  for (const [key,name] of [['fighter','Psi Warrior'],['rogue','Soulknife']]) {
+    const psionic = [3,5,9,11,13,17].map(level => {
+      const spec=subclassResource(key,name,'Psionic Energy Dice',level);
+      return [spec.max,spec.die,spec.shortRestore];
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(psionic)),[[4,'d6','one'],[6,'d8','one'],[8,'d8','one'],[8,'d10','one'],[10,'d10','one'],[12,'d12','one']],name);
+  }
+});
+
+test('subclass resource upgrades and ability-based pools retain exact semantics', () => {
+  assert.equal(subclassResource('cleric','Light Domain','Warding Flare',3,{wis:3}).recharge,'long');
+  assert.equal(subclassResource('cleric','Light Domain','Warding Flare',6,{wis:3}).recharge,'both');
+  assert.equal(subclassResource('wizard','Diviner','Portent Rolls',3).max,2);
+  assert.equal(subclassResource('wizard','Diviner','Portent Rolls',14).max,3);
+
+  const ward=subclassResource('wizard','Abjurer','Arcane Ward Hit Points',20,{int:5});
+  assert.equal(ward.max,45);
+  assert.equal(ward.initialCurrent,0);
+  assert.equal(ward.preserveCurrent,true);
+  assert.equal(ward.longReset,'zero');
+  assert.equal(ward.unit,'HP');
+
+  const light3=subclassResource('warlock','Celestial Patron','Healing Light Dice',3);
+  const light20=subclassResource('warlock','Celestial Patron','Healing Light Dice',20);
+  assert.deepEqual([light3.max,light3.die,light20.max,light20.die],[4,'d6',21,'d6']);
+});
+
+test('separate free casts and alternate recovery routes remain visible resources', () => {
+  const land=subclassSpecs('druid','Circle of the Land',20);
+  assert.deepEqual(JSON.parse(JSON.stringify(land.map(value => value.name))),['Circle Spell Free Cast','Natural Recovery']);
+  assert.equal(land[1].unit,'10 slot levels');
+
+  const illusionist=subclassSpecs('wizard','Illusionist',20);
+  assert.ok(illusionist.some(value => value.name === 'Summon Beast Free Cast'));
+  assert.ok(illusionist.some(value => value.name === 'Summon Fey Free Cast'));
+
+  const berserker=subclassResource('barbarian','Path of the Berserker','Intimidating Presence',20);
+  assert.match(berserker.recoveryNote,/expend a use of your Rage/i);
+  assert.equal(featureResource('paladin','Lay on Hands',10).recoveryNote,'');
+});
+
+test('all 48 PHB subclasses have exact level-20 resource profiles', () => {
+  const expected = {
+    'Path of the Berserker':[['Intimidating Presence',1,'long','all','']],
+    'Path of the Zealot':[['Zealous Presence',1,'long','all',''],['Rage of the Gods',1,'long','all',''],['Warrior of the Gods Dice',7,'long','all','d12']],
+    'College of Glamour':[['Beguiling Magic',1,'long','all',''],['Mantle of Majesty',1,'long','all','']],
+    'Light Domain':[['Warding Flare',5,'both','all',''],['Corona of Light',5,'long','all','']],
+    'War Domain':[['War Priest',5,'both','all','']],
+    'Circle of the Land':[['Circle Spell Free Cast',1,'long','all',''],['Natural Recovery',1,'long','all','10 slot levels']],
+    'Circle of the Moon':[['Moonlight Step',5,'long','all','']],
+    'Circle of the Stars':[['Star Map',5,'long','all',''],['Cosmic Omen',5,'long','all','']],
+    'Battle Master':[['Superiority Dice',6,'both','all','d12'],['Know Your Enemy',1,'long','all','']],
+    'Psi Warrior':[['Bulwark of Force',1,'long','all',''],['Psionic Energy Dice',12,'both','one','d12'],['Telekinesis Free Cast',1,'long','all','']],
+    'Warrior of Mercy':[['Flurry of Healing and Harm',1,'long','all',''],['Hand of Ultimate Mercy',1,'long','all','']],
+    'Warrior of the Open Hand':[['Wholeness of Body',5,'long','all','']],
+    'Oath of Devotion':[['Holy Nimbus',1,'long','all','']],
+    'Oath of Glory':[['Glorious Defense',5,'long','all',''],['Living Legend',1,'long','all','']],
+    'Oath of the Ancients':[['Undying Sentinel',1,'long','all',''],['Elder Champion',1,'long','all','']],
+    'Oath of Vengeance':[['Avenging Angel',1,'long','all','']],
+    'Fey Wanderer':[['Misty Wanderer',5,'long','all',''],['Summon Fey Free Cast',1,'long','all','']],
+    'Gloom Stalker':[['Dread Ambusher',5,'long','all','']],
+    'Arcane Trickster':[['Spell Thief',1,'long','all','']],
+    'Soulknife':[['Psychic Veil',1,'long','all',''],['Rend Mind',1,'long','all',''],['Psionic Energy Dice',12,'both','one','d12']],
+    'Aberrant Sorcery':[['Warping Implosion',1,'long','all','']],
+    'Clockwork Sorcery':[['Restore Balance',5,'long','all',''],['Trance of Order',1,'long','all',''],['Clockwork Cavalcade',1,'long','all','']],
+    'Draconic Sorcery':[['Dragon Wings',1,'long','all',''],['Summon Dragon Free Cast',1,'long','all','']],
+    'Wild Magic Sorcery':[['Tamed Surge',1,'long','all',''],['Tides of Chaos',1,'long','all','']],
+    'Archfey Patron':[['Steps of the Fey',5,'long','all',''],['Beguiling Defenses',1,'long','all','']],
+    'Celestial Patron':[['Searing Vengeance',1,'long','all',''],['Healing Light Dice',21,'long','all','d6']],
+    'Fiend Patron':[["Dark One's Own Luck",5,'long','all',''],['Hurl Through Hell',1,'long','all','']],
+    'Great Old One Patron':[['Clairvoyant Combatant',1,'both','all','']],
+    'Abjurer':[['Arcane Ward Hit Points',45,'','all','HP']],
+    'Diviner':[['The Third Eye',1,'both','all',''],['Portent Rolls',3,'long','all','rolls']],
+    'Evoker':[['Safe Overchannel',1,'long','all','use']],
+    'Illusionist':[['Illusory Self',1,'both','all',''],['Summon Beast Free Cast',1,'long','all',''],['Summon Fey Free Cast',1,'long','all','']],
+  };
+  let count=0;
+  for (const [key,record] of Object.entries(records)) {
+    for (const subclass of record.subclasses) {
+      count++;
+      const actual=subclassSpecs(key,subclass.name,20,{str:5,dex:5,con:5,int:5,wis:5,cha:5})
+        .map(value => [value.name,value.max,value.recharge,value.shortRestore,value.die||value.unit||'']);
+      assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected[subclass.name]||[],subclass.name);
+    }
+  }
+  assert.equal(count,48);
 });
