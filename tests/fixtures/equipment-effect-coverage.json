@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "source": "XDMG",
+  "principle": "Every structured 2024 DMG equipment-effect field is classified. Persistent sheet values are derived, temporary effects require explicit activation, charge pools are persisted, and target-, trigger-, spell-, or recharge-roll details remain linked to the full item rule.",
+  "items": 593,
+  "structuredItems": 234,
+  "activationTracked": 114,
+  "temporaryStructured": 35,
+  "chargePools": 77,
+  "attunementGated": 146,
+  "fields": {
+    "ability": 32,
+    "attachedSpells": 94,
+    "bonusAbilityCheck": 1,
+    "bonusAc": 22,
+    "bonusProficiencyBonus": 1,
+    "bonusSavingThrow": 6,
+    "bonusSpellAttack": 12,
+    "bonusSpellSaveDc": 4,
+    "bonusWeapon": 23,
+    "bonusWeaponDamage": 1,
+    "charges": 77,
+    "immune": 3,
+    "modifySpeed": 11,
+    "resist": 43
+  }
+}

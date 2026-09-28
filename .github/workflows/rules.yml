@@ -1,0 +1,50 @@
+name: Rules Conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rules-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rules:
+    name: Rules conformance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run core regression suite
+        run: npm run test:unit
+
+      - name: Run pinned-data contract tests
+        run: npm run test:data
+
+      - name: Generate coverage and corpus reports
+        run: npm run test:coverage
+
+      - name: Install browser test runtime
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser UI and offline tests
+        run: npm run test:browser
+
+      - name: Check application syntax
+        run: node --check app.js && node --check sw.js
