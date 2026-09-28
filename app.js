@@ -141,7 +141,7 @@ let dbPromise;
 
 function emptyCharacter() {
   return {
-    schema: 21,
+    schema: 22,
     id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     name: "New Character",
     player: "",
@@ -196,6 +196,7 @@ function emptyCharacter() {
     resources: [],
     senses: [],
     attacks: [],
+    hiddenAttacks: [],
     notes: "",
     optionalFeatureChoices: {},
     classFeatureChoices: {},
@@ -280,7 +281,8 @@ function migrateCharacter(raw) {
   })) : [];
   c.resources = Array.isArray(raw.resources) ? raw.resources.map(r => ({ ...r, mode: r?.mode === "auto" ? "auto" : "manual" })) : [];
   c.senses = Array.isArray(raw.senses) ? raw.senses : [];
-  c.attacks = Array.isArray(raw.attacks) ? raw.attacks : [];
+  c.attacks = Array.isArray(raw.attacks) ? raw.attacks.map((attack,index) => ({ ...attack, id: attack?.id || `legacy-${index}` })) : [];
+  c.hiddenAttacks = Array.isArray(raw.hiddenAttacks) ? raw.hiddenAttacks.filter(x => typeof x === "string") : [];
   c.optionalFeatureChoices = { ...(raw.optionalFeatureChoices || {}) };
   c.classFeatureChoices = { ...(raw.classFeatureChoices || {}) };
   c.classProficiencyChoices = { ...(raw.classProficiencyChoices || {}) };
@@ -2187,6 +2189,49 @@ function mixedChoiceOptions(spec) {
   }
   return out.sort((a,b) => `${a.kind} ${a.name}`.localeCompare(`${b.kind} ${b.name}`));
 }
+function skilledChoiceAvailable(c, d, key, choice) {
+  if (!choice || !["Skill","Tool"].includes(choice.kind)) return true;
+  const otherChoices = Object.entries(c.featMixedChoices || {}).filter(([other]) => other !== key).map(([,value]) => String(value).toLowerCase());
+  const identity = `${choice.kind}:${choice.value}`.toLowerCase();
+  if (otherChoices.includes(identity)) return false;
+  if (choice.kind === "Tool") {
+    const base = parseProficiencyDisplay(d.classObj,d.backgroundObj,d.speciesObj,null).tools;
+    const otherFeatTools = (d.featObjs || []).flatMap(feat => featToolSpecs(feat).map(spec => c.featToolChoices?.[spec.key] || (spec.fixed ? spec.from[0] : "")));
+    return ![...base,...otherFeatTools].some(tool => textNorm(tool) === textNorm(choice.value));
+  }
+  const skill = choice.value;
+  const base = new Set([
+    ...grantedSkillsFromMap(d.backgroundObj?.skillProficiencies),
+    ...grantedSkillsFromMap(d.speciesObj?.skillProficiencies),
+    ...normalizeSkillArray(c.classSkillChoices), ...normalizeSkillArray(c.customSkillProficiencies),
+    ...Object.values(c.classProficiencyChoices || {}),
+  ]);
+  for (const spec of speciesChoiceSpecs(d.speciesObj)) {
+    if (spec.kind !== "skill") continue;
+    const selected = c.speciesChoices?.[spec.key];
+    const option = spec.options.find(o => textNorm(o.name) === textNorm(selected?.value || selected));
+    if (option?.value) base.add(option.value);
+  }
+  for (const feat of d.featObjs || []) {
+    for (const granted of grantedSkillsFromMap(feat.skillProficiencies)) base.add(granted);
+    for (const spec of featSkillSpecs(feat)) {
+      const chosen = c.featSkillChoices?.[featSpecKey(feat,spec)] || (spec.fixed ? spec.from[0] : "");
+      if (chosen) base.add(chosen);
+    }
+  }
+  return !base.has(skill);
+}
+function reconcileSkilledChoices(c,d) {
+  for (const feat of d.featObjs || []) {
+    if (textNorm(feat.name) !== "skilled") continue;
+    for (const spec of featMixedChoiceSpecs(feat)) {
+      const selected = c.featMixedChoices?.[spec.key];
+      if (!selected) continue;
+      const option = mixedChoiceOptions(spec).find(o => `${o.kind}:${o.value}` === selected);
+      if (!skilledChoiceAvailable(c,d,spec.key,option)) delete c.featMixedChoices[spec.key];
+    }
+  }
+}
 function speciesChoiceSpecs(species) {
   const specs = [];
   const root = species?.entries;
@@ -3889,21 +3934,29 @@ async function getAttackRows(d) {
   try { itemsData = await getItemsData(); } catch {}
   const officialItems = itemsData ? officialEntries(itemsData, "item") : [];
   const rows = [];
+  const wieldedWeapons = (state.character.inventory || []).filter(x => x?.equipped && x.wielding !== false && x?.name).map(x => officialItems.find(it => it.name === x.name && (!x.source || it.source === x.source)) || officialItems.find(it => it.name === x.name)).filter(it => it?.weaponCategory);
   for (const owned of state.character.inventory || []) {
     if (!owned?.equipped || owned.wielding === false || !owned.name) continue;
     const item = officialItems.find(x => x.name === owned.name && (!owned.source || x.source === owned.source)) || officialItems.find(x => x.name === owned.name);
     if (!item || !item.weaponCategory) continue;
-    const wieldedWeapons = (state.character.inventory || []).filter(x => x?.equipped && x.wielding !== false && x?.name).map(x => officialItems.find(it => it.name === x.name && (!x.source || it.source === x.source)) || officialItems.find(it => it.name === x.name)).filter(it => it?.weaponCategory);
     const profile = weaponAttackProfile(item, d, wieldedWeapons, owned);
-    rows.push({ nameHtml: renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`), name: item.name, attackBonus: `${formatMod(profile.attackBonus)}${profile.proficient ? "" : "*"}${profile.attackBlocked ? " BLOCKED" : profile.attackRollState === "advantage" ? " ADV" : profile.attackRollState === "disadvantage" ? " DIS" : ""}`, damage: profile.damage, notePayload: weaponNotePayload(item, profile.warnings, profile, d) });
+    rows.push({ key: `weapon:${normalizeRefId(item.name,item.source).toLowerCase()}`, kind:"weapon", nameHtml: renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`), name: item.name, attackBonus: `${formatMod(profile.attackBonus)}${profile.proficient ? "" : "*"}${profile.attackBlocked ? " BLOCKED" : profile.attackRollState === "advantage" ? " ADV" : profile.attackRollState === "disadvantage" ? " DIS" : ""}`, damage: profile.damage, notePayload: weaponNotePayload(item, profile.warnings, profile, d) });
   }
-  for (const custom of state.character.attacks || []) rows.push({ name: custom.name || "Attack", attackBonus: custom.attackBonus || "—", damage: custom.damage || "—", notePayload: custom.range || custom.notes ? customNotePayload([custom.range, custom.notes].filter(Boolean).join(" · "), `${custom.name || "Attack"} · Notes`) : null });
-  for (const spell of (state.character.cantrips || []).map(spellById).filter(Boolean)) {
+  for (const [index,custom] of (state.character.attacks || []).entries()) rows.push({ key:`custom:${custom.id || `legacy-${index}`}`, kind:"custom", name: custom.name || "Attack", attackBonus: custom.attackBonus || "—", damage: custom.damage || "—", notePayload: custom.range || custom.notes ? customNotePayload([custom.range, custom.notes].filter(Boolean).join(" · "), `${custom.name || "Attack"} · Notes`) : null });
+  const cantripRefs = dedupeSpellRefs([...(state.character.cantrips || []), ...(d.alwaysKnownSpells || []), ...(d.alwaysPreparedSpells || []), ...(d.featSpellRefs || []), ...(d.speciesSpellRefs || [])]);
+  for (const ref of cantripRefs) {
+    const spell = spellById(ref) || await getSpellById(ref);
+    if (!spell || Number(spell.level) !== 0 || !(spell.damageInflict?.length || spell.scalingLevelDice)) continue;
     const advantage = Boolean(d.conditionEffects?.attackAdvantage), disadvantage = Boolean(d.conditionEffects?.attackDisadvantage);
     const suffix = d.conditionEffects?.incapacitated ? " BLOCKED" : advantage === disadvantage ? "" : advantage ? " ADV" : " DIS";
-    rows.push({ nameHtml: renderReferenceTag("spell", `${spell.name}|${spell.source}|${spell.name}`), name: spell.name, attackBonus: d.spellcastingAbility ? `${formatMod(d.pb + d.mods[d.spellcastingAbility] + Number(d.equipmentEffects?.spellAttackBonus || 0) + Number(d.d20Penalty || 0))}${suffix}` : "—", damage: (spell.damageInflict || []).map(damageTypeName).join(", ") || "Cantrip", notePayload: spellNotePayload(spell) });
+    const feat = (d.featObjs || []).find(f => featGrantedSpellRefs([f], state.character, state.character.level).some(x => x.toLowerCase() === normalizeRefId(spell.name,spell.source).toLowerCase()));
+    const featSpec = feat && featAdditionalSpellChoiceSpecs(feat,state.character.level).find(spec => state.character.featSpellChoices?.[spec.key]?.ability);
+    const speciesAbility = Object.values(state.character.speciesChoices || {}).find(choice => choice?.ability)?.ability;
+    const ability = featSpec ? state.character.featSpellChoices[featSpec.key].ability : (d.speciesSpellRefs || []).some(x => x.toLowerCase() === normalizeRefId(spell.name,spell.source).toLowerCase()) ? speciesAbility || d.spellcastingAbility : d.spellcastingAbility;
+    const attackRoll = /(?:ranged|melee) spell attack/i.test(JSON.stringify(spell.entries || []));
+    rows.push({ key:`cantrip:${normalizeRefId(spell.name,spell.source).toLowerCase()}`, kind:"cantrip", nameHtml: renderReferenceTag("spell", `${spell.name}|${spell.source}|${spell.name}`), name: spell.name, attackBonus: attackRoll && ability ? `${formatMod(d.pb + d.mods[ability] + Number(d.equipmentEffects?.spellAttackBonus || 0) + Number(d.d20Penalty || 0))}${suffix}` : attackRoll ? "—" : "Save", damage: (spell.damageInflict || []).map(damageTypeName).join(", ") || "Cantrip", notePayload: spellNotePayload(spell) });
   }
-  return rows.slice(0, 12);
+  return rows;
 }
 
 function damageTypeName(value) {
@@ -4729,6 +4782,34 @@ function featResourceSpecs(feats, d) {
   }
   return out;
 }
+function speciesResourceSpecs(species, c, d) {
+  if (!species || String(species.source).toUpperCase() !== DATA_SOURCE) return [];
+  const name = textNorm(species.name), level = Number(c.level || 1);
+  const selected = speciesChoiceSpecs(species).map(spec => c.speciesChoices?.[spec.key]?.value || c.speciesChoices?.[spec.key]).map(textNorm);
+  const specs = [];
+  const add = (slug, label, max = 1, recharge = "long") => specs.push({
+    id:`species:${species.source}:${species.name}:${slug}`.toLowerCase(), name:label, max,
+    recharge, shortRestore:"all", longRestore:"all", mode:"auto",
+    origin:{ type:"race", name:species.name, source:species.source },
+  });
+  if (name === "aasimar") { add("healing-hands","Healing Hands"); if (level >= 3) add("celestial-revelation","Celestial Revelation"); }
+  if (name === "dragonborn") { add("breath-weapon","Breath Weapon",d.pb); if (level >= 5) add("draconic-flight","Draconic Flight"); }
+  if (name === "dwarf") add("stonecunning","Stonecunning",d.pb);
+  if (name === "gnome" && selected.includes("forestgnome")) add("speak-with-animals","Gnomish Lineage · Speak with Animals",d.pb);
+  if (name === "goliath") { if (selected.some(x => x && x !== "")) add("giant-ancestry","Giant Ancestry",d.pb); if (level >= 5) add("large-form","Large Form"); }
+  if (name === "orc") { add("adrenaline-rush","Adrenaline Rush",d.pb,"both"); add("relentless-endurance","Relentless Endurance"); }
+  if (["elf","tiefling"].includes(name)) {
+    const group = (species.additionalSpells || []).find(g => selected.includes(textNorm(g.name)));
+    for (const [unlock, value] of Object.entries(group?.innate || {})) {
+      if (level < Number(unlock)) continue;
+      for (const refs of Object.values(value.daily || {})) for (const ref of refs) {
+        const spell = splitRefId(ref);
+        add(`free-cast:${textNorm(spell.name)}`,`${group.name} · ${canonicalLabel(spell.name)} Free Cast`);
+      }
+    }
+  }
+  return specs;
+}
 function classTableResourceSpecs(classObj, features, d) {
   const out = [];
   const featureMap = new Map((features || []).map(f => [textNorm(f?.name), f]));
@@ -4853,6 +4934,7 @@ async function deriveCharacter() {
     d.featureSpellChoiceSpecs = [...d.classFeatureSpellChoiceSpecs, ...d.optionalFeatureSpellChoiceSpecs];
     reconcileFeatureSpellChoices(c, d.featureSpellChoiceSpecs);
     d.autoResourceSpecs = [
+      ...speciesResourceSpecs(d.speciesObj, c, d),
       ...featureResourceSpecs(d.classFeatures, d, "classfeature"),
       ...classTableResourceSpecs(d.classObj, d.classFeatures, d),
       ...featureResourceSpecs(d.classFeatureOptionObjects, d, "classfeatureoption"),
@@ -4906,6 +4988,7 @@ async function deriveCharacter() {
     d.featObjs = featObjs;
     d.featObj = featObjs[0] || null;
   }
+  reconcileSkilledChoices(c,d);
   d.featSpellRefs = featGrantedSpellRefs(featObjs, c, c.level);
   d.speciesSpellChoiceSpecs = speciesSpellChoiceSpecs(speciesObj, c, c.level);
   reconcileSpeciesSpellChoices(c, d.speciesSpellChoiceSpecs);
@@ -5408,7 +5491,8 @@ async function renderSheet(app) {
   const prepared = (await Promise.all(preparedRefs.map(getSpellById))).filter(s=>s&&Number(s.level)>0).sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
   const cantrips = (await Promise.all(cantripRefs.map(getSpellById))).filter(s=>s&&Number(s.level)===0).sort((a,b)=>a.name.localeCompare(b.name));
   const languages = d.proficiencies.languages.length ? d.proficiencies.languages : ["None recorded"];
-  const attackHtml = attackRows.map(row => `<div class="weapon-row"><span>${row.nameHtml || escapeHtml(row.name)}</span><strong>${escapeHtml(row.attackBonus)}</strong><span>${escapeHtml(row.damage)}</span><small>${renderAttackDetails(row.notePayload)}</small></div>`).join("") || `<div class="sheet-empty">Equip a weapon or add a custom attack.</div>`;
+  const hiddenAttacks = new Set(c.hiddenAttacks || []);
+  const attackHtml = attackRows.filter(row => !hiddenAttacks.has(row.key)).map(row => `<div class="weapon-row"><span>${row.nameHtml || escapeHtml(row.name)}</span><strong>${escapeHtml(row.attackBonus)}</strong><span>${escapeHtml(row.damage)}</span><small>${renderAttackDetails(row.notePayload)}</small></div>`).join("") || `<div class="sheet-empty">Equip a weapon, prepare a damage cantrip, or add a custom attack. Use Manage to choose what appears.</div>`;
   const featurePreview = f => renderRichEntries((Array.isArray(f.entries) ? f.entries : [f.entries]).slice(0,2));
 
   const pageOne = `<div class="sheet-page">
@@ -5519,7 +5603,7 @@ async function renderBuilder(app) {
       return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Tool proficiency<select data-feat-tool="${escapeHtml(spec.key)}"><option value="">— Select —</option>${options.map(value=>`<option value="${escapeHtml(value)}" ${selected===value?"selected":""}>${escapeHtml(value)}</option>`).join("")}</select></label></div>`;
     }),
     ...featMixedChoiceSpecs(feat).map(spec => {
-      const selected=c.featMixedChoices?.[spec.key]||"", used=new Set(Object.entries(c.featMixedChoices||{}).filter(([key])=>key!==spec.key&&key.startsWith(`${featInstanceKey(feat)}|mixed|`)).map(([,value])=>String(value).toLowerCase())), options=mixedChoiceOptions(spec).filter(o=>{const value=`${o.kind}:${o.value}`;return value===selected||!used.has(value.toLowerCase())});
+      const selected=c.featMixedChoices?.[spec.key]||"", used=new Set(Object.entries(c.featMixedChoices||{}).filter(([key])=>key!==spec.key&&key.startsWith(`${featInstanceKey(feat)}|mixed|`)).map(([,value])=>String(value).toLowerCase())), options=mixedChoiceOptions(spec).filter(o=>{const value=`${o.kind}:${o.value}`;return !used.has(value.toLowerCase()) && (textNorm(feat.name)!=="skilled" || skilledChoiceAvailable(c,d,spec.key,o))});
       return `<div class="feat-choice-row"><label class="field">${escapeHtml(feat.name)} · Choose skill/tool/language<select data-feat-mixed="${escapeHtml(spec.key)}"><option value="">— Select —</option>${options.map(o=>{const val=`${o.kind}:${o.value}`; return `<option value="${escapeHtml(val)}" ${selected===val?"selected":""}>${escapeHtml(o.kind)} · ${escapeHtml(o.name)}</option>`}).join("")}</select></label></div>`;
     }),
     ...featExpertiseSpecs(feat).map(spec => {
@@ -5912,6 +5996,10 @@ async function renderDataView(app) {
 function csv(value){return value||"";}
 
 
+function renderReferenceWithoutEntries(entity, kind) {
+  const details = [entity.rarity && entity.rarity !== "none" ? `Rarity: ${entity.rarity}` : "", entity.weight != null ? `Weight: ${entity.weight} lb.` : "", entity.value != null ? `Value: ${entity.value} cp` : ""].filter(Boolean);
+  return `${details.length ? `<p class="mini">${details.map(escapeHtml).join(" · ")}</p>` : ""}<p class="empty">No rules description is available in the cached source for this ${escapeHtml(kind || "entry")}.</p>`;
+}
 async function openRuleReference(ref) {
   let info = ref;
   try { if (typeof ref === "string") info = JSON.parse(decodeURIComponent(ref)); } catch {}
@@ -5928,9 +6016,9 @@ async function openRuleReference(ref) {
   }
   const kicker = [sourceLabel(entity.source), entity.level != null && Number.isFinite(Number(entity.level)) && Number(entity.level) > 0 ? `Level ${entity.level}` : ""].filter(Boolean).join(" · ");
   let body = `<div class="modal-kicker">${escapeHtml(kicker || info.tag || "Reference")}</div>`;
-  if (entity.entries) body += `<div class="rules-text formatted-rules">${renderRichEntries(entity.entries)}</div>`;
+  if (entity.entries && (!Array.isArray(entity.entries) || entity.entries.length)) body += `<div class="rules-text formatted-rules">${renderRichEntries(entity.entries)}</div>`;
   else if (entity.entry) body += `<div class="rules-text formatted-rules">${renderRichEntries(entity.entry)}</div>`;
-  else body += `<pre class="reference-json">${escapeHtml(JSON.stringify(entity, null, 2))}</pre>`;
+  else body += renderReferenceWithoutEntries(entity,info.tag);
   openModal(title, body);
 }
 
@@ -6475,9 +6563,13 @@ function openResourceManager() {
 
 function renderResourceManager() { closeModal(); openResourceManager(); }
 
-function openAttackManager() {
+async function openAttackManager() {
   const attacks = state.character.attacks;
+  const rows = await getAttackRows(state.lastDerived);
+  const available = rows.filter(row => row.kind !== "custom");
+  const automaticRows = available.map(row => `<label class="attack-visibility-row"><input type="checkbox" data-attack-visible="${escapeHtml(row.key)}" ${state.character.hiddenAttacks.includes(row.key) ? "" : "checked"}><span><strong>${escapeHtml(row.name)}</strong><small>${row.kind === "weapon" ? "Equipped weapon" : "Damage cantrip"} · ${escapeHtml(row.attackBonus)} · ${escapeHtml(row.damage)}</small></span></label>`).join("") || `<p class="empty">Equip a weapon or prepare a damage cantrip to see it here.</p>`;
   const renderRows = () => attacks.map((a,i) => `<div class="attack-editor">
+    <label class="attack-visibility-row"><input type="checkbox" data-attack-visible="custom:${escapeHtml(a.id || `legacy-${i}`)}" ${state.character.hiddenAttacks.includes(`custom:${a.id || `legacy-${i}`}`) ? "" : "checked"}><span>Show ${escapeHtml(a.name || "Attack")} on sheet</span></label>
     <div class="form-grid two">
       <label class="field">Name<input data-attack-name="${i}" value="${escapeHtml(a.name || "Attack")}"></label>
       <label class="field">Attack bonus<input data-attack-bonus="${i}" value="${escapeHtml(a.attackBonus || "")}" placeholder="+5"></label>
@@ -6487,16 +6579,17 @@ function openAttackManager() {
     </div>
     <button class="button button-small button-danger" data-attack-delete="${i}">Remove attack</button>
   </div>`).join("") || `<div class="empty">No attacks configured.</div>`;
-  openModal("Manage attacks", `<div id="attackEditor" class="editor-list">${renderRows()}</div><button class="button button-primary" data-attack-add style="margin-top:12px">Add attack</button>`);
+  openModal("Manage attacks", `<div class="section-title">Equipped weapons and damage cantrips</div><div class="editor-list">${automaticRows}</div><div class="section-title" style="margin-top:16px">Custom attacks</div><div id="attackEditor" class="editor-list">${renderRows()}</div><button class="button button-primary" data-attack-add style="margin-top:12px">Add custom attack</button>`);
   const root = document.querySelector("#attackEditor");
   if (!root) return;
+  document.querySelectorAll("[data-attack-visible]").forEach(el => el.onchange = async () => { const key=el.dataset.attackVisible; state.character.hiddenAttacks = el.checked ? state.character.hiddenAttacks.filter(x=>x!==key) : [...new Set([...state.character.hiddenAttacks,key])]; await saveCharacter(); await render(); });
   root.querySelectorAll("[data-attack-name]").forEach(el=>el.oninput=()=>{attacks[Number(el.dataset.attackName)].name=el.value;saveCharacter();});
   root.querySelectorAll("[data-attack-bonus]").forEach(el=>el.oninput=()=>{attacks[Number(el.dataset.attackBonus)].attackBonus=el.value;saveCharacter();});
   root.querySelectorAll("[data-attack-damage]").forEach(el=>el.oninput=()=>{attacks[Number(el.dataset.attackDamage)].damage=el.value;saveCharacter();});
   root.querySelectorAll("[data-attack-range]").forEach(el=>el.oninput=()=>{attacks[Number(el.dataset.attackRange)].range=el.value;saveCharacter();});
   root.querySelectorAll("[data-attack-notes]").forEach(el=>el.oninput=()=>{attacks[Number(el.dataset.attackNotes)].notes=el.value;saveCharacter();});
   root.querySelectorAll("[data-attack-delete]").forEach(el=>el.onclick=()=>{attacks.splice(Number(el.dataset.attackDelete),1);saveCharacter();openAttackManager();});
-  document.querySelector("[data-attack-add]")?.addEventListener("click",()=>{attacks.push({name:"Attack",attackBonus:"",damage:"",range:"",notes:""});saveCharacter();openAttackManager();});
+  document.querySelector("[data-attack-add]")?.addEventListener("click",()=>{attacks.push({id:crypto.randomUUID(),name:"Attack",attackBonus:"",damage:"",range:"",notes:""});saveCharacter();openAttackManager();});
 }
 
 async function openItemPicker() {

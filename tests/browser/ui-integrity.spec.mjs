@@ -310,6 +310,16 @@ test('feat and species spell grants appear for a non-spellcasting class without 
   expect(saved.cantrips).toEqual([]);
   expect(saved.preparedSpells).toEqual([]);
   expect(saved.featSpellChoices[key].picks).toBeTruthy();
+  await page.locator('button[data-action="sheet"]').click();
+  await expect(page.locator('.weapon-row', {hasText:'Fire Bolt'})).toHaveCount(1);
+  await page.locator('[data-action="manage-attacks"]').click();
+  const fireBolt=page.locator('[data-attack-visible="cantrip:fire bolt|xphb"]');
+  await expect(fireBolt).toBeChecked();
+  await fireBolt.uncheck();
+  await page.locator('[data-modal-close]').click();
+  await expect(page.locator('.weapon-row', {hasText:'Fire Bolt'})).toHaveCount(0);
+  await page.reload();
+  await expect(page.locator('.weapon-row', {hasText:'Fire Bolt'})).toHaveCount(0);
 });
 
 test('equipment can be added, wielded, attuned, and reloaded from the real catalog UI', async ({ page }) => {
@@ -573,7 +583,8 @@ test('all structured feat choice families persist through the builder', async ({
     const tools=page.locator('label.field', {hasText:'Crafter · Tool proficiency'}).locator('select');
     await tools.nth(index).selectOption(value);
   }
-  for(const [index,value] of [[0,'Skill:history'],[1,"Tool:Smith's Tools"],[2,'Skill:perception']]){
+  await expect(page.locator('label.field', {hasText:'Skilled · Choose skill/tool/language'}).locator('select').nth(1).locator('option[value="Tool:Smith\'s Tools"]')).toHaveCount(0);
+  for(const [index,value] of [[0,'Skill:history'],[1,"Tool:Thieves' Tools"],[2,'Skill:perception']]){
     const choices=page.locator('label.field', {hasText:'Skilled · Choose skill/tool/language'}).locator('select');
     await choices.nth(index).selectOption(value);
   }
@@ -593,7 +604,7 @@ test('all structured feat choice families persist through the builder', async ({
   expect(Object.values(saved.featAbilityChoices)).toEqual(expect.arrayContaining(['str','dex','con']));
   expect(Object.values(saved.featSaveChoices)).toContain('con');
   expect(Object.values(saved.featToolChoices)).toEqual(expect.arrayContaining(["Smith's Tools","Tinker's Tools","Weaver's Tools"]));
-  expect(Object.values(saved.featMixedChoices)).toEqual(expect.arrayContaining(['Skill:history',"Tool:Smith's Tools",'Skill:perception']));
+  expect(Object.values(saved.featMixedChoices)).toEqual(expect.arrayContaining(['Skill:history',"Tool:Thieves' Tools",'Skill:perception']));
   expect(Object.values(saved.featExpertiseChoices)).toContain('arcana');
   expect(Object.values(saved.featDamageChoices)).toContain('Fire');
   expect(Object.values(saved.featSpellChoices).flatMap(choice=>Object.values(choice.picks||{}).flat())).toEqual(expect.arrayContaining(['Fire Bolt|XPHB','Mage Hand|XPHB','Magic Missile|XPHB']));
