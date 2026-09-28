@@ -5789,11 +5789,11 @@ function renderSpellResults(allSpells) {
   const tab = state.spellPickerTab;
   const listName = tab === "prepared" ? "preparedSpells" : tab === "cantrips" ? "cantrips" : "spellbook";
   const maxLevel = maxCastableSpellLevel(state.lastDerived);
-  const tabFilter = tab === "cantrips" ? s => s.level === 0 : tab === "spellbook" ? s => s.level >= 0 && s.level <= maxLevel : s => s.level > 0 && s.level <= maxLevel;
   const c = state.character;
   const collection = c[listName];
   const set = new Set(collection.map(x=>String(x).toLowerCase()));
   const automatic = automaticSpellRefsForList(listName, state.lastDerived);
+  const tabFilter = tab === "cantrips" ? s => s.level === 0 : tab === "spellbook" ? s => s.level >= 0 && s.level <= maxLevel : s => s.level > 0 && (s.level <= maxLevel || automatic.has(`${s.name}|${s.source}`.toLowerCase()));
   const list = allSpells.filter(s => tabFilter(s) && (automatic.has(`${s.name}|${s.source}`.toLowerCase()) || spellSelectionAllowed(s, listName, state.lastDerived, state.character)) && (!q || s.name.toLowerCase().includes(q)) && (level === "all" || String(s.level) === level)).slice(0, 300);
   root.innerHTML = list.map(s => {
     const id = `${s.name}|${s.source}`;
