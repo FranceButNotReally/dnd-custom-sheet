@@ -35,7 +35,12 @@ test("the PHB equipment tables have hard behavioral coverage", () => {
     assert.ok(domain, id);
     assert.equal(domain.status, "covered", id);
   }
-  assert.equal(registry.domains.find(x => x.id === "equipment-effects")?.status, "partial");
+  const effects = registry.domains.find(x => x.id === "equipment-effects");
+  assert.equal(effects?.status, "covered");
+  assert.match(effects.notes, /593 XDMG item records/i);
+  assert.match(effects.notes, /234 records with structured sheet effects/i);
+  assert.match(effects.notes, /77 charge pools/i);
+  assert.match(effects.notes, /Chromium/i);
   assert.match(registry.domains.find(x => x.id === "weapon-mastery").notes, /all eight PHB mastery/i);
   assert.match(registry.domains.find(x => x.id === "weapon-mastery").notes, /Topple save DC/i);
 });

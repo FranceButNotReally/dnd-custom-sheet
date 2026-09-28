@@ -55,8 +55,14 @@ calculates its extra attack and modifier-limited damage, Graze exposes exact
 miss damage, Topple calculates its current save DC, and Nick, Push, Sap, Slow,
 and Vex expose their fixed action, movement, or roll effects. These current
 values are rendered in the weapon Notes dialog and exercised in Chromium.
-Conditional activated magic-item powers remain explicitly partial rather than
-being applied as unconditional static bonuses.
+The XDMG equipment-effects pass classifies all 593 item records and every one
+of the 234 records with structured sheet fields. Persistent ability, AC, save,
+spell, Speed, resistance, immunity, and proficiency values require the correct
+equip and attunement state. Temporary structured effects use an explicit active
+state, all 77 charge pools clamp and persist, and recharge timing/formulas remain
+visible without treating dawn or a die roll as an automatic Long Rest reset.
+Target-, trigger-, spell-, and recharge-roll details stay linked to the full item
+rule rather than becoming unconditional bonuses.
 
 The resource/state layer uses pure transitions for resource scaling, Short and
 Long Rests, Hit Dice, damage, healing, temporary Hit Points, and death saves.
@@ -113,7 +119,8 @@ behavior. It also verifies Battle Master maneuver slots and dependency-gated
 Eldritch Invocations, the complete structured feat-choice surface, PHB
 condition effects, Circle of the Land spell groups, Pact of the Tome spell
 choices, invocation cantrip targets, and Lessons of the First Ones Origin feats
-through save/reload. Stateful subclass controls cover rest-changeable Hunter
+through save/reload. The equipment path also verifies activated Winged Boots,
+charge spending, derived Fly Speed, and persisted effect state. Stateful subclass controls cover rest-changeable Hunter
 options, Primal Companion stat blocks, and persistent cosmetic choices in
 addition to Circle of the Land. Battle Master's exact Superiority Dice count and die size
 are checked on the rendered sheet. A golden Ranger sheet verifies visible AC, HP, Initiative,
@@ -177,7 +184,7 @@ The next browser scenarios to expand are:
 - Derived sheet verification for saves, skills, resources, attacks, spellcasting, and rest/reset behavior; AC, HP, Speed, Initiative, senses, and resistances now have a golden rendered scenario.
 - Resource interaction with large numeric pools and every Healthy/Dying/Stable/Dead display; Short Rest Hit Dice, Long Rest, and critical damage at 0 HP now have browser coverage.
 - Equipment search/add/equip/wield/attune with Dagger, Quarterstaff, armor, shields, tools, starting-equipment references, weight/capacity, and visible training/Stealth/Heavy warnings.
-- Conditional and activated equipment effects with explicit active-state controls rather than inferred permanent bonuses.
+- Additional target- and trigger-specific equipment-effect presentation beyond the current linked full rules and explicit active/charge state.
 - Notes and rule-reference interaction with mouse click, touch click, and long press.
 - Offline reload after synchronization, including the complete item and spell catalog.
 

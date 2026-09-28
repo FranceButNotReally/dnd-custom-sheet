@@ -7,6 +7,7 @@ import { loadAppTestContext, resetState } from '../lib/app-context.mjs';
 
 const ROOT=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..','..');
 const LOCK=JSON.parse(fs.readFileSync(path.join(ROOT,'tests/fixtures/5etools-version.json'),'utf8'));
+const EFFECT_COVERAGE=JSON.parse(fs.readFileSync(path.join(ROOT,'tests/fixtures/equipment-effect-coverage.json'),'utf8'));
 const DATA=path.join(ROOT,'tests/.cache',LOCK.version,'data');
 const read=p=>JSON.parse(fs.readFileSync(path.join(DATA,p),'utf8'));
 const a=loadAppTestContext();
@@ -215,8 +216,8 @@ test('a Shield stacks once with armor and requires Shield training to avoid pena
   assert.ok(untrained.untrainedEquipment.includes('Shield'));
 });
 
-test('attunement gates an attuned magic shield enhancement but not its base Shield AC',()=>{
-  const magic=(merged.item||[]).find(x=>x.name==='Arrow-Catching Shield'&&x.source==='XDMG');
+test('attunement gates a persistent magic shield enhancement but not its base Shield AC',()=>{
+  const magic=(merged.item||[]).find(x=>x.name==='Shield of the Cavalier'&&x.source==='XDMG');
   assert.ok(magic);
   const c=a.emptyCharacter(); c.inventory=[{name:magic.name,source:magic.source,equipped:true,attuned:false}];
   const inactive=a.calcAutoAc(c,{str:0,dex:2},merged,effects(),{armor:['Shields']},{str:10,dex:14});
@@ -224,6 +225,17 @@ test('attunement gates an attuned magic shield enhancement but not its base Shie
   const active=a.calcAutoAc(c,{str:0,dex:2},merged,effects(),{armor:['Shields']},{str:10,dex:14});
   assert.equal(inactive.value,14);
   assert.equal(active.value,16);
+});
+
+test('target-specific and reaction AC bonuses are not misrepresented as general Armor Class',()=>{
+  const names=['Arrow-Catching Shield','Quarterstaff of the Acrobat'];
+  for(const name of names){
+    const item=(merged.item||[]).find(x=>x.name===name&&x.source==='XDMG');
+    assert.ok(item,name);
+    const c=a.emptyCharacter(); c.inventory=[{name:item.name,source:item.source,equipped:true,wielding:true,attuned:true,effectActive:true}];
+    const result=a.calcAutoAc(c,{str:0,dex:2},merged,effects(),{armor:['Shields'],weapons:['Simple Weapons']},{str:10,dex:14});
+    assert.equal(result.value,name.includes('Shield')?14:12,name);
+  }
 });
 
 test('attunement reconciliation rejects non-attunement items and caps active items at three',()=>{
@@ -253,4 +265,113 @@ test('all PHB artisan tools and instruments are classified as tools',()=>{
   const tools=baseItems.filter(x=>['AT','GS','INS'].some(prefix=>a.itemTypeCode(x).startsWith(prefix))||a.itemTypeCode(x)==='T');
   assert.equal(tools.length,27);
   for(const item of tools) assert.equal(a.equipmentCategory(item),'tool',item.name);
+});
+
+test('every structured XDMG equipment effect is classified against the pinned corpus',()=>{
+  const items=(merged.item||[]).filter(x=>x.source===EFFECT_COVERAGE.source);
+  const structured=items.filter(item=>a.itemEffectClassification(item).hasStructuredEffect);
+  assert.equal(items.length,EFFECT_COVERAGE.items);
+  assert.equal(structured.length,EFFECT_COVERAGE.structuredItems);
+  assert.equal(structured.filter(item=>a.itemEffectClassification(item).trackActivation).length,EFFECT_COVERAGE.activationTracked);
+  assert.equal(structured.filter(item=>a.itemEffectClassification(item).temporaryStructured).length,EFFECT_COVERAGE.temporaryStructured);
+  assert.equal(structured.filter(item=>a.itemEffectClassification(item).chargesMax>0).length,EFFECT_COVERAGE.chargePools);
+  assert.equal(structured.filter(item=>a.itemRequiresAttunement(item)).length,EFFECT_COVERAGE.attunementGated);
+  const fields={};
+  for(const item of structured) for(const field of a.itemEffectClassification(item).fields) fields[field]=(fields[field]||0)+1;
+  assert.deepEqual(JSON.parse(JSON.stringify(fields)),EFFECT_COVERAGE.fields);
+});
+
+test('temporary movement and consumable effects require explicit active state',()=>{
+  const boots=(merged.item||[]).find(x=>x.name==='Boots of Speed'&&x.source==='XDMG');
+  const ring=(merged.item||[]).find(x=>x.name==='Ring of Swimming'&&x.source==='XDMG');
+  const potion=(merged.item||[]).find(x=>x.name==='Potion of Fire Resistance'&&x.source==='XDMG');
+  assert.equal(a.itemEffectClassification(boots).temporaryStructured,true);
+  assert.equal(a.itemEffectClassification(ring).temporaryStructured,false);
+  assert.equal(a.itemEffectClassification(potion).temporaryStructured,true);
+  assert.equal(a.itemStructuredFieldActive({equipped:true,attuned:true,effectActive:false},boots,'modifySpeed'),false);
+  assert.equal(a.itemStructuredFieldActive({equipped:true,effectActive:false},ring,'modifySpeed'),true);
+  assert.equal(a.itemStructuredFieldActive({equipped:true,effectActive:false},potion,'resist'),false);
+  assert.equal(a.itemStructuredFieldActive({equipped:true,effectActive:true},potion,'resist'),true);
+});
+
+test('charge pools initialize, clamp, spend, restore, and preserve recharge instructions',()=>{
+  const wand=(merged.item||[]).find(x=>x.name==='Wand of Orcus'&&x.source==='XDMG');
+  assert.ok(wand);
+  const c=a.emptyCharacter(); c.inventory=[{name:wand.name,source:wand.source,equipped:true,attuned:true,chargesCurrent:99}];
+  a.reconcileEquipmentEffects(c,merged);
+  assert.equal(c.inventory[0].chargesCurrent,7);
+  assert.equal(a.adjustItemCharges(c.inventory[0],wand,-1),6);
+  assert.equal(a.adjustItemCharges(c.inventory[0],wand,-20),0);
+  assert.equal(a.adjustItemCharges(c.inventory[0],wand,2),2);
+  assert.match(a.itemRechargeLabel(wand),/Recharges at dawn \(1d4 \+ 3\)/);
+});
+
+test('equipment-effect reconciliation disables unusable active states',()=>{
+  const boots=(merged.item||[]).find(x=>x.name==='Winged Boots'&&x.source==='XDMG');
+  const c=a.emptyCharacter(); c.inventory=[{name:boots.name,source:boots.source,equipped:false,attuned:true,effectActive:true,chargesCurrent:-2}];
+  a.reconcileEquipmentEffects(c,merged);
+  assert.equal(c.inventory[0].effectActive,false);
+  assert.equal(c.inventory[0].chargesCurrent,0);
+  c.inventory[0].equipped=true; c.inventory[0].attuned=false; c.inventory[0].effectActive=true;
+  a.reconcileEquipmentEffects(c,merged);
+  assert.equal(c.inventory[0].effectActive,false);
+});
+
+test('persistent equipment bonuses aggregate only while equipped and attuned',()=>{
+  const c=a.emptyCharacter(); c.inventory=[
+    {name:'Cloak of Protection',source:'XDMG',equipped:true,attuned:true},
+    {name:'+2 Wand of the War Mage',source:'XDMG',equipped:true,attuned:true},
+    {name:'Stone of Good Luck',source:'XDMG',equipped:true,attuned:true},
+  ];
+  const result=a.equipmentDerivedEffects(c,merged);
+  assert.equal(result.savingThrowBonus,2);
+  assert.equal(result.spellAttackBonus,2);
+  assert.equal(result.abilityCheckBonus,1);
+  c.inventory[0].attuned=false;
+  assert.equal(a.equipmentDerivedEffects(c,merged).savingThrowBonus,1);
+  c.inventory[2].equipped=false;
+  assert.equal(a.equipmentDerivedEffects(c,merged).savingThrowBonus,0);
+});
+
+test('static ability equipment and activated potions change scores without automating permanent-use books',()=>{
+  const base={str:10,dex:10,con:10,int:10,wis:10,cha:10};
+  const c=a.emptyCharacter(); c.inventory=[
+    {name:'Gauntlets of Ogre Power',source:'XDMG',equipped:true,attuned:true},
+    {name:'Potion of Cloud Giant Strength',source:'XDMG',equipped:true,effectActive:false},
+    {name:'Manual of Bodily Health',source:'XDMG',equipped:true,effectActive:true},
+  ];
+  assert.equal(a.applyEquipmentAbilityEffects(base,c,merged).str,19);
+  c.inventory[1].effectActive=true;
+  const active=a.applyEquipmentAbilityEffects(base,c,merged);
+  assert.equal(active.str,27);
+  assert.equal(active.con,10);
+});
+
+test('persistent and activated movement, resistance, and immunity fields remain distinct',()=>{
+  const c=a.emptyCharacter(); c.inventory=[
+    {name:'Ring of Swimming',source:'XDMG',equipped:true,attuned:true},
+    {name:'Boots of Speed',source:'XDMG',equipped:true,attuned:true,effectActive:false},
+    {name:'Potion of Fire Resistance',source:'XDMG',equipped:true,effectActive:true},
+    {name:'Periapt of Proof against Poison',source:'XDMG',equipped:true,attuned:true},
+  ];
+  let result=a.equipmentDerivedEffects(c,merged);
+  assert.equal(result.movementModes.swim,40);
+  assert.equal(result.speedMultiplier,1);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.resistances)),['Fire']);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.immunities)),['Poison']);
+  c.inventory[1].effectActive=true;
+  result=a.equipmentDerivedEffects(c,merged);
+  assert.equal(result.speedMultiplier,2);
+});
+
+test('accessory AC stacks once per named item and Bracers of Defense enforce their equipment condition',()=>{
+  const mods={str:0,dex:3,con:0,int:0,wis:0,cha:0};
+  const c=a.emptyCharacter(); c.inventory=[
+    {name:'Cloak of Protection',source:'XDMG',equipped:true,attuned:true},
+    {name:'Cloak of Protection',source:'XDMG',equipped:true,attuned:true},
+    {name:'Bracers of Defense',source:'XDMG',equipped:true,attuned:true},
+  ];
+  assert.equal(a.calcAutoAc(c,mods,merged,effects(),{armor:[]},{str:10,dex:16}).value,16);
+  c.inventory.push({name:'Shield',source:'XPHB',equipped:true});
+  assert.equal(a.calcAutoAc(c,mods,merged,effects(),{armor:['Shields']},{str:10,dex:16}).value,16);
 });

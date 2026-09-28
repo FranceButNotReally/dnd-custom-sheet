@@ -141,7 +141,7 @@ let dbPromise;
 
 function emptyCharacter() {
   return {
-    schema: 19,
+    schema: 20,
     id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     name: "New Character",
     player: "",
@@ -230,7 +230,7 @@ function migrateCharacter(raw) {
   const base = emptyCharacter();
   if (!raw || typeof raw !== "object") return base;
   const c = { ...base, ...raw };
-  c.schema = 19;
+  c.schema = 20;
   c.baseStats = { ...base.baseStats, ...(raw.baseStats || raw.stats || {}) };
   c.xp = Math.max(0, Number(raw.xp || 0));
   c.manualAbilityBonuses = { ...base.manualAbilityBonuses, ...(raw.manualAbilityBonuses || {}) };
@@ -272,7 +272,11 @@ function migrateCharacter(raw) {
     c.preparedSpells = [...new Set([...c.preparedSpells, ...c.knownSpells])];
     c.knownSpells = [];
   }
-  c.inventory = Array.isArray(raw.inventory) ? raw.inventory : [];
+  c.inventory = Array.isArray(raw.inventory) ? raw.inventory.map(item => ({
+    ...item,
+    effectActive: Boolean(item?.effectActive),
+    ...(item?.chargesCurrent == null ? {} : { chargesCurrent: Math.max(0, Math.floor(Number(item.chargesCurrent) || 0)) }),
+  })) : [];
   c.resources = Array.isArray(raw.resources) ? raw.resources.map(r => ({ ...r, mode: r?.mode === "auto" ? "auto" : "manual" })) : [];
   c.senses = Array.isArray(raw.senses) ? raw.senses : [];
   c.attacks = Array.isArray(raw.attacks) ? raw.attacks : [];
@@ -3512,12 +3516,158 @@ function numericItemBonus(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+const STRUCTURED_ITEM_EFFECT_FIELDS = [
+  "bonusAc", "bonusWeapon", "bonusWeaponDamage", "bonusSavingThrow", "bonusSpellAttack", "bonusSpellSaveDc",
+  "bonusAbilityCheck", "bonusProficiencyBonus", "ability", "modifySpeed", "speed", "resist", "immune", "charges", "attachedSpells",
+];
+
+function itemEffectText(item) {
+  return stripTags(JSON.stringify(item?.entries || [])).replace(/\s+/g, " ").trim();
+}
+
+function itemIsConsumableEffect(item) {
+  const type = itemTypeCode(item);
+  return type === "P" || type === "SC" || Boolean(item?.poison);
+}
+
+function itemEffectClassification(item) {
+  const fields = STRUCTURED_ITEM_EFFECT_FIELDS.filter(key => item?.[key] != null);
+  const text = itemEffectText(item);
+  const chargesMax = Math.max(0, Math.floor(Number(item?.charges || 0)));
+  const activationLanguage = /\b(?:activate|drink|apply|consume|coat|light|extinguish|open|close)\b|\b(?:as|using|take|use) (?:an? |your )?(?:action|bonus action|reaction|magic action)\b/i.test(text);
+  const temporaryMovement = Boolean(item?.modifySpeed) && /^(?:Boots of Speed|Ring of Elemental Command \(Air\)|Winged Boots|Wings of Flying)$/i.test(String(item?.name || ""));
+  const temporaryStructured = itemIsConsumableEffect(item) || temporaryMovement;
+  const trackActivation = temporaryStructured || activationLanguage;
+  return {
+    fields,
+    hasStructuredEffect: fields.length > 0,
+    trackActivation,
+    temporaryStructured,
+    chargesMax,
+    recharge: item?.recharge ? String(item.recharge) : "",
+    rechargeAmount: item?.rechargeAmount == null ? "" : stripTags(String(item.rechargeAmount)),
+  };
+}
+
+function itemRechargeLabel(item) {
+  const spec = itemEffectClassification(item);
+  if (!spec.recharge) return "Manual recharge";
+  const when = spec.recharge.toLowerCase() === "dawn" ? "at dawn" : spec.recharge;
+  return `Recharges ${when}${spec.rechargeAmount ? ` (${spec.rechargeAmount})` : ""}`;
+}
+
 function itemRequiresAttunement(item) {
   return Boolean(item?.reqAttune);
 }
 
 function itemEffectActive(owned, item) {
   return !itemRequiresAttunement(item) || Boolean(owned?.attuned);
+}
+
+function itemStructuredEffectActive(owned, item) {
+  if (!owned?.equipped || !itemEffectActive(owned, item)) return false;
+  return !itemEffectClassification(item).temporaryStructured || Boolean(owned?.effectActive);
+}
+
+function itemStructuredFieldActive(owned, item, field) {
+  if (!owned?.equipped || !itemEffectActive(owned, item)) return false;
+  const name = String(item?.name || "");
+  if (field === "bonusAc" && /^(?:Arrow-Catching Shield|Quarterstaff of the Acrobat)$/i.test(name)) return false;
+  if (["bonusAc", "bonusSavingThrow"].includes(field) && /^Rod of Alertness$/i.test(name)) return Boolean(owned?.effectActive);
+  if (itemIsConsumableEffect(item)) return Boolean(owned?.effectActive);
+  if (field === "modifySpeed" && itemEffectClassification(item).temporaryStructured) return Boolean(owned?.effectActive);
+  return true;
+}
+
+function reconcileEquipmentEffects(c, itemsData = null) {
+  const items = itemsData ? officialEntries(itemsData, "item") : [];
+  for (const owned of c?.inventory || []) {
+    const item = items.find(x => x.name === owned.name && (!owned.source || String(x.source).toLowerCase() === String(owned.source).toLowerCase())) || items.find(x => x.name === owned.name);
+    if (!item) continue;
+    const spec = itemEffectClassification(item);
+    if (spec.chargesMax > 0) {
+      const current = owned.chargesCurrent == null ? spec.chargesMax : Number(owned.chargesCurrent);
+      owned.chargesCurrent = clamp(Number.isFinite(current) ? Math.floor(current) : spec.chargesMax, 0, spec.chargesMax);
+    } else {
+      delete owned.chargesCurrent;
+    }
+    if (!spec.trackActivation || !owned.equipped || !itemEffectActive(owned, item)) owned.effectActive = false;
+    else owned.effectActive = Boolean(owned.effectActive);
+  }
+  return c;
+}
+
+function adjustItemCharges(owned, item, delta) {
+  const max = itemEffectClassification(item).chargesMax;
+  if (!owned || max <= 0) return 0;
+  const current = owned.chargesCurrent == null ? max : Number(owned.chargesCurrent);
+  owned.chargesCurrent = clamp(Math.floor((Number.isFinite(current) ? current : max) + Number(delta || 0)), 0, max);
+  return owned.chargesCurrent;
+}
+
+function abilityItemIsPermanentUse(item) {
+  return /^(?:Manual of|Tome of|Book of|Deck of Many Things\b)/i.test(String(item?.name || ""));
+}
+
+function applyEquipmentAbilityEffects(stats, c, itemsData = null) {
+  const out = { ...(stats || {}) };
+  const items = itemsData ? officialEntries(itemsData, "item") : [];
+  const seen = new Set();
+  for (const owned of c?.inventory || []) {
+    const item = items.find(x => x.name === owned.name && (!owned.source || String(x.source).toLowerCase() === String(owned.source).toLowerCase())) || items.find(x => x.name === owned.name);
+    if (!item?.ability || abilityItemIsPermanentUse(item) || !itemStructuredFieldActive(owned, item, "ability")) continue;
+    const key = `${item.name}|${item.source}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const staticScores = item.ability.static || {};
+    for (const ability of ABILITIES) {
+      const fixed = Number(staticScores[ability]);
+      if (Number.isFinite(fixed)) out[ability] = Math.max(Number(out[ability] || 0), fixed);
+      const bonus = Number(item.ability[ability]);
+      if (Number.isFinite(bonus)) out[ability] = Math.min(20, Number(out[ability] || 0) + bonus);
+    }
+  }
+  return out;
+}
+
+function equipmentDerivedEffects(c, itemsData = null) {
+  const out = {
+    savingThrowBonus: 0, spellAttackBonus: 0, spellSaveDcBonus: 0, abilityCheckBonus: 0, proficiencyBonus: 0,
+    speedMinimum: 0, speedMultiplier: 1, movementModes: {}, resistances: [], immunities: [], active: [],
+  };
+  const items = itemsData ? officialEntries(itemsData, "item") : [];
+  const seen = new Set();
+  for (const owned of c?.inventory || []) {
+    const item = items.find(x => x.name === owned.name && (!owned.source || String(x.source).toLowerCase() === String(owned.source).toLowerCase())) || items.find(x => x.name === owned.name);
+    if (!item || !itemStructuredEffectActive(owned, item)) continue;
+    const key = `${item.name}|${item.source}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const name = item.name || owned.name;
+    if (itemStructuredFieldActive(owned, item, "bonusSavingThrow")) out.savingThrowBonus += numericItemBonus(item.bonusSavingThrow);
+    if (itemStructuredFieldActive(owned, item, "bonusSpellAttack")) out.spellAttackBonus += numericItemBonus(item.bonusSpellAttack);
+    if (itemStructuredFieldActive(owned, item, "bonusSpellSaveDc")) out.spellSaveDcBonus += numericItemBonus(item.bonusSpellSaveDc);
+    if (itemStructuredFieldActive(owned, item, "bonusAbilityCheck")) out.abilityCheckBonus += numericItemBonus(item.bonusAbilityCheck);
+    if (itemStructuredFieldActive(owned, item, "bonusProficiencyBonus")) out.proficiencyBonus += numericItemBonus(item.bonusProficiencyBonus);
+    const speed = item.modifySpeed || {};
+    const walkStatic = Number(speed.static?.walk);
+    const walkMultiplier = Number(speed.multiply?.walk);
+    if (itemStructuredFieldActive(owned, item, "modifySpeed") && Number.isFinite(walkStatic)) out.speedMinimum = Math.max(out.speedMinimum, walkStatic);
+    if (itemStructuredFieldActive(owned, item, "modifySpeed") && Number.isFinite(walkMultiplier) && walkMultiplier > 0) out.speedMultiplier = Math.max(out.speedMultiplier, walkMultiplier);
+    for (const mode of ["climb", "swim", "fly"]) {
+      const fixed = Number(speed.static?.[mode]);
+      if (itemStructuredFieldActive(owned, item, "modifySpeed") && Number.isFinite(fixed)) out.movementModes[mode] = Math.max(Number(out.movementModes[mode] || 0), fixed);
+      if (itemStructuredFieldActive(owned, item, "modifySpeed") && speed.equal?.[mode] === "walk") out.movementModes[mode] = "speed";
+    }
+    if (itemStructuredFieldActive(owned, item, "resist")) for (const value of Array.isArray(item.resist) ? item.resist : []) out.resistances.push(canonicalLabel(stripTags(String(value))));
+    if (itemStructuredFieldActive(owned, item, "immune")) for (const value of Array.isArray(item.immune) ? item.immune : []) out.immunities.push(canonicalLabel(stripTags(String(value))));
+    const spec = itemEffectClassification(item);
+    if (owned.effectActive && spec.trackActivation) out.active.push(`${name}: active effect`);
+    if (spec.chargesMax > 0) out.active.push(`${name}: ${owned.chargesCurrent ?? spec.chargesMax}/${spec.chargesMax} charges`);
+  }
+  out.resistances = dedupeLabels(out.resistances);
+  out.immunities = dedupeLabels(out.immunities);
+  return out;
 }
 
 function reconcileAttunement(c, itemsData = null) {
@@ -3648,7 +3798,7 @@ async function getAttackRows(d) {
   for (const spell of (state.character.cantrips || []).map(spellById).filter(Boolean)) {
     const advantage = Boolean(d.conditionEffects?.attackAdvantage), disadvantage = Boolean(d.conditionEffects?.attackDisadvantage);
     const suffix = d.conditionEffects?.incapacitated ? " BLOCKED" : advantage === disadvantage ? "" : advantage ? " ADV" : " DIS";
-    rows.push({ nameHtml: renderReferenceTag("spell", `${spell.name}|${spell.source}|${spell.name}`), name: spell.name, attackBonus: d.spellcastingAbility ? `${formatMod(d.pb + d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0))}${suffix}` : "—", damage: (spell.damageInflict || []).map(damageTypeName).join(", ") || "Cantrip", notePayload: spellNotePayload(spell) });
+    rows.push({ nameHtml: renderReferenceTag("spell", `${spell.name}|${spell.source}|${spell.name}`), name: spell.name, attackBonus: d.spellcastingAbility ? `${formatMod(d.pb + d.mods[d.spellcastingAbility] + Number(d.equipmentEffects?.spellAttackBonus || 0) + Number(d.d20Penalty || 0))}${suffix}` : "—", damage: (spell.damageInflict || []).map(damageTypeName).join(", ") || "Cantrip", notePayload: spellNotePayload(spell) });
   }
   return rows.slice(0, 12);
 }
@@ -3711,7 +3861,7 @@ function calcAutoAc(c, mods, itemsData = null, effects = null, proficiencies = n
     for (const { item, owned } of armor) {
       const base = Number(item.ac);
       if (!Number.isFinite(base)) continue;
-      const bonus = itemEffectActive(owned, item) ? numericItemBonus(item.bonusAc) : 0;
+      const bonus = itemStructuredFieldActive(owned, item, "bonusAc") ? numericItemBonus(item.bonusAc) : 0;
       let dex = 0;
       const type = itemTypeCode(item);
       if (type === "LA") dex = mods.dex;
@@ -3735,9 +3885,21 @@ function calcAutoAc(c, mods, itemsData = null, effects = null, proficiencies = n
   if (shields.length) {
     const canUseShield = sourceMode !== "unarmored" || Boolean(formula?.allowShield);
     if (canUseShield) {
-      const shieldAc = Math.max(0, ...shields.map(({ item, owned }) => Number(item.ac || 0) + (itemEffectActive(owned, item) ? numericItemBonus(item.bonusAc) : 0)));
+      const shieldAc = Math.max(0, ...shields.map(({ item, owned }) => Number(item.ac || 0) + (itemStructuredFieldActive(owned, item, "bonusAc") ? numericItemBonus(item.bonusAc) : 0)));
       if (shieldAc) { best += shieldAc; breakdown.push(`shield +${shieldAc}`); reason += ` + shield`; }
     }
+  }
+  const accessoryNames = new Set();
+  for (const { item, owned } of resolved) {
+    if (["LA", "MA", "HA", "S"].includes(itemTypeCode(item)) || !numericItemBonus(item.bonusAc) || !itemStructuredFieldActive(owned, item, "bonusAc")) continue;
+    const key = textNorm(item.name);
+    if (accessoryNames.has(key)) continue;
+    if (key === "bracersofdefense" && (armor.length || shields.length)) continue;
+    accessoryNames.add(key);
+    const bonus = numericItemBonus(item.bonusAc);
+    best += bonus;
+    breakdown.push(`${item.name} ${formatMod(bonus)}`);
+    reason += ` + ${item.name}`;
   }
   let armorSpeedPenalty = 0;
   if (selectedArmor && itemTypeCode(selectedArmor) === "HA") {
@@ -4511,6 +4673,12 @@ function reconcileResources(c, specs) {
 }
 async function deriveCharacter() {
   const c = state.character;
+  let equipmentData = null;
+  try {
+    equipmentData = await getItemsData();
+    reconcileAttunement(c, equipmentData);
+    reconcileEquipmentEffects(c, equipmentData);
+  } catch (error) { console.warn("Equipment effects unavailable", error); }
   const backgroundObj = findBackground(c.background?.name, c.background?.source || null);
   const speciesObj = findSpecies(c.species?.name, c.species?.source || null);
   if (backgroundObj) reconcileBackgroundAbilityChoices(c, backgroundObj);
@@ -4518,10 +4686,11 @@ async function deriveCharacter() {
   let featObjs = selectedFeatObjects(c);
   reconcileFeatChoices(c, featObjs);
   reconcileSpeciesChoices(c, speciesObj);
-  const finalStats = calculateFinalStats(c, backgroundObj, featObjs);
+  const finalStats = applyEquipmentAbilityEffects(calculateFinalStats(c, backgroundObj, featObjs), c, equipmentData);
+  const equipmentEffects = equipmentDerivedEffects(c, equipmentData);
   const mods = Object.fromEntries(ABILITIES.map(a => [a, abilityMod(finalStats[a])]));
   const d = {
-    level: Number(c.level || 1), mods, stats: finalStats, baseStats: c.baseStats || c.stats || finalStats, pb: proficiencyBonus(c.level),
+    level: Number(c.level || 1), mods, stats: finalStats, baseStats: c.baseStats || c.stats || finalStats, pb: proficiencyBonus(c.level) + Number(equipmentEffects.proficiencyBonus || 0),
     classFile: null, classObj: null, subclassObj: null, subclassOptions: [],
     senseRefs: [],
     speciesObj, backgroundObj,
@@ -4533,7 +4702,7 @@ async function deriveCharacter() {
     size: sizeLabel(findSpecies(c.species?.name, c.species?.source || null)?.size), spellcastingAbility: null, spellcastingSource: null, spellSlots: [],
     maxPrepared: null, knownSpells: null, cantrips: null, alwaysPreparedSpells: [], alwaysKnownSpells: [], alwaysSpellbookSpells: [], featSpellRefs: [], featureSpellChoiceSpecs: [], inventoryWeight: 0, carryingCapacity: carryingCapacity(finalStats), passivePerception: 10 + mods.wis,
     passiveInvestigation: 10 + mods.int, proficiencies: { armor: [], weapons: [], tools: [], languages: [] },
-    resistances: [], senses: [], sourceSummary: state.data.sourceMeta || []
+    resistances: [], immunities: [], senses: [], equipmentEffects, sourceSummary: state.data.sourceMeta || []
   };
   if (c.class?.name) {
     d.classFile = await getClassDetails(c.class.name);
@@ -4636,11 +4805,16 @@ async function deriveCharacter() {
   for (const s of normalizeSkillArray(c.customSkillProficiencies)) d.skillProficiencies.add(s);
   for (const s of d.speciesObj?.skillProficiencies ? grantedSkillsFromMap(d.speciesObj.skillProficiencies) : []) d.skillProficiencies.add(s);
   d.effects = buildDerivedEffects(c, d, featObjs);
+  d.effects.savingThrowBonus += Number(equipmentEffects.savingThrowBonus || 0);
+  d.effects.speedMinimum = Math.max(Number(d.effects.speedMinimum || 0), Number(equipmentEffects.speedMinimum || 0));
+  d.effects.resistances.push(...(equipmentEffects.resistances || []));
+  d.effects.active.push(...(equipmentEffects.active || []));
   d.conditionEffects = conditionEffects(c);
   for (const save of d.effects.savingThrows) d.savingThrowProficiencies.add(save);
   d.savingThrowAdvantages = new Set(d.effects.savingThrowAdvantages || []);
   d.activeEffects = [...(d.effects.active || []), ...(d.conditionEffects.active || [])];
   for (const value of d.effects.resistances || []) if (value && !d.resistances.includes(value)) d.resistances.push(value);
+  for (const value of equipmentEffects.immunities || []) if (value && !d.immunities.includes(value)) d.immunities.push(value);
   if (d.conditionEffects.allDamageResistance && !d.resistances.includes("All damage")) d.resistances.push("All damage");
   const speciesResists = Array.isArray(d.speciesObj?.resist) ? d.speciesObj.resist : [];
   for (const value of speciesResists) { const label = canonicalLabel(stripTags(String(value))); if (label && !d.resistances.includes(label)) d.resistances.push(label); }
@@ -4684,8 +4858,9 @@ async function deriveCharacter() {
   d.proficiencies.tools = dedupeLabels([...(d.proficiencies.tools || []), ...(d.effects.tools || [])]);
   d.proficiencies.languages = dedupeLabels([...(d.proficiencies.languages || []), ...(d.effects.languages || [])]);
   try {
-    const equipmentData = await getItemsData();
+    if (!equipmentData) equipmentData = await getItemsData();
     reconcileAttunement(c, equipmentData);
+    reconcileEquipmentEffects(c, equipmentData);
     const acResult = calcAutoAc(c, mods, equipmentData, d.effects, d.proficiencies, d.stats);
     d.inventoryWeight = inventoryWeight(c, equipmentData);
     d.heavyArmorWorn = Boolean(acResult.wearingHeavyArmor);
@@ -4715,17 +4890,21 @@ async function deriveCharacter() {
   else d.passivePerception += Number(d.effects.unproficientSkillBonus || 0);
   if (effectiveExpertise.has(perceptionKey)) d.passivePerception += d.pb;
   d.passivePerception += Number(d.effects.passivePerceptionBonus || 0);
+  d.passivePerception += Number(equipmentEffects.abilityCheckBonus || 0);
   if (d.skillProficiencies.has("investigation")) d.passiveInvestigation += d.pb;
   else d.passiveInvestigation += Number(d.effects.unproficientSkillBonus || 0);
   if (effectiveExpertise.has("investigation")) d.passiveInvestigation += d.pb;
   d.passiveInvestigation += Number(d.effects.passiveInvestigationBonus || 0);
+  d.passiveInvestigation += Number(equipmentEffects.abilityCheckBonus || 0);
   const fastMovementBonus = d.effects.flags.has("fastMovement") && !d.heavyArmorWorn ? 10 : 0;
   const rovingBonus = d.effects.flags.has("roving") && !d.heavyArmorWorn ? 10 : 0;
-  d.speed = Number(c.speedOverride ?? Math.max(0, Math.max(dfltSpeed(d.speciesObj) + Number(d.effects.speedBonus || 0), Number(d.effects.speedMinimum || 0)) + fastMovementBonus + rovingBonus - 5 * Number(c.exhaustion || 0) - Number(d.armorSpeedPenalty || 0)));
+  const walkingSpeed = Math.max(dfltSpeed(d.speciesObj) + Number(d.effects.speedBonus || 0), Number(d.effects.speedMinimum || 0)) + fastMovementBonus + rovingBonus;
+  d.speed = Number(c.speedOverride ?? Math.max(0, walkingSpeed * Number(equipmentEffects.speedMultiplier || 1) - 5 * Number(c.exhaustion || 0) - Number(d.armorSpeedPenalty || 0)));
   if (d.conditionEffects.speedZero) d.speed = 0;
   d.movementModes = {
-    climb: d.effects.movementModes?.climb === "speed" || d.effects.flags.has("roving") ? d.speed : null,
-    swim: d.effects.movementModes?.swim === "speed" || d.effects.flags.has("roving") ? d.speed : null,
+    climb: equipmentEffects.movementModes?.climb === "speed" || d.effects.movementModes?.climb === "speed" || d.effects.flags.has("roving") ? d.speed : Number(equipmentEffects.movementModes?.climb || 0) || null,
+    swim: equipmentEffects.movementModes?.swim === "speed" || d.effects.movementModes?.swim === "speed" || d.effects.flags.has("roving") ? d.speed : Number(equipmentEffects.movementModes?.swim || 0) || null,
+    fly: equipmentEffects.movementModes?.fly === "speed" ? d.speed : Number(equipmentEffects.movementModes?.fly || 0) || null,
   };
   const baseMaxHp = defaultMaxHp(d.classObj, c.level, mods.con, c.hpMaxOverride);
   const hpPerLevelBonus = Number(d.effects.hpPerLevel || 0) * Number(c.level || 1) + Number(d.effects.hpFlat || 0);
@@ -5096,7 +5275,7 @@ async function renderSheet(app) {
     return `<div class="sheet-save-row"><span class="check-circle ${prof ? "on" : ""}"></span><span>${ABILITY_NAMES[a]} Save${rollBadges(roll)}</span><strong>${roll.autoFail ? "Fail" : formatMod(d.mods[a] + (prof ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>`;
   }).join("");
   const skillsByAbility = Object.fromEntries(ABILITIES.map(a => [a, []]));
-  for (const [key,[ability,name]] of Object.entries(SKILLS)) skillsByAbility[ability].push({ key, name, prof: d.skillProficiencies.has(key), exp: d.effectiveExpertise?.has(key) || false, bonus: d.mods[ability] + (d.skillProficiencies.has(key) ? d.pb : Number(d.effects?.unproficientSkillBonus || 0)) + (d.effectiveExpertise?.has(key) ? d.pb : 0) + Number(d.effects?.skillBonuses?.[key] || 0) + Number(d.d20Penalty || 0) });
+  for (const [key,[ability,name]] of Object.entries(SKILLS)) skillsByAbility[ability].push({ key, name, prof: d.skillProficiencies.has(key), exp: d.effectiveExpertise?.has(key) || false, bonus: d.mods[ability] + (d.skillProficiencies.has(key) ? d.pb : Number(d.effects?.unproficientSkillBonus || 0)) + (d.effectiveExpertise?.has(key) ? d.pb : 0) + Number(d.effects?.skillBonuses?.[key] || 0) + Number(d.equipmentEffects?.abilityCheckBonus || 0) + Number(d.d20Penalty || 0) });
   const abilityBoxes = ABILITIES.map(a => `<section class="ability-box">
       <div class="ability-head"><span>${ABILITY_LABELS[a]}</span><strong>${d.stats[a]}</strong><em>${formatMod(d.mods[a])}</em></div>
       <div class="ability-save"><span class="check-circle ${d.savingThrowProficiencies.has(a) ? "on" : ""}"></span><b>Saving Throw${rollBadges(saveState(a))}</b><strong>${saveState(a).autoFail ? "Fail" : formatMod(d.mods[a] + (d.savingThrowProficiencies.has(a) ? d.pb : 0) + Number(d.effects?.savingThrowBonus || 0) + Number(d.d20Penalty || 0))}</strong></div>
@@ -5129,7 +5308,7 @@ async function renderSheet(app) {
       <div class="identity-stat-box"><span>Hit Dice</span><strong>${Math.max(0,Number(c.level||1)-Number(c.hitDiceUsed||0))}d${hitDieFaces(d.classObj)}</strong><small>${c.hitDiceUsed} spent · spend during Short Rest</small></div>
       <div class="identity-stat-box"><span>Death Saves${d.effects?.deathSaveAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${c.deathSaves.success} ✓ · ${c.deathSaves.failure} ✕</strong><small>${escapeHtml(deathStateLabel)}${currentDeathState === "dying" ? ` · <button data-action="death" data-type="success">Success</button> <button data-action="death" data-type="failure">Failure</button>` : ""}</small></div>
     </div>
-    <div class="sheet-metrics"><div><span>Initiative${d.effects?.initiativeAdvantage || d.conditionEffects?.initiativeAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}${d.armorTrainingPenalty || d.conditionEffects?.initiativeDisadvantage ? ` <sup class="save-advantage">DIS</sup>` : ""}</span><strong>${formatMod(d.mods.dex + Number(d.effects?.initiativeBonus || 0) + Number(d.d20Penalty || 0))}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong>${d.movementModes?.climb ? `<small>Climb ${d.movementModes.climb} ft.</small>` : ""}${d.movementModes?.swim ? `<small>Swim ${d.movementModes.swim} ft.</small>` : ""}</div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? `${formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0))}${d.conditionEffects?.attackAdvantage && !d.conditionEffects?.attackDisadvantage ? " ADV" : d.conditionEffects?.attackDisadvantage && !d.conditionEffects?.attackAdvantage ? " DIS" : ""}` : "—"}</strong></div></div>${d.activeEffects?.length || d.optionalFeatureObjects?.length || d.weaponMasteryCount ? `<section class="sheet-panel derived-effects-panel"><div class="sheet-panel-title">Active Rules Effects</div><div class="active-effect-list">${d.activeEffects.map(x=>`<span class="active-effect-chip">${escapeHtml(x)}</span>`).join("")}${d.optionalFeatureObjects.map(x=>`<button class="active-effect-chip effect-link" data-action="optional-feature-detail" data-name="${encodeURIComponent(`${x.name}|${x.source}`)}">${escapeHtml(x.name)}</button>`).join("")}${d.weaponMasteryCount ? `<span class="active-effect-chip">Weapon Mastery ${Math.min(selectedWeaponMasteryRefs(c).length,d.weaponMasteryCount)}/${d.weaponMasteryCount}</span>` : ""}</div></section>` : ""}
+    <div class="sheet-metrics"><div><span>Initiative${d.effects?.initiativeAdvantage || d.conditionEffects?.initiativeAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}${d.armorTrainingPenalty || d.conditionEffects?.initiativeDisadvantage ? ` <sup class="save-advantage">DIS</sup>` : ""}</span><strong>${formatMod(d.mods.dex + Number(d.effects?.initiativeBonus || 0) + Number(d.equipmentEffects?.abilityCheckBonus || 0) + Number(d.d20Penalty || 0))}</strong></div><div><span>Speed</span><strong>${d.speed} ft.</strong>${d.movementModes?.climb ? `<small>Climb ${d.movementModes.climb} ft.</small>` : ""}${d.movementModes?.swim ? `<small>Swim ${d.movementModes.swim} ft.</small>` : ""}${d.movementModes?.fly ? `<small>Fly ${d.movementModes.fly} ft.</small>` : ""}</div><div><span>Size</span><strong>${escapeHtml(d.size)}</strong></div><div><span>Passive Perception</span><strong>${d.passivePerception}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8 + d.pb + d.mods[d.spellcastingAbility] + Number(d.equipmentEffects?.spellSaveDcBonus || 0) : "—"}</strong></div><div><span>Spell Attack</span><strong>${d.spellcastingAbility ? `${formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.equipmentEffects?.spellAttackBonus || 0) + Number(d.d20Penalty || 0))}${d.conditionEffects?.attackAdvantage && !d.conditionEffects?.attackDisadvantage ? " ADV" : d.conditionEffects?.attackDisadvantage && !d.conditionEffects?.attackAdvantage ? " DIS" : ""}` : "—"}</strong></div></div>${d.activeEffects?.length || d.optionalFeatureObjects?.length || d.weaponMasteryCount ? `<section class="sheet-panel derived-effects-panel"><div class="sheet-panel-title">Active Rules Effects</div><div class="active-effect-list">${d.activeEffects.map(x=>`<span class="active-effect-chip">${escapeHtml(x)}</span>`).join("")}${d.optionalFeatureObjects.map(x=>`<button class="active-effect-chip effect-link" data-action="optional-feature-detail" data-name="${encodeURIComponent(`${x.name}|${x.source}`)}">${escapeHtml(x.name)}</button>`).join("")}${d.weaponMasteryCount ? `<span class="active-effect-chip">Weapon Mastery ${Math.min(selectedWeaponMasteryRefs(c).length,d.weaponMasteryCount)}/${d.weaponMasteryCount}</span>` : ""}</div></section>` : ""}
     <div class="sheet-grid-main"><div class="ability-column">${abilityBoxes}</div><div class="sheet-right-column">
       <section class="sheet-panel"><div class="sheet-panel-title">Weapons & Damage Cantrips <button class="sheet-mini-btn" data-action="manage-attacks">Manage</button></div><div class="weapon-table head"><span>Name</span><span>Atk</span><span>Damage</span><span>Notes</span></div>${attackHtml}</section>
       ${d.weaponMasteryCount ? `<section class="sheet-panel"><div class="sheet-panel-title">Weapon Masteries</div><div class="selection-count">${selectedWeaponMasteryRefs(c).length} / ${d.weaponMasteryCount}</div>${selectedWeaponMasteryRefs(c).map(ref => { const item = findOfficialItemByName(splitRefId(ref).name, splitRefId(ref).source); return item ? `<div class="mastery-sheet-row"><span>${renderReferenceTag("item", `${item.name}|${item.source}|${item.name}`)}</span><span>${masteryObjects(item).map(x=>renderWeaponMasteryLink(x.name)).join(", ") || "—"}</span></div>` : `<div class="mastery-sheet-row"><span>${escapeHtml(splitRefId(ref).name)}</span><span>—</span></div>`; }).join("") || `<div class="sheet-empty">No Weapon Masteries selected.</div>`}</section>` : ""}
@@ -5144,10 +5323,10 @@ async function renderSheet(app) {
 
   const pageTwo = `<div class="sheet-page">
     <div class="sheet-brandline"><div><span class="sheet-kicker">D&D 2024 · CHARACTER SHEET</span><h1>${escapeHtml(c.name || "Unnamed Character")}</h1><p>Spellcasting, personality, proficiencies & equipment</p></div><div class="sheet-page-actions"><button class="sheet-nav ${page===1?"active":""}" data-action="sheet-page" data-page="1">Page 1</button><button class="sheet-nav ${page===2?"active":""}" data-action="sheet-page" data-page="2">Page 2</button></div></div>
-    <div class="spellcasting-head"><div><span>Spellcasting Ability</span><strong>${d.spellcastingAbility ? ABILITY_LABELS[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8+d.pb+d.mods[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Attack Bonus</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility] + Number(d.d20Penalty || 0)) : "—"}</strong></div><div><span>Prepared</span><strong>${d.maxPrepared ?? "—"}</strong></div><div><span>Concentration${d.effects?.concentrationSaveAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${c.concentration ? escapeHtml(c.concentration) : "—"}</strong></div></div>
+    <div class="spellcasting-head"><div><span>Spellcasting Ability</span><strong>${d.spellcastingAbility ? ABILITY_LABELS[d.spellcastingAbility] : "—"}</strong></div><div><span>Spell Save DC</span><strong>${d.spellcastingAbility ? 8+d.pb+d.mods[d.spellcastingAbility]+Number(d.equipmentEffects?.spellSaveDcBonus || 0) : "—"}</strong></div><div><span>Spell Attack Bonus</span><strong>${d.spellcastingAbility ? formatMod(d.pb+d.mods[d.spellcastingAbility]+Number(d.equipmentEffects?.spellAttackBonus || 0)+Number(d.d20Penalty || 0)) : "—"}</strong></div><div><span>Prepared</span><strong>${d.maxPrepared ?? "—"}</strong></div><div><span>Concentration${d.effects?.concentrationSaveAdvantage ? ` <sup class="save-advantage">ADV</sup>` : ""}</span><strong>${c.concentration ? escapeHtml(c.concentration) : "—"}</strong></div></div>
     <section class="sheet-panel spell-slots-panel"><div class="sheet-panel-title">Spell Slots</div><div class="spell-slot-grid">${slots || `<div class="sheet-empty">No spell slots.</div>`}</div></section>
     <div class="sheet-grid-two"><section class="sheet-panel"><div class="sheet-panel-title">Cantrips <button class="sheet-mini-btn" data-action="spells">Manage</button></div>${cantrips.length ? cantrips.map(s => `<div class="sheet-list-item static"><span>${renderReferenceTag("spell", `${s.name}|${s.source}|${s.name}`)}</span><small>${escapeHtml(spellSchoolName(s.school))}</small></div>`).join("") : `<div class="sheet-empty">No cantrips selected.</div>`}</section><section class="sheet-panel"><div class="sheet-panel-title">Prepared Spells <button class="sheet-mini-btn" data-action="spells">Manage</button></div>${prepared.length ? prepared.map(s => `<div class="sheet-list-item static"><span>${renderReferenceTag("spell", `${s.name}|${s.source}|${s.name}`)}</span><small>Level ${s.level}</small></div>`).join("") : `<div class="sheet-empty">No prepared spells selected.</div>`}</section></div>
-    <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Proficiencies & Languages</div><div class="proficiency-groups"><div><b>Armor</b><p>${renderProficiencyGroup(d.proficiencies.armor, "armor") || "None"}</p></div><div><b>Weapons</b><p>${renderProficiencyGroup(d.proficiencies.weapons, "weapon") || "None"}</p></div><div><b>Tools</b><p>${renderProficiencyGroup(d.proficiencies.tools, "tool") || "None"}</p></div><div><b>Languages</b><p>${renderProficiencyGroup(languages, "language") || "None"}</p></div></div>${d.resistances.length ? `<div class="derived-subgroup"><b>Damage Resistances</b><p>${escapeHtml(d.resistances.join(", "))}</p></div>` : ""}<div class="derived-subgroup"><b>Senses</b><p class="sense-list">${d.senseRefs.length ? d.senseRefs.map(renderSenseRef).join(", ") : "No special senses"}${d.senses.length ? `${d.senseRefs.length ? ", " : ""}${escapeHtml(d.senses.join(", "))}` : ""}</p></div><button class="sheet-mini-btn" data-action="builder">Edit proficiencies</button></section><section class="sheet-panel"><div class="sheet-panel-title">Personality & Backstory</div><textarea class="sheet-notes" data-field="notes" rows="12" placeholder="Character notes, personality, ideals, bonds, flaws, backstory…">${escapeHtml(c.notes)}</textarea></section></div>
+    <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Proficiencies & Languages</div><div class="proficiency-groups"><div><b>Armor</b><p>${renderProficiencyGroup(d.proficiencies.armor, "armor") || "None"}</p></div><div><b>Weapons</b><p>${renderProficiencyGroup(d.proficiencies.weapons, "weapon") || "None"}</p></div><div><b>Tools</b><p>${renderProficiencyGroup(d.proficiencies.tools, "tool") || "None"}</p></div><div><b>Languages</b><p>${renderProficiencyGroup(languages, "language") || "None"}</p></div></div>${d.resistances.length ? `<div class="derived-subgroup"><b>Damage Resistances</b><p>${escapeHtml(d.resistances.join(", "))}</p></div>` : ""}${d.immunities.length ? `<div class="derived-subgroup"><b>Damage Immunities</b><p>${escapeHtml(d.immunities.join(", "))}</p></div>` : ""}<div class="derived-subgroup"><b>Senses</b><p class="sense-list">${d.senseRefs.length ? d.senseRefs.map(renderSenseRef).join(", ") : "No special senses"}${d.senses.length ? `${d.senseRefs.length ? ", " : ""}${escapeHtml(d.senses.join(", "))}` : ""}</p></div><button class="sheet-mini-btn" data-action="builder">Edit proficiencies</button></section><section class="sheet-panel"><div class="sheet-panel-title">Personality & Backstory</div><textarea class="sheet-notes" data-field="notes" rows="12" placeholder="Character notes, personality, ideals, bonds, flaws, backstory…">${escapeHtml(c.notes)}</textarea></section></div>
     <div class="sheet-grid-two compact-sheet-gap"><section class="sheet-panel"><div class="sheet-panel-title">Equipment <small>${d.inventoryWeight} / ${d.carryingCapacity} lb.</small></div>${(c.inventory || []).length ? c.inventory.slice(0,12).map((it,i) => `<div class="sheet-list-item static"><span>${renderInventoryItemLink(it)}${it.quantity>1?` ×${it.quantity}`:""}</span><small>${it.equipped ? "Equipped" : ""}</small></div>`).join("") : `<div class="sheet-empty">No equipment.</div>`}<button class="sheet-mini-btn" data-action="equipment">Open equipment</button></section><section class="sheet-panel"><div class="sheet-panel-title">Coins & Attunement</div><div class="coin-grid">${["cp","sp","ep","gp","pp"].map(k => `<label><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" value="${Number(c.currency?.[k] || 0)}" min="0"></label>`).join("")}</div><div class="attunement"><b>Magic Item Attunement</b><p>${(c.inventory || []).filter(x=>x.attuned).length} / 3 items attuned.</p></div></section></div>
   </div>`;
 
@@ -5543,7 +5722,7 @@ async function renderEquipment(app) {
   const derived = await deriveCharacter();
   const items = state.character.inventory || [];
   app.innerHTML = `${pageHeader("EQUIPMENT", `${escapeHtml(state.character.name || "Character")} · Equipment`, "Items are resolved against the cached 2024 5etools equipment catalog.", `<button class="button" data-action="sheet">Character</button><button class="button button-primary" data-action="item-picker">Add item</button>`)}
-  <section class="card"><div class="equipment-total-value">Total currency value: <strong>${formatCurrencyValue(currencyToCp(state.character.currency))}</strong> · Carried weight: <strong>${derived.inventoryWeight} / ${derived.carryingCapacity} lb.</strong> · Attuned: <strong>${items.filter(x=>x.attuned).length} / 3</strong></div><div class="equipment-state-legend"><strong>Equipped</strong> = worn or otherwise active for equipment effects and Armor Class. <strong>Wielding</strong> = a weapon is currently held and counts for attacks and weapon-dependent effects. <strong>Attuned</strong> activates properties that require attunement. Wielding a weapon automatically equips it; a weapon can stay equipped without being wielded.</div>${derived.equipmentWarnings?.length ? `<div class="proficiency-overlap"><strong>Equipment rules</strong><span>${escapeHtml(derived.equipmentWarnings.join(" "))}</span></div>` : ""}<div class="currency-grid">${["pp","gp","ep","sp","cp"].map(k=>`<label class="field"><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" min="0" step="1" value="${Number(state.character.currency?.[k] || 0)}"></label>`).join("")}</div>
+  <section class="card"><div class="equipment-total-value">Total currency value: <strong>${formatCurrencyValue(currencyToCp(state.character.currency))}</strong> · Carried weight: <strong>${derived.inventoryWeight} / ${derived.carryingCapacity} lb.</strong> · Attuned: <strong>${items.filter(x=>x.attuned).length} / 3</strong></div><div class="equipment-state-legend"><strong>Equipped</strong> = worn or otherwise active for equipment effects and Armor Class. <strong>Wielding</strong> = a weapon is currently held and counts for attacks and weapon-dependent effects. <strong>Attuned</strong> activates properties that require attunement. <strong>Effect active</strong> tracks a temporary or activated property. Charges are tracked separately and recharge only when you record the amount granted by the item's rule.</div>${derived.equipmentWarnings?.length ? `<div class="proficiency-overlap"><strong>Equipment rules</strong><span>${escapeHtml(derived.equipmentWarnings.join(" "))}</span></div>` : ""}<div class="currency-grid">${["pp","gp","ep","sp","cp"].map(k=>`<label class="field"><span>${k.toUpperCase()}</span><input type="number" data-currency="${k}" min="0" step="1" value="${Number(state.character.currency?.[k] || 0)}"></label>`).join("")}</div>
   <div class="picker-toolbar equipment-page-toolbar"><input id="equipmentSearch" type="search" placeholder="Filter inventory…"><select id="equipmentCategory"><option value="all">All equipment</option><option value="weapon">Weapons</option><option value="armor">Armor</option><option value="shield">Shields</option><option value="tool">Tools</option><option value="gear">Adventuring gear</option><option value="magic">Magic items</option></select><label class="picker-check"><input id="equipmentEquipped" type="checkbox"> Equipped only</label></div>
   <div id="equipmentRows" class="equipment-list"></div></section>`;
   const categoryOf = it => equipmentCategory(findOfficialItemByName(it.name, it.source) || findOfficialItemByName(it.name) || it);
@@ -5560,9 +5739,11 @@ async function renderEquipment(app) {
       const found = findOfficialItemByName(it.name,it.source) || findOfficialItemByName(it.name);
       const isWeapon = Boolean(found?.weaponCategory);
       const requiresAttunement = itemRequiresAttunement(found);
+      const effectSpec = itemEffectClassification(found);
       const label = found?.name || it.displayName || it.name;
       const itemWeight = Number(found?.weight || 0) * Math.max(0, Number(it.quantity ?? 1));
-      return `<div class="equipment-row"><div>${found ? renderReferenceTag("item", `${found.name}|${found.source}|${found.name}`) : `<span>${escapeHtml(label)}</span>`}<div class="mini">${escapeHtml(found?.source || it.source || DATA_SOURCE)}${it.quantity>1?` · ×${it.quantity}`:""}${itemWeight?` · ${itemWeight} lb.`:""}${it.equipped?" · Equipped":""}${isWeapon && it.wielding!==false?" · Wielding":""}${it.attuned?" · Attuned":""}${requiresAttunement&&!it.attuned?" · Requires attunement":""}</div></div><div class="quick-actions"><button class="button button-small ${it.equipped?"button-primary":""}" data-action="toggle-equipped" data-index="${index}">${it.equipped?"Equipped":"Equip"}</button>${isWeapon?`<button class="button button-small ${it.wielding!==false?"button-primary":""}" data-action="toggle-wielding" data-index="${index}">${it.wielding!==false?"Wielding":"Wield"}</button>`:""}${requiresAttunement?`<button class="button button-small ${it.attuned?"button-primary":""}" data-action="toggle-attuned" data-index="${index}">${it.attuned?"Attuned":"Attune"}</button>`:""}<button class="button button-small" data-action="item-info" data-index="${index}">Details</button><button class="button button-small" data-action="qty-minus" data-index="${index}">−</button><button class="button button-small" data-action="qty-plus" data-index="${index}">+</button><button class="button button-small button-danger" data-action="remove-item" data-index="${index}">Remove</button></div></div>`;
+      const charges = effectSpec.chargesMax > 0 ? ` · Charges ${it.chargesCurrent ?? effectSpec.chargesMax}/${effectSpec.chargesMax} · ${itemRechargeLabel(found)}` : "";
+      return `<div class="equipment-row"><div>${found ? renderReferenceTag("item", `${found.name}|${found.source}|${found.name}`) : `<span>${escapeHtml(label)}</span>`}<div class="mini">${escapeHtml(found?.source || it.source || DATA_SOURCE)}${it.quantity>1?` · ×${it.quantity}`:""}${itemWeight?` · ${itemWeight} lb.`:""}${it.equipped?" · Equipped":""}${isWeapon && it.wielding!==false?" · Wielding":""}${it.attuned?" · Attuned":""}${requiresAttunement&&!it.attuned?" · Requires attunement":""}${it.effectActive?" · Effect active":""}${escapeHtml(charges)}</div></div><div class="quick-actions"><button class="button button-small ${it.equipped?"button-primary":""}" data-action="toggle-equipped" data-index="${index}">${it.equipped?"Equipped":"Equip"}</button>${isWeapon?`<button class="button button-small ${it.wielding!==false?"button-primary":""}" data-action="toggle-wielding" data-index="${index}">${it.wielding!==false?"Wielding":"Wield"}</button>`:""}${requiresAttunement?`<button class="button button-small ${it.attuned?"button-primary":""}" data-action="toggle-attuned" data-index="${index}">${it.attuned?"Attuned":"Attune"}</button>`:""}${effectSpec.trackActivation?`<button class="button button-small ${it.effectActive?"button-primary":""}" data-action="toggle-item-effect" data-index="${index}">${it.effectActive?"Effect active":"Activate effect"}</button>`:""}${effectSpec.chargesMax>0?`<button class="button button-small" data-action="charge-minus" data-index="${index}" aria-label="Spend one ${escapeHtml(label)} charge">Charge −</button><button class="button button-small" data-action="charge-plus" data-index="${index}" aria-label="Restore one ${escapeHtml(label)} charge">Charge +</button>`:""}<button class="button button-small" data-action="item-info" data-index="${index}">Details</button><button class="button button-small" data-action="qty-minus" data-index="${index}">−</button><button class="button button-small" data-action="qty-plus" data-index="${index}">+</button><button class="button button-small button-danger" data-action="remove-item" data-index="${index}">Remove</button></div></div>`;
     }).join("") : `<div class="empty">No equipment matches the current filters.</div>`;
     bindEvents();
   };
@@ -5758,7 +5939,7 @@ function bindEvents() {
           item.name = official.name; item.source = official.source; item.displayName = official.name; item.unresolved = false;
           const isWeapon = Boolean(official.weaponCategory);
           item.equipped = !item.equipped;
-          if (!item.equipped) item.wielding = false;
+          if (!item.equipped) { item.wielding = false; item.effectActive = false; }
           else if (isWeapon) item.wielding = true;
           await saveCharacter(); return render();
         }
@@ -5776,6 +5957,24 @@ function bindEvents() {
           if (!itemRequiresAttunement(official)) { showToast(`${item.name} does not require attunement.`); return; }
           if (!item.attuned && state.character.inventory.filter(x=>x.attuned).length >= 3) { showToast("A character can be attuned to no more than three magic items."); return; }
           item.attuned = !item.attuned;
+          if (!item.attuned) item.effectActive = false;
+          await saveCharacter(); return render();
+        }
+        if (action === "toggle-item-effect") {
+          const i = Number(el.dataset.index); const item = state.character.inventory[i]; if (!item) return;
+          const official = findOfficialItemByName(item.name,item.source) || findOfficialItemByName(item.name);
+          const spec = itemEffectClassification(official);
+          if (!spec.trackActivation) { showToast(`${item.name} has no tracked activated effect.`); return; }
+          if (!item.equipped) { showToast(`Equip ${item.name} before activating its effect.`); return; }
+          if (!itemEffectActive(item, official)) { showToast(`Attune to ${item.name} before activating its effect.`); return; }
+          item.effectActive = !item.effectActive;
+          await saveCharacter(); return render();
+        }
+        if (action === "charge-minus" || action === "charge-plus") {
+          const i = Number(el.dataset.index); const item = state.character.inventory[i]; if (!item) return;
+          const official = findOfficialItemByName(item.name,item.source) || findOfficialItemByName(item.name);
+          if (!itemEffectClassification(official).chargesMax) { showToast(`${item.name} has no structured charge pool.`); return; }
+          adjustItemCharges(item, official, action === "charge-minus" ? -1 : 1);
           await saveCharacter(); return render();
         }
         if (action === "remove-item") { state.character.inventory.splice(Number(el.dataset.index),1); await saveCharacter(); return render(); }
@@ -6191,7 +6390,7 @@ async function openItemPicker() {
     rerender();
   } catch(e){showToast(`Equipment could not be loaded: ${e.message}`);}
 }
-async function addInventoryItem(it){const existing=state.character.inventory.find(x=>x.name===it.name&&x.source===it.source);if(existing)existing.quantity=Number(existing.quantity||1)+1;else state.character.inventory.push({name:it.name,source:it.source,quantity:1,equipped:false,wielding:false}); await saveCharacter();}
+async function addInventoryItem(it){const existing=state.character.inventory.find(x=>x.name===it.name&&x.source===it.source);if(existing)existing.quantity=Number(existing.quantity||1)+1;else {const spec=itemEffectClassification(it);state.character.inventory.push({name:it.name,source:it.source,quantity:1,equipped:false,wielding:false,effectActive:false,...(spec.chargesMax>0?{chargesCurrent:spec.chargesMax}:{})});} await saveCharacter();}
 function adjustItemQty(i,delta){const item=state.character.inventory[i];if(!item)return;item.quantity=Number(item.quantity||1)+delta;if(item.quantity<=0)state.character.inventory.splice(i,1);saveCharacter().then(render);}
 async function openInventoryItemInfo(i){const item=state.character.inventory[i];if(!item)return;await getItemsData();const found=findOfficialItemByName(item.name,item.source)||findOfficialItemByName(item.name);if(found){cacheReferenceEntity("item",found);openModal(found.name,`<div class="modal-kicker">${escapeHtml(sourceLabel(found.source))} · ${escapeHtml(found.type||"")}</div><div class="rules-text formatted-rules">${renderRichEntries(found.entries||found.entry||[])}</div>`);}}
 

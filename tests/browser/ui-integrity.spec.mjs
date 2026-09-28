@@ -165,7 +165,7 @@ test('legacy character migrations are persisted, not only applied in memory', as
   await expect(page.locator('.sheet-brandline h1')).toHaveText('Legacy Sentinel');
 
   const migrated = await currentCharacter(page);
-  expect(migrated.schema).toBe(19);
+  expect(migrated.schema).toBe(20);
   expect(migrated.knownSpells).toEqual([]);
   expect(migrated.preparedSpells).toEqual(expect.arrayContaining(['Bless|XPHB', 'Cure Wounds|XPHB']));
   expect(migrated.deathSaves).toEqual({ success: 0, failure: 0 });
@@ -296,11 +296,26 @@ test('equipment can be added, wielded, attuned, and reloaded from the real catal
   const shieldRow = page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Arrow-Catching Shield' }).first();
   await shieldRow.getByRole('button', { name: 'Attune' }).click();
 
+  await page.getByRole('button', { name: 'Add item' }).click();
+  await page.locator('#itemSearch').fill('Winged Boots');
+  const bootsResult = page.locator('#itemResults .spell-row').filter({ hasText: 'Winged Boots' }).first();
+  await bootsResult.getByRole('button', { name: 'Add' }).click();
+  let bootsRow = page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Winged Boots' }).first();
+  await bootsRow.getByRole('button', { name: 'Equip' }).click();
+  bootsRow = page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Winged Boots' }).first();
+  await bootsRow.getByRole('button', { name: 'Attune' }).click();
+  bootsRow = page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Winged Boots' }).first();
+  await bootsRow.getByRole('button', { name: 'Activate effect' }).click();
+  bootsRow = page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Winged Boots' }).first();
+  await bootsRow.getByRole('button', { name: 'Spend one Winged Boots charge' }).click();
+
   let saved = await currentCharacter(page);
   expect(saved.inventory.find(item => item.name === 'Dagger')).toMatchObject({ quantity: 2, equipped: true, wielding: true });
   expect(saved.inventory.find(item => item.name === 'Arrow-Catching Shield')).toMatchObject({ attuned: true });
+  expect(saved.inventory.find(item => item.name === 'Winged Boots')).toMatchObject({ equipped: true, attuned: true, effectActive: true, chargesCurrent: 3 });
 
   await page.reload();
+  await expect(page.locator('.sheet-metrics')).toContainText('Fly 30 ft.');
   const attackRow = page.locator('.weapon-row').filter({ hasText: 'Dagger' }).first();
   await expect(attackRow).toContainText('+2');
   await expect(attackRow).toContainText('1d4 Piercing');
@@ -313,8 +328,10 @@ test('equipment can be added, wielded, attuned, and reloaded from the real catal
   await page.getByRole('button', { name: 'Equipment' }).click();
   await expect(page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Dagger' })).toContainText('×2');
   await expect(page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Arrow-Catching Shield' })).toContainText('Attuned');
+  await expect(page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Winged Boots' })).toContainText('Effect active');
+  await expect(page.locator('#equipmentRows .equipment-row').filter({ hasText: 'Winged Boots' })).toContainText('Charges 3/4');
   saved = await currentCharacter(page);
-  expect(saved.inventory).toHaveLength(2);
+  expect(saved.inventory).toHaveLength(3);
 });
 
 test('subclass progressions and invocation prerequisites work through the builder UI', async ({ page }) => {
@@ -539,7 +556,7 @@ test('all structured feat choice families persist through the builder', async ({
 
   await page.reload();
   saved=await currentCharacter(page);
-  expect(saved.schema).toBe(19);
+  expect(saved.schema).toBe(20);
   expect(Object.keys(saved.featToolChoices)).toHaveLength(3);
   expect(Object.keys(saved.featMixedChoices)).toHaveLength(3);
 });
