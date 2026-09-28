@@ -17,7 +17,7 @@ Version 0.37.0
 
 ## v0.37.0
 
-This build adds a rules-audit pass for structured character-creation choices and derived effects. Gnomish Cunning-style saving-throw advantages are now represented automatically, species lineage/ancestry choices are surfaced during creation, feat choices are no longer silently defaulted, and Notes dialogs use the same formatted-rules/linked-keyword treatment as other rules text. Equipment code remains on the v0.36 known-good implementation. Spell selection remains a separate follow-up.
+This build includes the completed rules-conformance expansion for character math, origins, classes, feats, equipment, magic, resources, and UI/data integrity. Structured choices are reconciled across their grant sources, automatic and selected spells are kept separate from ordinary class limits, and the pinned data, deterministic rules, and Chromium suites protect the supported 2024 rules interactions.
 
 ## v0.28.0
 

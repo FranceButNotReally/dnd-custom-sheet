@@ -27,6 +27,8 @@ test("spell selection and spell collections have hard logic and browser coverage
     assert.ok(domain, id);
     assert.equal(domain.status, "covered", id);
   }
+  assert.match(registry.domains.find(x => x.id === "spell-selection").notes, /non-spellcasting/i);
+  assert.match(registry.domains.find(x => x.id === "cantrips").notes, /species lineage/i);
 });
 
 test("the PHB equipment tables have hard behavioral coverage", () => {
@@ -85,10 +87,19 @@ test("feat choices and conditions have complete behavioral and browser coverage"
   assert.equal(feats?.status, "covered");
   assert.match(feats.notes, /77 PHB feats/i);
   assert.match(feats.notes, /tool/i);
+  assert.match(feats.notes, /cross-source/i);
   assert.match(feats.notes, /Chromium/i);
   assert.equal(conditions?.status, "covered");
   assert.match(conditions.notes, /fifteen PHB conditions/i);
   assert.match(conditions.notes, /Concentration/i);
+});
+
+test("species lineage coverage includes feat and spell grant chains", () => {
+  const domain = registry.domains.find(x => x.id === "species-lineage-choices");
+  assert.equal(domain?.status, "covered");
+  assert.match(domain.notes, /Human Versatile/i);
+  assert.match(domain.notes, /High Elf/i);
+  assert.match(domain.notes, /level/i);
 });
 
 test("all six derived character-math domains have corpus-backed golden coverage", () => {

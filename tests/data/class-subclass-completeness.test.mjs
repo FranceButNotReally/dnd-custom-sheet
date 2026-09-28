@@ -528,6 +528,16 @@ test('Lessons of the First Ones grants distinct Origin feats through repeatable 
   assert.equal(specs.length, 2);
   assert.ok(specs.every(spec => spec.options.length >= 10));
   const character = a.emptyCharacter();
+  character.feat = { name:'Alert', source:'XPHB' };
+  character.featureFeatChoices = {
+    [specs[0].key]:{ name:'Alert', source:'XPHB' },
+    [specs[1].key]:{ name:'Tough', source:'XPHB' },
+  };
+  a.reconcileFeatureFeatChoices(character, specs);
+  assert.equal(character.featureFeatChoices[specs[0].key], undefined);
+  assert.equal(character.featureFeatChoices[specs[1].key].name, 'Tough');
+
+  character.feat = null;
   character.featureFeatChoices = {
     [specs[0].key]:{ name:'Alert', source:'XPHB' },
     [specs[1].key]:{ name:'Alert', source:'XPHB' },

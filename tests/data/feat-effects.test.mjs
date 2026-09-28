@@ -74,6 +74,16 @@ test('nonrepeatable feats cannot occupy two feat slots while repeatable feats ca
   assert.equal(a.featCanSelectForSlot(feat('Ability Score Improvement'),d,c,{key:'feat:second',name:'Ability Score Improvement'}),true);
 });
 
+test('corrupt duplicate nonrepeatable feat grants are applied only once',()=>{
+  const c=a.emptyCharacter();
+  c.feat={name:'Alert',source:'XPHB'};
+  c.additionalFeats=[{name:'Alert',source:'XPHB'}];
+  c.progressionFeats={'feat:four':{name:'Alert',source:'XPHB'}};
+  const selected=a.selectedFeatObjects(c);
+  assert.deepEqual(Array.from(selected,value=>value.name),['Alert']);
+  assert.equal(a.buildDerivedEffects(c,derived(5),selected).initiativeBonus,3);
+});
+
 test('feat armor and weapon training flow into displayed proficiencies',()=>{
   const c=a.emptyCharacter(); a.state.character=c;
   const profs=a.parseProficiencyDisplay(null,null,null,[feat('Lightly Armored'),feat('Martial Weapon Training'),feat('Tavern Brawler')]);
@@ -203,6 +213,25 @@ test('selected feat tools and only valid proficient-skill Expertise reach derive
   assert.equal(e.expertise.has('arcana'),false);
   e=a.buildDerivedEffects(c,derived(4,{skillProficiencies:new Set(['arcana'])}),[crafter,skillExpert]);
   assert.equal(e.expertise.has('arcana'),true);
+});
+
+test('only feats whose rules say so upgrade an overlapping skill proficiency to Expertise',()=>{
+  for(const name of ['Keen Mind','Observant']){
+    const f=feat(name),spec=a.featSkillSpecs(f)[0],selected=spec.from[0];
+    const c=a.emptyCharacter();
+    c.featSkillChoices[a.featSpecKey(f,spec)]=selected;
+    const e=a.buildDerivedEffects(c,derived(4,{skillProficiencies:new Set([selected])}),[f]);
+    assert.equal(e.expertise.has(selected),true,name);
+  }
+  const skillExpert=feat('Skill Expert'),proficiency=a.featSkillSpecs(skillExpert)[0];
+  const c=a.emptyCharacter();
+  c.featSkillChoices[a.featSpecKey(skillExpert,proficiency)]='arcana';
+  const withoutExplicitExpertise=a.buildDerivedEffects(c,derived(4,{skillProficiencies:new Set(['arcana'])}),[skillExpert]);
+  assert.equal(withoutExplicitExpertise.expertise.has('arcana'),false);
+  const expertise=a.featExpertiseSpecs(skillExpert)[0];
+  c.featExpertiseChoices[expertise.key]='arcana';
+  const withExplicitExpertise=a.buildDerivedEffects(c,derived(4,{skillProficiencies:new Set(['arcana'])}),[skillExpert]);
+  assert.equal(withExplicitExpertise.expertise.has('arcana'),true);
 });
 
 test('rest-limited PHB feat resources remain separate and scale correctly',()=>{

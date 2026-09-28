@@ -11,6 +11,7 @@ const DATA=path.join(ROOT,'tests/.cache',LOCK.version,'data');
 const SPELLS=JSON.parse(fs.readFileSync(path.join(DATA,'spells/spells-xphb.json'),'utf8'));
 const LOOKUP=JSON.parse(fs.readFileSync(path.join(DATA,'generated/gendata-spell-source-lookup.json'),'utf8'));
 const FEATS=JSON.parse(fs.readFileSync(path.join(DATA,'feats.json'),'utf8')).feat.filter(x=>x.source==='XPHB');
+const RACES=JSON.parse(fs.readFileSync(path.join(DATA,'races.json'),'utf8')).race.filter(x=>x.source==='XPHB');
 const classIndex=JSON.parse(fs.readFileSync(path.join(DATA,'class/index.json'),'utf8'));
 const classes=[];
 const subclasses=[];
@@ -25,12 +26,16 @@ function setup(){
   resetState(a);
   a.state.data.spells={spell:SPELLS.spell};
   a.state.data.spellSourceLookup=LOOKUP;
+  a.state.data.feats={feat:FEATS};
+  a.state.data.races={race:RACES};
   a.state.character=a.emptyCharacter();
 }
 function cls(name){return classes.find(x=>x.name===name);}
 function sub(name){return subclasses.find(x=>x.name===name||x.shortName===name);}
 function feat(name){return FEATS.find(x=>x.name===name);}
+function race(name){return RACES.find(x=>x.name===name);}
 function spell(name){return SPELLS.spell.find(x=>x.name===name);}
+function speciesChoice(species,names){return a.speciesChoiceSpecs(species).find(spec=>names.every(name=>spec.options.some(option=>option.name===name)));}
 function derived(className,level,subclassName=null){
   const classObj=cls(className),subclassObj=subclassName?sub(subclassName):null;
   const d={classObj,subclassObj,level,spellcastingSource:null,spellSlots:[],cantrips:null,maxPrepared:null};
@@ -177,9 +182,93 @@ test('selected feat spell picks combine with fixed granted spells without duplic
   assert.deepEqual([...a.featGrantedSpellRefs([f],character,4)],['misty step|xphb','Bless|XPHB']);
 });
 
+test('species spells unlock by lineage and character level',()=>{
+  setup();
+  const elf=race('Elf'),elfLineage=speciesChoice(elf,['Drow','High Elf','Wood Elf']);
+  const c=a.state.character;
+  c.species={name:'Elf',source:'XPHB'};
+  c.speciesChoices[elfLineage.key]={value:'Drow',ability:'cha'};
+  const at1=new Set(a.speciesGrantedSpellRefs(elf,c,1).map(x=>x.toLowerCase()));
+  const at3=new Set(a.speciesGrantedSpellRefs(elf,c,3).map(x=>x.toLowerCase()));
+  const at5=new Set(a.speciesGrantedSpellRefs(elf,c,5).map(x=>x.toLowerCase()));
+  assert.deepEqual([...at1],['dancing lights|xphb']);
+  assert.equal(at3.has('faerie fire|xphb'),true);
+  assert.equal(at3.has('darkness|xphb'),false);
+  assert.equal(at5.has('darkness|xphb'),true);
+
+  const tiefling=race('Tiefling'),legacy=speciesChoice(tiefling,['Abyssal','Chthonic','Infernal']);
+  c.species={name:'Tiefling',source:'XPHB'};
+  c.speciesChoices={[legacy.key]:{value:'Infernal',ability:'int'}};
+  const infernal=new Set(a.speciesGrantedSpellRefs(tiefling,c,5).map(x=>x.toLowerCase()));
+  for(const ref of ['thaumaturgy|xphb','fire bolt|xphb','hellish rebuke|xphb','darkness|xphb']) assert.equal(infernal.has(ref),true,ref);
+});
+
+test('automatic and prose-only species spells are represented',()=>{
+  setup();
+  const c=a.state.character;
+  assert.deepEqual(Array.from(a.speciesGrantedSpellRefs(race('Aasimar'),c,1),x=>x.toLowerCase()),['light|xphb']);
+  const gnome=race('Gnome'),lineage=speciesChoice(gnome,['Forest Gnome','Rock Gnome']);
+  c.speciesChoices={[lineage.key]:{value:'Forest Gnome',ability:'wis'}};
+  const forest=new Set(a.speciesGrantedSpellRefs(gnome,c,1).map(x=>x.toLowerCase()));
+  assert.equal(forest.has('minor illusion|xphb'),true);
+  assert.equal(forest.has('speak with animals|xphb'),true);
+});
+
+test('High Elf cantrip choice is validated and joins its automatic spells',()=>{
+  setup();
+  const elf=race('Elf'),lineage=speciesChoice(elf,['Drow','High Elf','Wood Elf']);
+  const c=a.state.character;
+  c.speciesChoices={[lineage.key]:{value:'High Elf',ability:'int'}};
+  const specs=a.speciesSpellChoiceSpecs(elf,c,3);
+  assert.equal(specs.length,1);
+  const options=new Set(a.featSpellChoiceOptions(specs[0],SPELLS.spell,LOOKUP).map(x=>x.name));
+  assert.equal(options.has('Fire Bolt'),true);
+  assert.equal(options.has('Cure Wounds'),false);
+  c.speciesSpellChoices[specs[0].key]=['Fire Bolt|XPHB','Cure Wounds|XPHB'];
+  a.reconcileSpeciesSpellChoices(c,specs);
+  assert.deepEqual([...c.speciesSpellChoices[specs[0].key]],['Fire Bolt|XPHB']);
+  const refs=new Set(a.speciesGrantedSpellRefs(elf,c,3).map(x=>x.toLowerCase()));
+  assert.equal(refs.has('fire bolt|xphb'),true);
+  assert.equal(refs.has('detect magic|xphb'),true);
+});
+
+test('feat and species grants create spell tabs for a noncaster without consuming class limits',()=>{
+  setup();
+  const d={classObj:cls('Fighter'),spellcastingSource:null,maxPrepared:null,cantrips:null,alwaysPreparedSpells:[],alwaysKnownSpells:[],alwaysSpellbookSpells:[],featSpellRefs:['Fire Bolt|XPHB','Magic Missile|XPHB'],speciesSpellRefs:['Light|XPHB']};
+  assert.deepEqual([...a.spellPickerTabs(d)],['prepared','cantrips']);
+  assert.equal(a.automaticSpellRefsForList('cantrips',d).has('fire bolt|xphb'),true);
+  assert.equal(a.automaticSpellRefsForList('cantrips',d).has('light|xphb'),true);
+  assert.equal(a.automaticSpellRefsForList('preparedSpells',d).has('magic missile|xphb'),true);
+  a.state.character.cantrips=['Fire Bolt|XPHB'];
+  a.state.character.preparedSpells=['Magic Missile|XPHB'];
+  a.reconcileSpellSelections(a.state.character,d);
+  assert.deepEqual([...a.state.character.cantrips],[]);
+  assert.deepEqual([...a.state.character.preparedSpells],[]);
+});
+
+test('a species-granted Magic Initiate feat carries its spell choices into the spell picker',()=>{
+  setup();
+  const human=race('Human'),versatile=a.speciesChoiceSpecs(human).find(spec=>spec.kind==='feat');
+  const c=a.state.character;
+  c.species={name:'Human',source:'XPHB'};
+  c.speciesChoices[versatile.key]={value:'Magic Initiate'};
+  const selected=a.selectedFeatObjects(c);
+  assert.deepEqual(Array.from(selected,x=>x.name),['Magic Initiate']);
+  const [spec]=a.featAdditionalSpellChoiceSpecs(selected[0],1),wizard=spec.groups.find(group=>group.name==='Wizard Spells');
+  c.featSpellChoices[spec.key]={list:'Wizard Spells',ability:'int',picks:{
+    [wizard.choices[0].key]:['Fire Bolt|XPHB','Mage Hand|XPHB'],
+    [wizard.choices[1].key]:['Magic Missile|XPHB'],
+  }};
+  a.reconcileFeatChoices(c,selected);
+  const refs=a.featGrantedSpellRefs(selected,c,1);
+  assert.deepEqual([...refs],['Fire Bolt|XPHB','Mage Hand|XPHB','Magic Missile|XPHB']);
+  assert.deepEqual([...a.spellPickerTabs({maxPrepared:null,cantrips:null,featSpellRefs:refs,speciesSpellRefs:[]})],['prepared','cantrips']);
+  assert.equal(a.featResourceSpecs(selected,{pb:2}).filter(resource=>resource.name==='Magic Initiate · Level 1 Free Cast').length,1);
+});
+
 test('current schema migration moves legacy known spells into prepared spells once',()=>{
   const migrated=a.migrateCharacter({schema:16,knownSpells:['Cure Wounds|XPHB'],preparedSpells:['Bless|XPHB']});
-  assert.equal(migrated.schema,20);
+  assert.equal(migrated.schema,21);
   assert.deepEqual([...migrated.preparedSpells],['Bless|XPHB','Cure Wounds|XPHB']);
   assert.deepEqual([...migrated.knownSpells],[]);
 });

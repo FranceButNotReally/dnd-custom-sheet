@@ -77,11 +77,11 @@ test('unarmored defense is present only for classes that define it', () => {
 
 test('character migration preserves schema and creates required choice containers', () => {
   const c = a.migrateCharacter({schema: 1, name:'Old', inventory:[{name:'Winged Boots',effectActive:1,chargesCurrent:'3'}]});
-  for (const key of ['featAbilityChoices','featAbilityModes','featSaveChoices','featSkillChoices','featToolChoices','featMixedChoices','featSpellChoices','featExpertiseChoices','featDamageChoices','speciesChoices','classFeatureChoices','classProficiencyChoices','featureSpellChoices','featureFeatChoices']) {
+  for (const key of ['featAbilityChoices','featAbilityModes','featSaveChoices','featSkillChoices','featToolChoices','featMixedChoices','featSpellChoices','featExpertiseChoices','featDamageChoices','speciesChoices','speciesSpellChoices','classFeatureChoices','classProficiencyChoices','featureSpellChoices','featureFeatChoices']) {
     assert.ok(c[key] && typeof c[key] === 'object', key);
   }
   assert.ok(Array.isArray(c.standardLanguages));
   assert.equal(c.standardLanguages.length, 2);
-  assert.equal(c.schema, 20);
+  assert.equal(c.schema, 21);
   assert.deepEqual(JSON.parse(JSON.stringify(c.inventory[0])), {name:'Winged Boots',effectActive:true,chargesCurrent:3});
 });

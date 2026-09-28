@@ -105,6 +105,25 @@ test('Human exposes Skillful and Versatile creation choices', () => {
   assert.ok(feat.options.length>0);
 });
 
+test('Human Versatile grants its selected Origin feat exactly once', () => {
+  const species=byName(races,'Human');
+  const spec=a.speciesChoiceSpecs(species).find(x=>x.kind==='feat' && /Versatile/i.test(x.label));
+  const c=a.emptyCharacter();
+  a.state.character=c;
+  c.species={name:'Human',source:'XPHB'};
+  c.feat={name:'Musician',source:'XPHB'};
+  c.speciesChoices[spec.key]={value:'Alert'};
+  const selected=a.selectedFeatObjects(c);
+  assert.deepEqual(Array.from(selected,x=>x.name).sort(),['Alert','Musician']);
+  const effects=a.buildDerivedEffects(c,{...baseDerived(species),level:1},selected);
+  assert.equal(effects.initiativeBonus,2);
+
+  c.feat={name:'Alert',source:'XPHB'};
+  a.reconcileSpeciesChoices(c,species);
+  assert.equal(c.speciesChoices[spec.key],undefined);
+  assert.deepEqual(Array.from(a.selectedFeatObjects(c),x=>x.name),['Alert']);
+});
+
 test('Elf Keen Senses and Human Skillful choices become derived proficiencies', () => {
   for (const [speciesName,label,value,expected] of [['Elf','Keen Senses','Perception','perception'],['Human','Skillful','Arcana','arcana']]) {
     const species=byName(races,speciesName);

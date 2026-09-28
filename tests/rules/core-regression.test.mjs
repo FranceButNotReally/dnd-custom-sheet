@@ -534,12 +534,19 @@ add('selected feat skill proficiency grants a new skill', () => {
   const e=a.buildDerivedEffects(c,baseDerived(),[feat]);
   assert.ok(e.skills.has('arcana'));
 });
-add('selected feat skill on an existing proficiency becomes expertise', () => {
-  const feat={name:'Skill Feat',source:'XPHB',skillProficiencies:[{choose:{from:['arcana','stealth']}}]};
-  const key=featChoiceKey('Skill Feat','XPHB');
-  const c=baseCharacter({featSkillChoices:{[key]:'arcana'}});
+add('Keen Mind skill choice upgrades an existing proficiency to expertise', () => {
+  const feat={name:'Keen Mind',source:'XPHB',skillProficiencies:[{choose:{from:['arcana','history']}}]};
+  const actualKey=a.featSpecKey(feat,a.featSkillSpecs(feat)[0]);
+  const c=baseCharacter({featSkillChoices:{[actualKey]:'arcana'}});
   const e=a.buildDerivedEffects(c,baseDerived({skillProficiencies:new Set(['arcana'])}),[feat]);
   assert.ok(e.expertise.has('arcana'));
+});
+add('Skill Expert proficiency choice does not create implicit expertise', () => {
+  const feat={name:'Skill Expert',source:'XPHB',skillProficiencies:[{choose:{from:['arcana','stealth']}}]};
+  const key=a.featSpecKey(feat,a.featSkillSpecs(feat)[0]);
+  const c=baseCharacter({featSkillChoices:{[key]:'arcana'}});
+  const e=a.buildDerivedEffects(c,baseDerived({skillProficiencies:new Set(['arcana'])}),[feat]);
+  assert.equal(e.expertise.has('arcana'),false);
 });
 add('mixed feat choices support skill, tool, and language selections', () => {
   const feat={name:'Mixed',source:'XPHB',skillToolLanguageProficiencies:[

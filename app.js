@@ -141,7 +141,7 @@ let dbPromise;
 
 function emptyCharacter() {
   return {
-    schema: 20,
+    schema: 21,
     id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     name: "New Character",
     player: "",
@@ -164,6 +164,7 @@ function emptyCharacter() {
     featExpertiseChoices: {},
     featDamageChoices: {},
     speciesChoices: {},
+    speciesSpellChoices: {},
     baseStats: { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 },
     manualAbilityBonuses: { str: 0, dex: 0, con: 0, int: 0, wis: 0, cha: 0 },
     classSkillChoices: [],
@@ -230,7 +231,7 @@ function migrateCharacter(raw) {
   const base = emptyCharacter();
   if (!raw || typeof raw !== "object") return base;
   const c = { ...base, ...raw };
-  c.schema = 20;
+  c.schema = 21;
   c.baseStats = { ...base.baseStats, ...(raw.baseStats || raw.stats || {}) };
   c.xp = Math.max(0, Number(raw.xp || 0));
   c.manualAbilityBonuses = { ...base.manualAbilityBonuses, ...(raw.manualAbilityBonuses || {}) };
@@ -317,6 +318,7 @@ function migrateCharacter(raw) {
   c.featExpertiseChoices = { ...(raw.featExpertiseChoices || {}) };
   c.featDamageChoices = { ...(raw.featDamageChoices || {}) };
   c.speciesChoices = { ...(raw.speciesChoices || {}) };
+  c.speciesSpellChoices = { ...(raw.speciesSpellChoices || {}) };
   c.customSkillProficiencies = c.customSkillProficiencies.map(normalizeSkillKey).filter(Boolean);
   c.expertise = [...new Set(c.expertise || [])];
   c.heroicInspiration = Boolean(raw.heroicInspiration);
@@ -1489,7 +1491,7 @@ function featCanSelectForSlot(feat, d, c, slot) {
   const hasSpecialStylePrerequisite = (feat?.prerequisite || []).some(option => option?.otherSummary || option?.feature?.some?.(name => textNorm(name) === "fightingstyle"));
   if (!(fightingStyleSlot && hasSpecialStylePrerequisite) && !featPrerequisiteMet(feat, d)) return false;
   if (feat?.repeatable) return true;
-  const refs = [c?.feat, ...(c?.additionalFeats || []), ...Object.entries(c?.progressionFeats || {}).filter(([key]) => key !== slot?.key).map(([,ref]) => ref), ...Object.values(c?.featureFeatChoices || {})].filter(Boolean);
+  const refs = [c?.feat, ...(c?.additionalFeats || []), ...Object.entries(c?.progressionFeats || {}).filter(([key]) => key !== slot?.key).map(([,ref]) => ref), ...Object.values(c?.featureFeatChoices || {}), ...speciesGrantedFeatRefs(c)].filter(Boolean);
   return !refs.some(ref => textNorm(ref?.name) === textNorm(feat?.name) && String(ref?.source || DATA_SOURCE).toLowerCase() === String(feat?.source || DATA_SOURCE).toLowerCase());
 }
 
@@ -1577,7 +1579,7 @@ function reconcileFeatureFeatChoices(c, specs) {
   c.featureFeatChoices = { ...(c.featureFeatChoices || {}) };
   const valid = new Map((specs || []).map(spec => [spec.key, spec]));
   for (const key of Object.keys(c.featureFeatChoices)) if (!valid.has(key)) delete c.featureFeatChoices[key];
-  const occupied = new Set([c?.feat, ...(c?.additionalFeats || []), ...Object.values(c?.progressionFeats || {})]
+  const occupied = new Set([c?.feat, ...(c?.additionalFeats || []), ...Object.values(c?.progressionFeats || {}), ...speciesGrantedFeatRefs(c)]
     .filter(Boolean).map(ref => `${textNorm(ref.name)}|${String(ref.source || DATA_SOURCE).toLowerCase()}`));
   for (const spec of specs || []) {
     const ref = c.featureFeatChoices[spec.key];
@@ -1847,6 +1849,7 @@ function featInstanceKey(feat) {
 function selectedFeatObjects(c) {
   const candidates = [];
   if (c?.feat) candidates.push({ ref: c.feat, instanceKey: "origin", label: "Origin feat" });
+  for (const ref of speciesGrantedFeatRefs(c)) candidates.push({ ref, instanceKey:`species-${ref._speciesChoiceKey}`, label:"Species feat" });
   for (const [i, ref] of (Array.isArray(c?.additionalFeats) ? c.additionalFeats : []).entries()) candidates.push({ ref, instanceKey: `additional-${i + 1}`, label: `Additional feat ${i + 1}` });
   for (const [slotKey, ref] of Object.entries(c?.progressionFeats || {})) candidates.push({ ref, instanceKey: `progression-${slotKey}`, label: slotKey });
   for (const [slotKey, ref] of Object.entries(c?.featureFeatChoices || {})) candidates.push({ ref, instanceKey: `feature-${slotKey}`, label: "Lessons of the First Ones" });
@@ -2271,9 +2274,109 @@ function reconcileSpeciesChoices(c, species) {
   for (const key of Object.keys(c.speciesChoices)) if (!valid.has(key)) delete c.speciesChoices[key];
   for (const spec of specs) {
     const chosen = c.speciesChoices[spec.key];
-    if (chosen && !spec.options.some(o => textNorm(o.name) === textNorm(chosen.value || chosen))) delete c.speciesChoices[spec.key];
+    const option = chosen && spec.options.find(o => textNorm(o.name) === textNorm(chosen.value || chosen));
+    if (chosen && !option) { delete c.speciesChoices[spec.key]; continue; }
+    if (option && spec.kind === "feat") {
+      const feat = findFeat(option.ref?.name || option.name, option.ref?.source || null);
+      const occupied = [c?.feat, ...(c?.additionalFeats || []), ...Object.values(c?.progressionFeats || {}), ...Object.values(c?.featureFeatChoices || {})]
+        .filter(Boolean).some(ref => textNorm(ref.name) === textNorm(feat?.name) && String(ref.source || DATA_SOURCE).toLowerCase() === String(feat?.source || DATA_SOURCE).toLowerCase());
+      if (!feat || !featCategoryMatches(feat, ["O"]) || (occupied && !feat.repeatable)) delete c.speciesChoices[spec.key];
+    }
   }
   return specs;
+}
+
+function speciesGrantedFeatRefs(c, species = findSpecies(c?.species?.name, c?.species?.source || null)) {
+  const refs = [];
+  for (const spec of speciesChoiceSpecs(species)) {
+    if (spec.kind !== "feat") continue;
+    const selected = c?.speciesChoices?.[spec.key];
+    const option = spec.options.find(value => textNorm(value.name) === textNorm(selected?.value || selected));
+    if (!option) continue;
+    const feat = findFeat(option.ref?.name || option.name, option.ref?.source || null);
+    if (feat) refs.push({ name:feat.name, source:feat.source || DATA_SOURCE, _speciesChoiceKey:spec.key });
+  }
+  return refs;
+}
+
+function speciesSpellPlan(species, c, level = c?.level || 1) {
+  const fixedRefs = [], choices = [];
+  const selectedOptions = new Map();
+  for (const spec of speciesChoiceSpecs(species)) {
+    const selected = c?.speciesChoices?.[spec.key];
+    const option = spec.options.find(value => textNorm(value.name) === textNorm(selected?.value || selected));
+    if (option) selectedOptions.set(textNorm(option.name), { spec, selected, option });
+  }
+  const addRef = value => {
+    const ref = normalizeSpellRef(value);
+    if (ref && !fixedRefs.some(existing => existing.toLowerCase() === ref.toLowerCase())) fixedRefs.push(ref);
+  };
+  const visit = (value, context) => {
+    if (typeof value === "string") { addRef(value); return; }
+    if (Array.isArray(value)) { value.forEach(child => visit(child, context)); return; }
+    if (!value || typeof value !== "object") return;
+    if (typeof value.choose === "string") {
+      choices.push({
+        key:`${context.key}|choice|${choices.length}`,
+        count:Math.max(1, Number(value.count || 1)),
+        label:`${species?.name || "Species"} spell`,
+        filter:parseSpellChoiceFilter(value.choose),
+      });
+      return;
+    }
+    Object.values(value).forEach(child => visit(child, context));
+  };
+  const visitSchedule = (schedule, context) => {
+    if (!schedule || typeof schedule !== "object") return;
+    for (const [unlockRaw, value] of Object.entries(schedule)) {
+      const unlock = unlockRaw === "_" ? 1 : Number(unlockRaw);
+      if (!Number.isFinite(unlock) || unlock <= Math.max(1, Number(level || 1))) visit(value, context);
+    }
+  };
+  for (const [groupIndex, group] of (Array.isArray(species?.additionalSpells) ? species.additionalSpells : []).entries()) {
+    const selected = group?.name ? selectedOptions.get(textNorm(group.name)) : null;
+    if (group?.name && !selected) continue;
+    const context = { key:`${species?.name || "Species"}|${species?.source || DATA_SOURCE}|spells|${groupIndex}` };
+    visitSchedule(group?.known, context);
+    visitSchedule(group?.prepared, context);
+    visitSchedule(group?.innate, context);
+  }
+
+  // Gnome lineage spells are prose-only in the pinned corpus. Keep this fallback
+  // deliberately narrow: only selected option text that explicitly says a spell
+  // is known or always prepared is treated as a grant.
+  if (!(species?.additionalSpells || []).length) {
+    for (const { option } of selectedOptions.values()) {
+      const raw = JSON.stringify(option.entries || []);
+      if (!/\b(?:you know|always have)\b/i.test(stripTags(raw))) continue;
+      for (const match of raw.matchAll(/\{@spell\s+([^|}]+)(?:\|([^|}]+))?[^}]*\}/gi)) addRef(`${match[1]}|${match[2] || DATA_SOURCE}`);
+    }
+  }
+  return { fixedRefs, choices };
+}
+
+function speciesSpellChoiceSpecs(species, c, level = c?.level || 1) {
+  return speciesSpellPlan(species, c, level).choices;
+}
+
+function reconcileSpeciesSpellChoices(c, specs) {
+  c.speciesSpellChoices = { ...(c.speciesSpellChoices || {}) };
+  const valid = new Map((specs || []).map(spec => [spec.key, spec]));
+  for (const key of Object.keys(c.speciesSpellChoices)) if (!valid.has(key)) delete c.speciesSpellChoices[key];
+  if (!getLoadedSpells().length || !state.data.spellSourceLookup) return;
+  const used = new Set();
+  for (const spec of specs || []) {
+    const eligible = new Set(featSpellChoiceOptions(spec).map(spell => `${spell.name}|${spell.source}`.toLowerCase()));
+    const picks = dedupeSpellRefs(c.speciesSpellChoices[spec.key] || []).filter(ref => eligible.has(ref.toLowerCase()) && !used.has(ref.toLowerCase())).slice(0, spec.count);
+    picks.forEach(ref => used.add(ref.toLowerCase()));
+    if (picks.length) c.speciesSpellChoices[spec.key] = picks;
+    else delete c.speciesSpellChoices[spec.key];
+  }
+}
+
+function speciesGrantedSpellRefs(species, c, level = c?.level || 1) {
+  const plan = speciesSpellPlan(species, c, level);
+  return dedupeSpellRefs([...plan.fixedRefs, ...plan.choices.flatMap(spec => c?.speciesSpellChoices?.[spec.key] || [])]);
 }
 
 function reconcileFeatChoices(c, feats) {
@@ -4332,7 +4435,8 @@ function buildDerivedEffects(c, d, featObjs) {
     for (const spec of featSkillSpecs(feat)) {
       const selected = c.featSkillChoices?.[featSpecKey(feat, spec)];
       if (selected) {
-        if (d.skillProficiencies?.has?.(selected)) effects.expertise.add(selected);
+        const upgradesExistingProficiency = ["keenmind","observant"].includes(n);
+        if (upgradesExistingProficiency && d.skillProficiencies?.has?.(selected)) effects.expertise.add(selected);
         else effects.skills.add(selected);
       }
     }
@@ -4683,9 +4787,9 @@ async function deriveCharacter() {
   const speciesObj = findSpecies(c.species?.name, c.species?.source || null);
   if (backgroundObj) reconcileBackgroundAbilityChoices(c, backgroundObj);
   else c.backgroundAbility = { mode: "split", plus2: null, plus1: null, plus1b: null, plus1c: null };
+  reconcileSpeciesChoices(c, speciesObj);
   let featObjs = selectedFeatObjects(c);
   reconcileFeatChoices(c, featObjs);
-  reconcileSpeciesChoices(c, speciesObj);
   const finalStats = applyEquipmentAbilityEffects(calculateFinalStats(c, backgroundObj, featObjs), c, equipmentData);
   const equipmentEffects = equipmentDerivedEffects(c, equipmentData);
   const mods = Object.fromEntries(ABILITIES.map(a => [a, abilityMod(finalStats[a])]));
@@ -4700,7 +4804,7 @@ async function deriveCharacter() {
     effects: null, maxHp: 1, currentHp: Number(c.hpCurrent ?? 0), progressionFeatSlots: [], ac: Number(c.acOverride ?? (10 + mods.dex)), acAutomatic: c.acOverride == null,
     acReason: "10 + Dexterity modifier", d20Penalty: effectiveD20Penalty(c), speed: Number(c.speedOverride ?? dfltSpeed(findSpecies(c.species?.name, c.species?.source || null))),
     size: sizeLabel(findSpecies(c.species?.name, c.species?.source || null)?.size), spellcastingAbility: null, spellcastingSource: null, spellSlots: [],
-    maxPrepared: null, knownSpells: null, cantrips: null, alwaysPreparedSpells: [], alwaysKnownSpells: [], alwaysSpellbookSpells: [], featSpellRefs: [], featureSpellChoiceSpecs: [], inventoryWeight: 0, carryingCapacity: carryingCapacity(finalStats), passivePerception: 10 + mods.wis,
+    maxPrepared: null, knownSpells: null, cantrips: null, alwaysPreparedSpells: [], alwaysKnownSpells: [], alwaysSpellbookSpells: [], featSpellRefs: [], speciesSpellRefs: [], speciesSpellChoiceSpecs: [], featureSpellChoiceSpecs: [], inventoryWeight: 0, carryingCapacity: carryingCapacity(finalStats), passivePerception: 10 + mods.wis,
     passiveInvestigation: 10 + mods.int, proficiencies: { armor: [], weapons: [], tools: [], languages: [] },
     resistances: [], immunities: [], senses: [], equipmentEffects, sourceSummary: state.data.sourceMeta || []
   };
@@ -4732,11 +4836,17 @@ async function deriveCharacter() {
     reconcileFeatChoices(c, featObjs);
     d.featObjs = featObjs;
     d.featObj = featObjs[0] || null;
+    const reconciledStats = applyEquipmentAbilityEffects(calculateFinalStats(c, backgroundObj, featObjs), c, equipmentData);
+    d.stats = reconciledStats;
+    d.mods = Object.fromEntries(ABILITIES.map(ability => [ability, abilityMod(reconciledStats[ability])]));
+    d.carryingCapacity = carryingCapacity(reconciledStats);
+    d.passivePerception = 10 + d.mods.wis;
+    d.passiveInvestigation = 10 + d.mods.int;
     d.spellcastingSource = spellcastingSource(d);
     d.spellcastingAbility = d.spellcastingSource?.spellcastingAbility || null;
     d.spellSlots = classSpellSlots(d.spellcastingSource, c.level);
     d.cantrips = classCantrips(d.spellcastingSource, c.level);
-    d.maxPrepared = classPrepared(d.spellcastingSource, c.level, mods);
+    d.maxPrepared = classPrepared(d.spellcastingSource, c.level, d.mods);
     d.knownSpells = classKnownSpells(d.spellcastingSource, c.level);
     d.classFeatureSpellChoiceSpecs = classFeatureSpellChoiceSpecs(d.classObj, d.subclassFeatures, c.level);
     d.optionalFeatureSpellChoiceSpecs = optionalFeatureSpellChoiceSpecs(d.optionalFeatureObjects, c, d);
@@ -4761,7 +4871,7 @@ async function deriveCharacter() {
       } catch {}
     }
     d.skillChoiceSpec = skillChoiceSpec(d.classObj);
-    if (Number.isFinite(Number(d.cantrips))) {
+    if (d.cantrips != null && Number.isFinite(Number(d.cantrips))) {
       const extraCantrips = (d.classFeatureOptionObjects || []).filter(f => ["thaumaturge","magician"].includes(textNorm(f.name))).length;
       d.cantrips += extraCantrips;
     }
@@ -4784,7 +4894,7 @@ async function deriveCharacter() {
       ...featureGrantedSpellRefs(c, d.featureSpellChoiceSpecs, "known"),
     ])];
     d.alwaysSpellbookSpells = featureGrantedSpellRefs(c, d.featureSpellChoiceSpecs, "spellbook");
-    if (Number.isFinite(Number(d.cantrips)) && c.cantrips.length > d.cantrips) c.cantrips = c.cantrips.slice(0, d.cantrips);
+    if (d.cantrips != null && Number.isFinite(Number(d.cantrips)) && c.cantrips.length > d.cantrips) c.cantrips = c.cantrips.slice(0, d.cantrips);
     if (Number.isFinite(Number(d.maxPrepared)) && c.preparedSpells.length > d.maxPrepared) c.preparedSpells = c.preparedSpells.slice(0, d.maxPrepared);
     if (Number.isFinite(Number(d.knownSpells)) && c.knownSpells.length > d.knownSpells) c.knownSpells = c.knownSpells.slice(0, d.knownSpells);
     for (const save of d.preFeatureSavingThrowProficiencies) d.savingThrowProficiencies.add(save);
@@ -4797,6 +4907,9 @@ async function deriveCharacter() {
     d.featObj = featObjs[0] || null;
   }
   d.featSpellRefs = featGrantedSpellRefs(featObjs, c, c.level);
+  d.speciesSpellChoiceSpecs = speciesSpellChoiceSpecs(speciesObj, c, c.level);
+  reconcileSpeciesSpellChoices(c, d.speciesSpellChoiceSpecs);
+  d.speciesSpellRefs = speciesGrantedSpellRefs(speciesObj, c, c.level);
   // Build base proficiencies before feature effects so choice-based effects (e.g. 2024 Observant)
   // can distinguish a new proficiency from expertise on an already-proficient skill.
   const bgSkillsPre = grantedSkillsFromMap(d.backgroundObj?.skillProficiencies);
@@ -4861,7 +4974,7 @@ async function deriveCharacter() {
     if (!equipmentData) equipmentData = await getItemsData();
     reconcileAttunement(c, equipmentData);
     reconcileEquipmentEffects(c, equipmentData);
-    const acResult = calcAutoAc(c, mods, equipmentData, d.effects, d.proficiencies, d.stats);
+    const acResult = calcAutoAc(c, d.mods, equipmentData, d.effects, d.proficiencies, d.stats);
     d.inventoryWeight = inventoryWeight(c, equipmentData);
     d.heavyArmorWorn = Boolean(acResult.wearingHeavyArmor);
     d.armorSpeedPenalty = Number(acResult.speedPenalty || 0);
@@ -4906,16 +5019,16 @@ async function deriveCharacter() {
     swim: equipmentEffects.movementModes?.swim === "speed" || d.effects.movementModes?.swim === "speed" || d.effects.flags.has("roving") ? d.speed : Number(equipmentEffects.movementModes?.swim || 0) || null,
     fly: equipmentEffects.movementModes?.fly === "speed" ? d.speed : Number(equipmentEffects.movementModes?.fly || 0) || null,
   };
-  const baseMaxHp = defaultMaxHp(d.classObj, c.level, mods.con, c.hpMaxOverride);
+  const baseMaxHp = defaultMaxHp(d.classObj, c.level, d.mods.con, c.hpMaxOverride);
   const hpPerLevelBonus = Number(d.effects.hpPerLevel || 0) * Number(c.level || 1) + Number(d.effects.hpFlat || 0);
   d.maxHp = c.hpMaxOverride == null ? baseMaxHp + hpPerLevelBonus : baseMaxHp;
   d.maxHpAutomatic = c.hpMaxOverride == null;
   const faces = hitDieFaces(d.classObj);
-  const later = Math.max(1, Math.floor(faces / 2) + 1 + mods.con);
+  const later = Math.max(1, Math.floor(faces / 2) + 1 + d.mods.con);
   d.hpFormula = c.hpMaxOverride == null
-    ? `Level 1: max of 1 or d${faces} ${formatMod(mods.con)}; later levels: max of 1 or ${formatMod(later)} each${hpPerLevelBonus ? `; automatic feature bonus ${formatMod(hpPerLevelBonus)} total` : ""}`
+    ? `Level 1: max of 1 or d${faces} ${formatMod(d.mods.con)}; later levels: max of 1 or ${formatMod(later)} each${hpPerLevelBonus ? `; automatic feature bonus ${formatMod(hpPerLevelBonus)} total` : ""}`
     : "Manual maximum";
-  if (c.acOverride == null && !Number.isFinite(d.ac)) d.ac = 10 + mods.dex;
+  if (c.acOverride == null && !Number.isFinite(d.ac)) d.ac = 10 + d.mods.dex;
   c.hitDiceUsed = Math.min(Math.max(0, Number(c.hitDiceUsed || 0)), Math.max(0, Number(c.level || 1)));
   if (Array.isArray(c.spellSlotsUsed) && d.spellSlots.length) c.spellSlotsUsed = c.spellSlotsUsed.slice(0, d.spellSlots.length).map((used, i) => Math.min(Math.max(0, Number(used || 0)), Number(d.spellSlots[i] || 0)));
   reconcileSpellSelections(c, d);
@@ -5256,7 +5369,7 @@ function renderAttackNoteDialog(payload) {
 async function renderSheet(app) {
   const c = state.character;
   const d = await deriveCharacter();
-  const selectedSpellRefs = [...(c.cantrips || []), ...(c.preparedSpells || []), ...(c.spellbook || []), ...(d.alwaysPreparedSpells || []), ...(d.alwaysKnownSpells || []), ...(d.alwaysSpellbookSpells || []), ...(d.featSpellRefs || [])];
+  const selectedSpellRefs = [...(c.cantrips || []), ...(c.preparedSpells || []), ...(c.spellbook || []), ...(d.alwaysPreparedSpells || []), ...(d.alwaysKnownSpells || []), ...(d.alwaysSpellbookSpells || []), ...(d.featSpellRefs || []), ...(d.speciesSpellRefs || [])];
   if (selectedSpellRefs.length) await Promise.all(selectedSpellRefs.map(getSpellById));
   const attackRows = await getAttackRows(d);
   const currentDeathState = deathState(c,d.maxHp);
@@ -5290,8 +5403,8 @@ async function renderSheet(app) {
   const conditionChips = CONDITIONS.map(x => renderConditionChip(x, x === "Exhaustion" ? Number(c.exhaustion || 0) > 0 : c.conditions.includes(x))).join("");
   const inspiration = c.heroicInspiration ? "★" : "☆";
   const slots = Array.from({length: 9}, (_,i) => d.spellSlots[i] ? `<div class="spell-slot-box"><strong>${i+1}</strong>${pipBar(d.spellSlots[i], countSlotUsed(c,i+1), "slot", {level:i+1})}</div>` : "").filter(Boolean).join("");
-  const preparedRefs = dedupeSpellRefs([...(c.preparedSpells || []), ...(d.alwaysPreparedSpells || []), ...(d.featSpellRefs || [])]);
-  const cantripRefs = dedupeSpellRefs([...(c.cantrips || []), ...(d.alwaysKnownSpells || []), ...(d.alwaysPreparedSpells || []), ...(d.featSpellRefs || [])]);
+  const preparedRefs = dedupeSpellRefs([...(c.preparedSpells || []), ...(d.alwaysPreparedSpells || []), ...(d.featSpellRefs || []), ...(d.speciesSpellRefs || [])]);
+  const cantripRefs = dedupeSpellRefs([...(c.cantrips || []), ...(d.alwaysKnownSpells || []), ...(d.alwaysPreparedSpells || []), ...(d.featSpellRefs || []), ...(d.speciesSpellRefs || [])]);
   const prepared = (await Promise.all(preparedRefs.map(getSpellById))).filter(s=>s&&Number(s.level)>0).sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
   const cantrips = (await Promise.all(cantripRefs.map(getSpellById))).filter(s=>s&&Number(s.level)===0).sort((a,b)=>a.name.localeCompare(b.name));
   const languages = d.proficiencies.languages.length ? d.proficiencies.languages : ["None recorded"];
@@ -5446,9 +5559,24 @@ async function renderBuilder(app) {
   const speciesChoiceSpecsNow = speciesChoiceSpecs(d.speciesObj);
   const speciesChoiceMarkup = speciesChoiceSpecsNow.map(spec => {
     const current=c.speciesChoices?.[spec.key]||{}; const selectedValue=current.value||current||"";
-    const optionSelect=`<label class="field">${escapeHtml(d.speciesObj?.name||"Species")} · ${escapeHtml(spec.label||"Choice")}<select data-species-choice="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.options.map(o=>`<option value="${escapeHtml(o.name)}" ${textNorm(selectedValue)===textNorm(o.name)?"selected":""}>${escapeHtml(o.name)}</option>`).join("")}</select></label>`;
+    const availableOptions=spec.kind === "feat" ? spec.options.filter(option => {
+      if (textNorm(selectedValue) === textNorm(option.name)) return true;
+      const feat=findFeat(option.ref?.name||option.name,option.ref?.source||null);
+      return feat && featCanSelectForSlot(feat,d,c,{key:`species:${spec.key}`,name:"Species feat"});
+    }) : spec.options;
+    const optionSelect=`<label class="field">${escapeHtml(d.speciesObj?.name||"Species")} · ${escapeHtml(spec.label||"Choice")}<select data-species-choice="${escapeHtml(spec.key)}"><option value="">— Select —</option>${availableOptions.map(o=>`<option value="${escapeHtml(o.name)}" ${textNorm(selectedValue)===textNorm(o.name)?"selected":""}>${escapeHtml(o.name)}</option>`).join("")}</select></label>`;
     const abilitySelect=spec.abilityFrom?.length?`<label class="field">${escapeHtml(d.speciesObj?.name||"Species")} · Spellcasting ability<select data-species-choice-ability="${escapeHtml(spec.key)}"><option value="">— Select —</option>${spec.abilityFrom.map(a=>`<option value="${a}" ${current.ability===a?"selected":""}>${ABILITY_NAMES[a]}</option>`).join("")}</select></label>`:"";
     return `<div class="choice-card"><div class="mini">${escapeHtml(spec.label||"Choose an option from this species.")}</div><div class="form-grid two">${optionSelect}${abilitySelect}</div></div>`;
+  }).join("");
+  const speciesSpellChoiceMarkup = (d.speciesSpellChoiceSpecs || []).map(spec => {
+    const current = c.speciesSpellChoices?.[spec.key] || [];
+    const used = new Set(Object.entries(c.speciesSpellChoices || {}).filter(([key]) => key !== spec.key).flatMap(([,refs]) => refs).map(ref => String(ref).toLowerCase()));
+    const options = featSpellChoiceOptions(spec).filter(spell => !used.has(`${spell.name}|${spell.source}`.toLowerCase()));
+    return Array.from({length:spec.count}, (_, index) => {
+      const selected = current[index] || "";
+      const available = options.filter(spell => !current.some((ref, otherIndex) => otherIndex !== index && String(ref).toLowerCase() === `${spell.name}|${spell.source}`.toLowerCase()));
+      return `<div class="feat-choice-row"><label class="field">${escapeHtml(spec.label)}${spec.count > 1 ? ` ${index + 1}` : ""}<select data-species-spell-choice="${escapeHtml(spec.key)}" data-species-spell-index="${index}"><option value="">— Select —</option>${available.map(spell=>{const ref=`${spell.name}|${spell.source}`;return `<option value="${escapeHtml(ref)}" ${selected.toLowerCase()===ref.toLowerCase()?"selected":""}>${escapeHtml(spell.name)}${Number(spell.level)>0?` · Level ${spell.level}`:" · Cantrip"}</option>`}).join("")}</select></label></div>`;
+    }).join("");
   }).join("");
   const manualList = (key) => (c[key] || []).map((x,i)=>`<span class="editable-chip">${escapeHtml(x)}<button data-action="remove-manual" data-list="${key}" data-index="${i}">×</button></span>`).join("") || `<span class="mini">None added manually.</span>`;
   const bgBonusFor = a => bgMode === "three" ? ([selectedAbility1, selectedAbility1b, selectedAbility1c].includes(a) ? "+1" : "") : (selectedAbility2===a?"+2":selectedAbility1===a?"+1":"");
@@ -5506,7 +5634,7 @@ async function renderBuilder(app) {
       <label class="field">Background<select data-builder="background"><option value="">— Select —</option>${selectRefOptions(backgrounds,c.background)}</select></label>
       <label class="field">Class<select data-builder="class"><option value="">— Select —</option>${classOptions.map(x=>`<option value="${escapeHtml(refValue(x))}" ${c.class?.name===x.name && c.class?.source===x.source?"selected":""}>${escapeHtml(x.name)}${x.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(x.source))}`:""}</option>`).join("")}</select></label>
       <label class="field">Subclass<select data-builder="subclass" id="subclassSelect" disabled><option value="">${c.class ? "Loading…" : "Choose a class first"}</option></select></label>
-    </div>${speciesChoiceMarkup ? `<div class="subhead">Species choices</div><div class="structured-choice-stack">${speciesChoiceMarkup}</div>` : ""}</section>
+    </div>${speciesChoiceMarkup ? `<div class="subhead">Species choices</div><div class="structured-choice-stack">${speciesChoiceMarkup}</div>` : ""}${speciesSpellChoiceMarkup ? `<div class="subhead">Species spell choices</div><div class="structured-choice-stack">${speciesSpellChoiceMarkup}</div>` : ""}</section>
 
     <section class="card compact-gap"><div class="section-head"><div><div class="section-title">Ability scores</div><div class="mini">Base scores are stored separately. The final values include background increases and any manual bonuses.</div></div><div class="quick-actions"><button class="button button-small" data-action="apply-standard-array">Standard array</button><button class="button button-small" data-action="apply-point-buy">27-point reset</button><span class="status-pill">Point buy: ${pointBuyTotal} / 27</span></div></div><div class="ability-editor">${ABILITIES.map(a=>`<label class="ability-editor-cell"><span>${ABILITY_LABELS[a]}</span><input type="number" min="1" max="30" data-stat="${a}" value="${c.baseStats[a]}"><small>Final ${d.stats[a]}</small></label>`).join("")}</div></section>
 
@@ -5624,10 +5752,7 @@ async function renderSpellbook(app) {
   if (!spells.length) { await loadSpellSource(state.version, DATA_SOURCE); mergeOfficialSpells(); spells = officialEntries(state.data.spells, "spell").sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name)); }
   const maxPrepared = state.lastDerived?.maxPrepared ?? null;
   const maxCantrips = state.lastDerived?.cantrips ?? null;
-  const availableTabs = [];
-  if (Number.isFinite(Number(maxPrepared))) availableTabs.push("prepared");
-  if (Number(maxCantrips || 0) > 0) availableTabs.push("cantrips");
-  if (usesWizardSpellbook(state.lastDerived)) availableTabs.push("spellbook");
+  const availableTabs = spellPickerTabs(state.lastDerived);
   if (!availableTabs.includes(state.spellPickerTab)) state.spellPickerTab = availableTabs[0] || "prepared";
   const tab = state.spellPickerTab;
   const className = c.class?.name || "";
@@ -5636,9 +5761,18 @@ async function renderSpellbook(app) {
     ...(state.lastDerived?.alwaysKnownSpells || []),
     ...(state.lastDerived?.alwaysSpellbookSpells || []),
     ...(state.lastDerived?.featSpellRefs || []),
+    ...(state.lastDerived?.speciesSpellRefs || []),
   ]);
   const available = spells.filter(s => spellAvailableToCharacter(s, state.lastDerived) || automaticRefs.has(`${s.name}|${s.source}`.toLowerCase())).slice(0, 2000);
-  const tabLabel = value => value === "prepared" ? `Prepared (${c.preparedSpells.length}/${maxPrepared ?? 0})` : value === "cantrips" ? `Cantrips (${c.cantrips.length}/${maxCantrips ?? 0})` : `Spellbook (${dedupeSpellRefs([...(c.spellbook || []), ...(state.lastDerived?.alwaysSpellbookSpells || [])]).length})`;
+  const automaticCountFor = value => [...automaticSpellRefsForList(value === "prepared" ? "preparedSpells" : value, state.lastDerived)].filter(ref => {
+    const spell = spellById(ref);
+    return spell && (value === "cantrips" ? Number(spell.level) === 0 : value === "prepared" ? Number(spell.level) > 0 : true);
+  }).length;
+  const tabLabel = value => {
+    if (value === "prepared") return maxPrepared != null && Number.isFinite(Number(maxPrepared)) ? `Prepared (${c.preparedSpells.length}/${maxPrepared})` : `Prepared (${automaticCountFor(value)} granted)`;
+    if (value === "cantrips") return maxCantrips != null && Number.isFinite(Number(maxCantrips)) ? `Cantrips (${c.cantrips.length}/${maxCantrips})` : `Cantrips (${automaticCountFor(value)} granted)`;
+    return `Spellbook (${dedupeSpellRefs([...(c.spellbook || []), ...(state.lastDerived?.alwaysSpellbookSpells || [])]).length})`;
+  };
   const automaticCount = automaticRefs.size;
 
   app.innerHTML = `${pageHeader("SPELLBOOK", `${escapeHtml(c.name || "Character")} · Spells`, `${escapeHtml(className || "No class")} · 2024 official spell data`, `<button class="button" data-action="sheet">Character</button>`)}
@@ -5659,7 +5793,7 @@ function renderSpellResults(allSpells) {
   const c = state.character;
   const collection = c[listName];
   const set = new Set(collection.map(x=>String(x).toLowerCase()));
-  const automatic = spellRefSet(tab === "cantrips" ? [...(state.lastDerived?.alwaysKnownSpells || []), ...(state.lastDerived?.alwaysPreparedSpells || [])] : tab === "prepared" ? state.lastDerived?.alwaysPreparedSpells : state.lastDerived?.alwaysSpellbookSpells);
+  const automatic = automaticSpellRefsForList(listName, state.lastDerived);
   const list = allSpells.filter(s => tabFilter(s) && (automatic.has(`${s.name}|${s.source}`.toLowerCase()) || spellSelectionAllowed(s, listName, state.lastDerived, state.character)) && (!q || s.name.toLowerCase().includes(q)) && (level === "all" || String(s.level) === level)).slice(0, 300);
   root.innerHTML = list.map(s => {
     const id = `${s.name}|${s.source}`;
@@ -6129,6 +6263,15 @@ function bindEvents() {
   });
   document.querySelectorAll("[data-species-choice]").forEach(el => el.onchange = async () => { const key=el.dataset.speciesChoice; const cur=state.character.speciesChoices[key]||{}; if(el.value) state.character.speciesChoices[key]={...cur,value:el.value}; else delete state.character.speciesChoices[key]; await saveCharacter(); render(); });
   document.querySelectorAll("[data-species-choice-ability]").forEach(el => el.onchange = async () => { const key=el.dataset.speciesChoiceAbility; const cur=state.character.speciesChoices[key]||{}; if(el.value) state.character.speciesChoices[key]={...cur,ability:el.value}; else { const next={...cur}; delete next.ability; if(next.value) state.character.speciesChoices[key]=next; else delete state.character.speciesChoices[key]; } await saveCharacter(); render(); });
+  document.querySelectorAll("[data-species-spell-choice]").forEach(el => el.onchange = async () => {
+    const key=el.dataset.speciesSpellChoice, index=Math.max(0,Number(el.dataset.speciesSpellIndex||0));
+    const values=Array.isArray(state.character.speciesSpellChoices?.[key])?[...state.character.speciesSpellChoices[key]]:[];
+    while(values.length<=index) values.push("");
+    values[index]=el.value||"";
+    const picks=values.filter(Boolean);
+    if(picks.length) state.character.speciesSpellChoices[key]=picks; else delete state.character.speciesSpellChoices[key];
+    await saveCharacter(); render();
+  });
   document.querySelectorAll("[data-class-skill]").forEach(el => el.onchange = async () => { const arr=state.character.classSkillChoices; toggleArray(arr,normalizeSkillKey(el.dataset.classSkill),el.checked); const max=state.lastDerived?.skillChoiceSpec?.count||0; if(arr.length>max){arr.splice(arr.indexOf(normalizeSkillKey(el.dataset.classSkill)),1);el.checked=false;showToast(`Choose only ${max} class skills.`);return;} await saveCharacter(); render(); });
   document.querySelectorAll("[data-custom-skill]").forEach(el => el.onchange = async () => { toggleArray(state.character.customSkillProficiencies, normalizeSkillKey(el.dataset.customSkill), el.checked); await saveCharacter(); render(); });
   document.querySelectorAll("[data-expertise]").forEach(el => el.onchange = async () => { toggleArray(state.character.expertise, normalizeSkillKey(el.dataset.expertise), el.checked); await saveCharacter(); render(); });
@@ -6409,6 +6552,21 @@ function dedupeSpellRefs(refs) {
   }
   return out;
 }
+function automaticSpellRefsForList(listName, d = state.lastDerived) {
+  if (listName === "spellbook") return spellRefSet(d?.alwaysSpellbookSpells || []);
+  const shared = [...(d?.featSpellRefs || []), ...(d?.speciesSpellRefs || [])];
+  if (listName === "cantrips") return spellRefSet([...(d?.alwaysKnownSpells || []), ...(d?.alwaysPreparedSpells || []), ...shared]);
+  if (listName === "preparedSpells" || listName === "prepared") return spellRefSet([...(d?.alwaysPreparedSpells || []), ...shared]);
+  return new Set();
+}
+function spellPickerTabs(d = state.lastDerived) {
+  const tabs = [];
+  const automatic = dedupeSpellRefs([...(d?.featSpellRefs || []), ...(d?.speciesSpellRefs || [])]).map(spellById).filter(Boolean);
+  if ((d?.maxPrepared != null && Number.isFinite(Number(d.maxPrepared))) || automatic.some(spell => Number(spell.level) > 0)) tabs.push("prepared");
+  if (Number(d?.cantrips || 0) > 0 || automatic.some(spell => Number(spell.level) === 0)) tabs.push("cantrips");
+  if (usesWizardSpellbook(d)) tabs.push("spellbook");
+  return tabs;
+}
 function usesWizardSpellbook(d = state.lastDerived) {
   return normalizeRefName(d?.classObj?.name) === "wizard" && Boolean(d?.classObj?.spellcastingAbility);
 }
@@ -6433,8 +6591,8 @@ function reconcileSpellSelections(c, d) {
     const automatic = spellRefSet(automaticRefs);
     return refs.filter(ref => !automatic.has(String(normalizeSpellRef(ref) || "").toLowerCase()));
   };
-  c.cantrips = withoutAutomatic(c.cantrips, [...(d?.alwaysKnownSpells || []), ...(d?.alwaysPreparedSpells || []), ...(d?.featSpellRefs || [])]);
-  c.preparedSpells = withoutAutomatic(c.preparedSpells, [...(d?.alwaysPreparedSpells || []), ...(d?.featSpellRefs || [])]);
+  c.cantrips = withoutAutomatic(c.cantrips, [...(d?.alwaysKnownSpells || []), ...(d?.alwaysPreparedSpells || []), ...(d?.featSpellRefs || []), ...(d?.speciesSpellRefs || [])]);
+  c.preparedSpells = withoutAutomatic(c.preparedSpells, [...(d?.alwaysPreparedSpells || []), ...(d?.featSpellRefs || []), ...(d?.speciesSpellRefs || [])]);
   c.spellbook = withoutAutomatic(c.spellbook, d?.alwaysSpellbookSpells || []);
   const loaded = getLoadedSpells();
   if (!loaded.length || !state.data.spellSourceLookup) return;
@@ -6451,7 +6609,7 @@ async function updateSpellResultFilter(){
   mergeOfficialSpells();
   const spells = getLoadedSpells().filter(s => isOfficial2024Entity(s)).sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name));
   const d = state.lastDerived || await deriveCharacter();
-  const automatic = spellRefSet([...(d?.alwaysPreparedSpells || []), ...(d?.alwaysKnownSpells || []), ...(d?.alwaysSpellbookSpells || []), ...(d?.featSpellRefs || [])]);
+  const automatic = spellRefSet([...(d?.alwaysPreparedSpells || []), ...(d?.alwaysKnownSpells || []), ...(d?.alwaysSpellbookSpells || []), ...(d?.featSpellRefs || []), ...(d?.speciesSpellRefs || [])]);
   const available = spells.filter(s => spellAvailableToCharacter(s, d) || automatic.has(`${s.name}|${s.source}`.toLowerCase())).slice(0,2000);
   renderSpellResults(available);
 }

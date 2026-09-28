@@ -165,7 +165,7 @@ test('legacy character migrations are persisted, not only applied in memory', as
   await expect(page.locator('.sheet-brandline h1')).toHaveText('Legacy Sentinel');
 
   const migrated = await currentCharacter(page);
-  expect(migrated.schema).toBe(20);
+  expect(migrated.schema).toBe(21);
   expect(migrated.knownSpells).toEqual([]);
   expect(migrated.preparedSpells).toEqual(expect.arrayContaining(['Bless|XPHB', 'Cure Wounds|XPHB']));
   expect(migrated.deathSaves).toEqual({ success: 0, failure: 0 });
@@ -266,6 +266,50 @@ test('Wizard spellbook, prepared spell, and cantrip selections persist through t
   await expect(page.locator('[data-spell-toggle="Mage Hand|XPHB"]')).toBeChecked();
   saved = await currentCharacter(page);
   expect(saved.knownSpells).toEqual([]);
+});
+
+test('feat and species spell grants appear for a non-spellcasting class without using class limits', async ({ page }) => {
+  await openReadySheet(page);
+  const key='Magic Initiate|XPHB|@origin|spells|0';
+  await updateCurrentCharacter(page, {
+    name:'Grant Chain Sentinel',
+    level:1,
+    class:{name:'Fighter',source:'XPHB'},
+    subclass:null,
+    species:{name:'Aasimar',source:'XPHB'},
+    background:{name:'Sage',source:'XPHB'},
+    feat:{name:'Magic Initiate',source:'XPHB'},
+    feats:[{name:'Magic Initiate',source:'XPHB'}],
+    additionalFeats:[], progressionFeats:{}, featureFeatChoices:{},
+    featSpellChoices:{[key]:{
+      list:'Wizard Spells', ability:'int', picks:{
+        [`${key}|group|2|choice|known|0`]:['Fire Bolt|XPHB','Mage Hand|XPHB'],
+        [`${key}|group|2|choice|innate|1`]:['Magic Missile|XPHB'],
+      },
+    }},
+    cantrips:['Fire Bolt|XPHB'], preparedSpells:['Magic Missile|XPHB'], spellbook:[], knownSpells:[],
+  });
+  await page.reload();
+  await page.getByRole('button', { name:'Spells' }).click();
+
+  await expect(page.getByRole('button', {name:/^Prepared \(1 granted\)$/})).toBeVisible();
+  await expect(page.getByRole('button', {name:/^Cantrips \(3 granted\)$/})).toBeVisible();
+  await page.getByRole('button', {name:/^Cantrips/}).click();
+  for(const name of ['Fire Bolt','Mage Hand','Light']){
+    await page.locator('#spellSearch').fill(name);
+    const input=page.locator(`[data-spell-toggle="${name}|XPHB"]`);
+    await expect(input).toBeChecked();
+    await expect(input).toBeDisabled();
+  }
+  await page.getByRole('button', {name:/^Prepared/}).click();
+  await page.locator('#spellSearch').fill('Magic Missile');
+  await expect(page.locator('[data-spell-toggle="Magic Missile|XPHB"]')).toBeChecked();
+  await expect(page.locator('[data-spell-toggle="Magic Missile|XPHB"]')).toBeDisabled();
+
+  const saved=await currentCharacter(page);
+  expect(saved.cantrips).toEqual([]);
+  expect(saved.preparedSpells).toEqual([]);
+  expect(saved.featSpellChoices[key].picks).toBeTruthy();
 });
 
 test('equipment can be added, wielded, attuned, and reloaded from the real catalog UI', async ({ page }) => {
@@ -556,7 +600,7 @@ test('all structured feat choice families persist through the builder', async ({
 
   await page.reload();
   saved=await currentCharacter(page);
-  expect(saved.schema).toBe(20);
+  expect(saved.schema).toBe(21);
   expect(Object.keys(saved.featToolChoices)).toHaveLength(3);
   expect(Object.keys(saved.featMixedChoices)).toHaveLength(3);
 });
