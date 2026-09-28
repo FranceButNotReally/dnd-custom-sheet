@@ -330,6 +330,10 @@ button, select, input[type="checkbox"] { cursor: pointer; }
 .weapon-row > span { font-size:.67rem; }
 .weapon-row strong { font-family:Georgia,"Times New Roman",serif; font-size:.72rem; }
 .weapon-row small { color:#71695e; font-size:.56rem; }
+.attack-visibility-row { display:flex; align-items:center; gap:12px; padding:10px; border-bottom:1px solid #c8c2b6; cursor:pointer; }
+.attack-visibility-row input { width:18px; height:18px; flex:none; }
+.attack-visibility-row span { display:flex; flex-direction:column; gap:3px; }
+.attack-visibility-row small { color:#71695e; }
 .inspiration-panel { display:flex; justify-content:space-between; align-items:center; }
 .inspiration-panel p { margin:0; color:#6a6258; font-size:.64rem; }
 .inspiration-button { width:48px; height:48px; border-radius:50%; border:2px solid #4d473e; background:#eee6d6; color:#2b2823; font-family:Georgia,"Times New Roman",serif; font-size:1.5rem; }
