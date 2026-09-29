@@ -1,9 +1,9 @@
-const CACHE = "dnd-sheet-shell-v372";
+const CACHE = "dnd-sheet-shell-v373";
 const SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=0372",
-  "./app.js?v=0372",
+  "./styles.css?v=0373",
+  "./app.js?v=0373",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png"

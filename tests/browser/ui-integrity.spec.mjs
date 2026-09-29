@@ -165,7 +165,7 @@ test('legacy character migrations are persisted, not only applied in memory', as
   await expect(page.locator('.sheet-brandline h1')).toHaveText('Legacy Sentinel');
 
   const migrated = await currentCharacter(page);
-  expect(migrated.schema).toBe(21);
+  expect(migrated.schema).toBe(23);
   expect(migrated.knownSpells).toEqual([]);
   expect(migrated.preparedSpells).toEqual(expect.arrayContaining(['Bless|XPHB', 'Cure Wounds|XPHB']));
   expect(migrated.deathSaves).toEqual({ success: 0, failure: 0 });
@@ -218,6 +218,46 @@ test('sheet controls persist Short Rest, Long Rest, and critical damage at 0 HP'
   await page.getByRole('button', { name: 'Damage' }).click();
   saved = await currentCharacter(page);
   expect(saved.deathSaves.failure).toBe(2);
+});
+
+test('guided level-up keeps HP rolls, damage, and pending subclass choices through reload', async ({ page }) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page, {
+    name:'Level-up Sentinel', level:1, class:{name:'Fighter',source:'XPHB'}, subclass:null,
+    baseStats:{str:10,dex:10,con:14,int:10,wis:10,cha:10},
+    hpCurrent:4, hpAuto:false, hpMaxOverride:null, hpLevelRolls:{}, pendingLevelUp:null,
+  });
+  await page.reload();
+  await page.locator('[data-action="level-up"]').click();
+  await expect(page.getByRole('dialog')).toContainText('Level 1 → 2');
+  await page.locator('[name="level-up-hp"][value="rolled"]').check();
+  await page.locator('#levelUpRoll').fill('4');
+  await page.locator('#confirmLevelUp').click();
+  await expect(page.locator('.level-up-panel')).toContainText('Finish level 2');
+  let saved=await currentCharacter(page);
+  expect(saved.level).toBe(2);
+  expect(saved.hpLevelRolls['2']).toBe(4);
+  expect(saved.hpCurrent).toBe(10);
+  await page.reload();
+  await expect(page.locator('.level-up-banner')).toBeVisible();
+  await page.getByRole('button', {name:'Finish level-up'}).click();
+  await expect(page.locator('.level-up-panel')).toBeVisible();
+  await page.locator('.level-up-panel [data-action="finish-level-up"]').click();
+  await expect(page.locator('.sheet-brandline')).toBeVisible();
+  await expect(page.locator('.level-up-banner')).toHaveCount(0);
+  await page.locator('[data-action="level-up"]').click();
+  await expect(page.getByRole('dialog')).toContainText('Choose a subclass');
+  await page.locator('#confirmLevelUp').click();
+  await expect(page.locator('.level-up-task', {hasText:'Choose a subclass'})).toBeVisible();
+  await page.getByRole('button', {name:'Finish level-up'}).click();
+  await expect(page.locator('.level-up-panel')).toBeVisible();
+  await page.locator('[data-builder="subclass"]').selectOption('Champion|XPHB');
+  await page.getByRole('button', {name:'Finish level-up'}).click();
+  await expect(page.locator('.level-up-banner')).toHaveCount(0);
+  saved=await currentCharacter(page);
+  expect(saved.level).toBe(3);
+  expect(saved.subclass?.name).toBe('Champion');
+  expect(saved.hpLevelRolls['2']).toBe(4);
 });
 
 test('Wizard spellbook, prepared spell, and cantrip selections persist through the UI', async ({ page }) => {
@@ -611,7 +651,7 @@ test('all structured feat choice families persist through the builder', async ({
 
   await page.reload();
   saved=await currentCharacter(page);
-  expect(saved.schema).toBe(21);
+  expect(saved.schema).toBe(23);
   expect(Object.keys(saved.featToolChoices)).toHaveLength(3);
   expect(Object.keys(saved.featMixedChoices)).toHaveLength(3);
 });
