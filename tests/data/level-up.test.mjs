@@ -14,7 +14,7 @@ resetState(a);
 const file=name=>read(`class/${index[name.toLowerCase()]}`);
 function context(name,level,overrides={}) {
   const classFile=file(name),classObj=classFile.class.find(x=>x.name===name&&x.source==='XPHB');
-  const c=a.emptyCharacter();c.class={name,source:'XPHB'};c.level=level;
+  const c=a.emptyCharacter();c.creationPending=false;c.class={name,source:'XPHB'};c.subclass=level>=3?{name:'Champion',source:'XPHB'}:null;c.level=level;
   Object.assign(c,overrides);
   return {c,d:{classFile,classObj,subclassObj:null,spellcastingSource:classObj,mods:{con:2},pb:a.proficiencyBonus(level),maxHp:a.defaultMaxHp(classObj,level,2,null,c.hpLevelRolls),effects:{hpPerLevel:0},optionalFeatureSpecs:[],classFeatureChoiceSpecs:[],progressionFeatSlots:[]}};
 }
@@ -71,4 +71,43 @@ test('level-up preserves damage, zero HP, manual maxima, and warns of unfinished
   const dying=context('Fighter',1,{hpAuto:false,hpCurrent:0});
   a.applyLevelUp(dying.c,dying.d,a.levelUpPreview(dying.c,dying.d),{mode:'fixed'});
   assert.equal(dying.c.hpCurrent,0);
+});
+
+test('ASI level-up stays unfinished until its pattern and ability picks are recorded',()=>{
+  a.state.data.feats=read('feats.json');
+  const {c,d}=context('Fighter',3);
+  a.applyLevelUp(c,d,a.levelUpPreview(c,d),{mode:'fixed'});
+  d.progressionFeatSlots=a.progressionFeatSlots(d.classObj,4);
+  for(const spec of d.progressionFeatSlots.filter(s=>s.name!=='Ability Score Improvement')) c.progressionFeats[spec.key]={name:'Archery',source:'XPHB'};
+  const slot=d.progressionFeatSlots.find(s=>s.name==='Ability Score Improvement');
+  c.progressionFeats[slot.key]={name:'Ability Score Improvement',source:'XPHB'};
+  d.featObjs=a.selectedFeatObjects(c);
+  let tasks=a.levelUpChecklist(c,d);
+  assert.ok(tasks.some(t=>t.control==='data-feat-ability-mode'&&!t.done));
+  const asi=d.featObjs.find(a.isAbilityScoreImprovementFeat);
+  const modeKey=a.featInstanceKey(asi);
+  c.featAbilityModes[modeKey]='split';
+  d.featObjs=a.selectedFeatObjects(c);
+  tasks=a.levelUpChecklist(c,d);
+  assert.equal(tasks.filter(t=>t.control==='data-feat-ability'&&!t.done).length,2);
+  const choices=a.featAbilitySpecs(d.featObjs.find(a.isAbilityScoreImprovementFeat));
+  c.featAbilityChoices[a.featSpecKey(d.featObjs.find(a.isAbilityScoreImprovementFeat),choices[0])]='str';
+  assert.equal(a.levelUpChecklist(c,d).filter(t=>t.required&&!t.done).length,1);
+  c.featAbilityChoices[a.featSpecKey(d.featObjs.find(a.isAbilityScoreImprovementFeat),choices[1])]='dex';
+  assert.ok(a.levelUpChecklist(c,d).filter(t=>t.required).every(t=>t.done));
+});
+
+test('Wizard spellbook guidance counts new spells separately from existing and Savant spells after migration',()=>{
+  const {c,d}=context('Wizard',1,{spellbook:['Shield|XPHB']});
+  a.applyLevelUp(c,d,a.levelUpPreview(c,d),{mode:'fixed'});
+  const saved=a.migrateCharacter(JSON.parse(JSON.stringify(c)));
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.pendingLevelUp.spellbookBefore)),['Shield|XPHB']);
+  d.maxPrepared=5;
+  let task=a.levelUpChecklist(saved,d).find(t=>t.spellTab==='spellbook');
+  assert.equal(task.done,false);
+  saved.spellbook.push('Magic Missile|XPHB','Detect Magic|XPHB');
+  task=a.levelUpChecklist(saved,d).find(t=>t.spellTab==='spellbook');
+  assert.equal(task.done,true);
+  assert.ok(task.detail.includes('Savant spells are additional'));
+  assert.ok(a.levelUpChecklist(saved,d).some(t=>t.spellTab==='prepared'));
 });
