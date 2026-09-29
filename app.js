@@ -141,7 +141,7 @@ let dbPromise;
 
 function emptyCharacter() {
   return {
-    schema: 22,
+    schema: 23,
     id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     name: "New Character",
     player: "",
@@ -180,6 +180,8 @@ function emptyCharacter() {
     hpCurrent: null,
     hpAuto: true,
     hpMaxOverride: null,
+    hpLevelRolls: {},
+    pendingLevelUp: null,
     tempHp: 0,
     acOverride: null,
     speedOverride: null,
@@ -232,7 +234,10 @@ function migrateCharacter(raw) {
   const base = emptyCharacter();
   if (!raw || typeof raw !== "object") return base;
   const c = { ...base, ...raw };
-  c.schema = 21;
+  c.schema = 23;
+  c.hpLevelRolls = Object.fromEntries(Object.entries(raw.hpLevelRolls || {}).filter(([level,roll]) => Number.isInteger(Number(level)) && Number(level) >= 2 && Number(level) <= 20 && Number.isInteger(Number(roll)) && Number(roll) >= 1 && Number(roll) <= 20));
+  c.pendingLevelUp = raw.pendingLevelUp && Number(raw.pendingLevelUp.to) === Number(c.level) && Number(raw.pendingLevelUp.from) === Number(c.level) - 1
+    ? { from:Number(raw.pendingLevelUp.from), to:Number(raw.pendingLevelUp.to) } : null;
   c.baseStats = { ...base.baseStats, ...(raw.baseStats || raw.stats || {}) };
   c.xp = Math.max(0, Number(raw.xp || 0));
   c.manualAbilityBonuses = { ...base.manualAbilityBonuses, ...(raw.manualAbilityBonuses || {}) };
@@ -3148,14 +3153,78 @@ function renderFeatureSpellChoiceRows(spec, c, allSpecs = [spec]) {
   return rows.join("");
 }
 function hitDieFaces(classObj) { return Number(classObj?.hd?.faces || 8); }
-function defaultMaxHp(classObj, level, conMod, override) {
+function defaultMaxHp(classObj, level, conMod, override, hpLevelRolls = {}) {
   const hasOverride = override !== null && override !== undefined && override !== "" && Number.isFinite(Number(override));
   if (hasOverride) return Math.max(1, Number(override));
   const lvl = Math.max(1, Number(level || 1));
   const faces = hitDieFaces(classObj);
   const first = Math.max(1, faces + conMod);
   const later = Math.max(1, Math.floor(faces / 2) + 1 + conMod);
-  return Math.max(1, first + Math.max(0, lvl - 1) * later);
+  let total = first;
+  for (let current = 2; current <= lvl; current++) {
+    const raw = hpLevelRolls?.[current];
+    const roll = Number.isInteger(Number(raw)) && Number(raw) >= 1 && Number(raw) <= faces ? Number(raw) : Math.floor(faces / 2) + 1;
+    total += Math.max(1, roll + conMod);
+  }
+  return Math.max(1, total);
+}
+const LEVEL_XP = [0,300,900,2700,6500,14000,23000,34000,48000,64000,85000,100000,120000,140000,165000,195000,225000,265000,305000,355000];
+function levelUpPreview(c, d) {
+  if (!d?.classObj || Number(c.level) >= 20) return null;
+  const from = Number(c.level), to = from + 1;
+  const previousFeatures = new Set(getClassFeatures(d.classFile,d.classObj,from).map(x => `${x.name}|${x.source}|${x.level}`));
+  const previousSubclass = new Set(getSubclassFeatures(d.classFile,d.subclassObj,from).map(x => `${x.name}|${x.source}|${x.level}`));
+  const newClassFeatures = getClassFeatures(d.classFile,d.classObj,to).filter(x => !previousFeatures.has(`${x.name}|${x.source}|${x.level}`));
+  const newSubclassFeatures = getSubclassFeatures(d.classFile,d.subclassObj,to).filter(x => !previousSubclass.has(`${x.name}|${x.source}|${x.level}`));
+  const priorFeats = new Set(progressionFeatSlots(d.classObj,from,d.subclassObj).map(x => x.key));
+  const priorOptions = new Set(optionalFeatureProgression(d.classObj,from,d.subclassObj).map(x => x.key));
+  const spellSource = d.spellcastingSource;
+  return {
+    from,to,die:hitDieFaces(d.classObj),conMod:d.mods.con,
+    fixedHp:Math.max(1,Math.floor(hitDieFaces(d.classObj)/2)+1+d.mods.con),
+    xpTarget:LEVEL_XP[to-1],
+    proficiencyBefore:proficiencyBonus(from),proficiencyAfter:proficiencyBonus(to),
+    newClassFeatures,newSubclassFeatures,
+    newFeatSlots:progressionFeatSlots(d.classObj,to,d.subclassObj).filter(x=>!priorFeats.has(x.key)),
+    newOptionalSlots:optionalFeatureProgression(d.classObj,to,d.subclassObj).filter(x=>!priorOptions.has(x.key)),
+    needsSubclass:!d.subclassObj && getSubclassUnlockLevel(d.classObj) === to,
+    cantripsBefore:classCantrips(spellSource,from) || 0,cantripsAfter:classCantrips(spellSource,to) || 0,
+    preparedBefore:classPrepared(spellSource,from,d.mods) || 0,preparedAfter:classPrepared(spellSource,to,d.mods) || 0,
+    slotsBefore:classSpellSlots(spellSource,from),slotsAfter:classSpellSlots(spellSource,to),
+  };
+}
+function applyLevelUp(c,d,preview,hpChoice) {
+  if (!preview || Number(c.level) !== preview.from || !d?.classObj || preview.to !== preview.from+1) throw new Error("The level-up preview is out of date.");
+  const roll = hpChoice?.mode === "rolled" ? Number(hpChoice.roll) : null;
+  if (hpChoice?.mode === "rolled" && (!Number.isInteger(roll) || roll < 1 || roll > preview.die)) throw new Error(`Enter a d${preview.die} roll between 1 and ${preview.die}.`);
+  const amount = hpChoice?.mode === "rolled" ? roll : Math.floor(preview.die/2)+1;
+  const gain = Math.max(1,amount+preview.conMod);
+  const effectiveGain = gain + (c.hpMaxOverride == null ? Number(d.effects?.hpPerLevel || 0) : 0);
+  if (hpChoice?.mode === "rolled") c.hpLevelRolls = { ...(c.hpLevelRolls || {}), [preview.to]:roll };
+  else if (c.hpLevelRolls) delete c.hpLevelRolls[preview.to];
+  if (c.hpMaxOverride != null) c.hpMaxOverride = Number(c.hpMaxOverride)+gain;
+  if (!c.hpAuto && c.hpCurrent != null && Number(c.hpCurrent)>0) c.hpCurrent = Math.min(Number(d.maxHp)+effectiveGain,Number(c.hpCurrent)+effectiveGain);
+  c.level = preview.to;
+  c.pendingLevelUp = {from:preview.from,to:preview.to};
+  return gain;
+}
+function levelUpChecklist(c,d) {
+  const pending = c.pendingLevelUp;
+  if (!pending || Number(pending.to) !== Number(c.level) || !d?.classObj) return [];
+  const tasks = [];
+  const add = (label,done,section,required=true) => tasks.push({label,done:Boolean(done),section,required});
+  if (getSubclassUnlockLevel(d.classObj) === pending.to && !c.subclass) add("Choose a subclass",false,"identity");
+  const oldFeats = new Set(progressionFeatSlots(d.classObj,pending.from,d.subclassObj).map(s=>s.key));
+  for (const spec of d.progressionFeatSlots || []) if (!oldFeats.has(spec.key)) add(`Choose ${spec.name}`,c.progressionFeats?.[spec.key],"class-choices");
+  const oldOptional = new Set(optionalFeatureProgression(d.classObj,pending.from,d.subclassObj).map(s=>s.key));
+  for (const spec of d.optionalFeatureSpecs || []) if (!oldOptional.has(spec.key)) add(`Choose ${spec.name}`,c.optionalFeatureChoices?.[spec.key],"class-choices");
+  for (const spec of d.classFeatureChoiceSpecs || []) if (Number(spec.level) === pending.to) add(`Choose ${spec.name}`,c.classFeatureChoices?.[spec.key],"class-choices");
+  for (const spec of d.classProficiencyChoiceSpecs || []) if (Number(spec.level) === pending.to) add(`Choose ${spec.label}`,c.classProficiencyChoices?.[spec.key],"class-choices");
+  for (const spec of d.featureFeatChoiceSpecs || []) if ((d.optionalFeatureSpecs || []).some(option=>!oldOptional.has(option.key)&&spec.key.startsWith(`${option.key}|`))) add(`Choose ${spec.name} feat`,c.featureFeatChoices?.[spec.key],"class-choices");
+  const prevSpells = classPrepared(d.spellcastingSource,pending.from,d.mods) || 0;
+  const prevCantrips = classCantrips(d.spellcastingSource,pending.from) || 0;
+  if ((d.maxPrepared || 0)>prevSpells || (d.cantrips || 0)>prevCantrips || textNorm(d.classObj.name)==="wizard") add("Review spells and cantrips",false,"spells",false);
+  return tasks;
 }
 function spellSchoolName(code) { return SPELL_SCHOOLS[code] || code || ""; }
 function skillChoiceSpec(classObj) {
@@ -5102,14 +5171,14 @@ async function deriveCharacter() {
     swim: equipmentEffects.movementModes?.swim === "speed" || d.effects.movementModes?.swim === "speed" || d.effects.flags.has("roving") ? d.speed : Number(equipmentEffects.movementModes?.swim || 0) || null,
     fly: equipmentEffects.movementModes?.fly === "speed" ? d.speed : Number(equipmentEffects.movementModes?.fly || 0) || null,
   };
-  const baseMaxHp = defaultMaxHp(d.classObj, c.level, d.mods.con, c.hpMaxOverride);
+  const baseMaxHp = defaultMaxHp(d.classObj, c.level, d.mods.con, c.hpMaxOverride, c.hpLevelRolls);
   const hpPerLevelBonus = Number(d.effects.hpPerLevel || 0) * Number(c.level || 1) + Number(d.effects.hpFlat || 0);
   d.maxHp = c.hpMaxOverride == null ? baseMaxHp + hpPerLevelBonus : baseMaxHp;
   d.maxHpAutomatic = c.hpMaxOverride == null;
   const faces = hitDieFaces(d.classObj);
   const later = Math.max(1, Math.floor(faces / 2) + 1 + d.mods.con);
   d.hpFormula = c.hpMaxOverride == null
-    ? `Level 1: max of 1 or d${faces} ${formatMod(d.mods.con)}; later levels: max of 1 or ${formatMod(later)} each${hpPerLevelBonus ? `; automatic feature bonus ${formatMod(hpPerLevelBonus)} total` : ""}`
+    ? `Level 1: max of 1 or d${faces} ${formatMod(d.mods.con)}; later levels: fixed ${formatMod(later)} or saved rolls${hpPerLevelBonus ? `; automatic feature bonus ${formatMod(hpPerLevelBonus)} total` : ""}`
     : "Manual maximum";
   if (c.acOverride == null && !Number.isFinite(d.ac)) d.ac = 10 + d.mods.dex;
   c.hitDiceUsed = Math.min(Math.max(0, Number(c.hitDiceUsed || 0)), Math.max(0, Number(c.level || 1)));
@@ -5496,7 +5565,8 @@ async function renderSheet(app) {
   const featurePreview = f => renderRichEntries((Array.isArray(f.entries) ? f.entries : [f.entries]).slice(0,2));
 
   const pageOne = `<div class="sheet-page">
-    <div class="sheet-brandline"><div><span class="sheet-kicker">D&D 2024 · CHARACTER SHEET</span><h1>${escapeHtml(c.name || "Unnamed Character")}</h1><p>${escapeHtml(classLine || "Class not chosen")} · Level ${c.level}</p></div><div class="sheet-page-actions"><button class="sheet-nav ${page===1?"active":""}" data-action="sheet-page" data-page="1">Page 1</button><button class="sheet-nav ${page===2?"active":""}" data-action="sheet-page" data-page="2">Page 2</button><button class="sheet-nav" data-action="builder">Edit</button><button class="sheet-nav" data-action="character-menu">Characters</button></div></div>
+    <div class="sheet-brandline"><div><span class="sheet-kicker">D&D 2024 · CHARACTER SHEET</span><h1>${escapeHtml(c.name || "Unnamed Character")}</h1><p>${escapeHtml(classLine || "Class not chosen")} · Level ${c.level}</p></div><div class="sheet-page-actions"><button class="sheet-nav ${page===1?"active":""}" data-action="sheet-page" data-page="1">Page 1</button><button class="sheet-nav ${page===2?"active":""}" data-action="sheet-page" data-page="2">Page 2</button>${c.pendingLevelUp?.to === c.level ? `<button class="sheet-nav" data-action="builder">Finish level-up</button>` : c.class && c.level<20 ? `<button class="sheet-nav" data-action="level-up">Level up</button>` : ""}<button class="sheet-nav" data-action="builder">Edit</button><button class="sheet-nav" data-action="character-menu">Characters</button></div></div>
+    ${c.pendingLevelUp?.to === c.level ? `<div class="level-up-banner">Level ${c.level} is saved. Review your new class choices and spells in the builder before finishing.</div>` : ""}
     <div class="identity-grid">
       <div class="identity-fields"><div class="field-line"><span>Character Name</span><strong>${escapeHtml(c.name || "—")}</strong></div><div class="field-line"><span>Background</span><strong>${escapeHtml(c.background?.name || "—")}</strong></div><div class="field-line"><span>Species</span><strong>${escapeHtml(c.species?.name || "—")}</strong></div><div class="field-line"><span>Player</span><strong>${escapeHtml(c.player || "—")}</strong></div></div>
       <div class="identity-fields"><div class="field-line"><span>Class & Subclass</span><strong>${escapeHtml(classLine || "—")}</strong></div><div class="field-line"><span>Level</span><strong>${c.level}</strong></div><div class="field-line"><span>Experience</span><strong>${Number(c.xp || 0).toLocaleString()}</strong></div><div class="field-line"><span>Proficiency Bonus</span><strong>${formatMod(d.pb)}</strong></div></div>
@@ -5562,6 +5632,8 @@ async function renderBuilder(app) {
     uniqueMasteryItems.push(item);
   }
   const bgAbility = backgroundAbilitySpec(bg);
+  const levelUpTasks = levelUpChecklist(c,d);
+  const pendingLevelUpMarkup = c.pendingLevelUp?.to === c.level ? `<section class="card level-up-panel"><div class="section-title">Finish level ${c.level}</div><p class="mini">Your level and hit points are saved. Complete the choices below; you can return later.</p><div class="level-up-tasks">${levelUpTasks.map(task=>`<button type="button" class="level-up-task" data-action="level-up-jump" data-target="${task.section}"><span>${task.done?"✓":task.required?"○":"→"} ${escapeHtml(task.label)}</span><small>${task.done?"Done":task.required?"Choose":"Review"}</small></button>`).join("") || `<span>All new class choices are recorded.</span>`}</div><button class="button button-primary" data-action="finish-level-up">Finish level-up</button></section>` : "";
   const proficiencyChoicesMarkup = renderProficiencyChoiceFields(proficiencyChoiceOwners(d.classObj, bg, d.speciesObj, d.featObjs), c);
   const bgFeatRefs = backgroundFeatNames(bg);
   const availableOriginFeats = bgFeatRefs.length ? feats.filter(f => bgFeatRefs.some(ref => String(ref.name || ref).toLowerCase() === f.name.toLowerCase() && (!ref.source || String(ref.source).toLowerCase() === String(f.source).toLowerCase()))) : [];
@@ -5710,6 +5782,7 @@ async function renderBuilder(app) {
 
   app.innerHTML = `
     ${pageHeader("CHARACTER BUILDER", `Build ${c.name || "your character"}`, `All 2024 official player-facing sources currently discovered in 5etools are available.`, `<button class="button" data-action="sheet">Character</button><button class="button button-primary" data-action="save-builder">Save</button>`)}
+    ${pendingLevelUpMarkup}
     <section class="card"><div class="section-title">Identity</div><div class="form-grid three">
       <label class="field">Character name<input type="text" data-builder="name" value="${escapeHtml(c.name)}"></label>
       <label class="field">Player<input type="text" data-builder="player" value="${escapeHtml(c.player)}"></label>
@@ -6093,6 +6166,20 @@ function bindEvents() {
       try {
         if (action === "sync") return syncData(true);
         if (action === "builder") { state.view = "builder"; return render(); }
+        if (action === "level-up") return openLevelUp();
+        if (action === "finish-level-up") {
+          await deriveCharacter();
+          const unresolved = levelUpChecklist(state.character,state.lastDerived).filter(task=>task.required&&!task.done);
+          if (unresolved.length) { showToast(`Choose ${unresolved[0].label.toLowerCase()} before finishing.`); return; }
+          state.character.pendingLevelUp = null;
+          await saveCharacter(); state.view = "sheet"; return render();
+        }
+        if (action === "level-up-jump") {
+          if (el.dataset.target === "spells") { state.view="spells"; return render(); }
+          const heading = el.dataset.target === "identity" ? "Identity" : "Class feature choices";
+          const target = [...document.querySelectorAll(".card")].find(card => card.querySelector(":scope > .section-title, :scope > .section-head .section-title")?.textContent === heading);
+          target?.scrollIntoView({behavior:"smooth",block:"start"}); return;
+        }
         if (action === "sheet") { state.view = "sheet"; return render(); }
         if (action === "sheet-page") { state.sheetPage = Number(el.dataset.page || 1); return render(); }
         if (action === "spells") { state.view = "spells"; state.spellPickerTab = "prepared"; return render(); }
@@ -6562,6 +6649,34 @@ function openResourceManager() {
 }
 
 function renderResourceManager() { closeModal(); openResourceManager(); }
+
+async function openLevelUp() {
+  const d=await deriveCharacter();
+  const c=state.character;
+  const preview=levelUpPreview(c,d);
+  if (!preview) { showToast(c.level>=20?"Level 20 is the maximum.":"Choose a class before leveling up."); return; }
+  const features=[...preview.newClassFeatures,...preview.newSubclassFeatures];
+  const slots=preview.slotsAfter.map((count,index)=>{const before=preview.slotsBefore[index]||0;return count>before?`Level ${index+1} slots: ${before} → ${count}`:"";}).filter(Boolean);
+  const changes=[
+    ...(preview.proficiencyAfter>preview.proficiencyBefore?[`Proficiency Bonus: +${preview.proficiencyBefore} → +${preview.proficiencyAfter}`]:[]),
+    ...slots,
+    ...(preview.cantripsAfter>preview.cantripsBefore?[`Cantrips: ${preview.cantripsBefore} → ${preview.cantripsAfter}`]:[]),
+    ...(preview.preparedAfter>preview.preparedBefore?[`Prepared spells: ${preview.preparedBefore} → ${preview.preparedAfter}`]:[]),
+    ...(preview.needsSubclass?["Choose a subclass"]:[]),
+    ...preview.newFeatSlots.map(x=>`New ${x.name} choice`),
+    ...preview.newOptionalSlots.map(x=>`New ${x.name} choice`),
+  ];
+  openModal(`Level ${preview.from} → ${preview.to}`,`<p class="mini">Advance as a ${escapeHtml(d.classObj.name)}. ${Number(c.xp||0)<preview.xpTarget?`XP ${Number(c.xp||0).toLocaleString()} / ${preview.xpTarget.toLocaleString()}; you can also advance by milestone.`:"XP threshold reached."}</p><div class="section-title">New at level ${preview.to}</div><ul class="level-up-preview">${[...features.map(f=>f.name),...changes].map(item=>`<li>${escapeHtml(item)}</li>`).join("") || `<li>One Hit Die and your normal class progression.</li>`}</ul><div class="section-title">Hit points</div><p>Gain one d${preview.die} Hit Die. Add your Constitution modifier (${formatMod(preview.conMod)}); the minimum gain is 1 HP.</p><label class="attack-visibility-row"><input type="radio" name="level-up-hp" value="fixed" checked><span>Fixed value: +${preview.fixedHp} HP</span></label><label class="attack-visibility-row"><input type="radio" name="level-up-hp" value="rolled"><span>Roll d${preview.die} and enter the result</span></label><label class="field">Die result<input type="number" id="levelUpRoll" min="1" max="${preview.die}" step="1" placeholder="1–${preview.die}" disabled></label><p class="mini">Your existing damage and spent resources remain. Choices unlocked by this level appear in the builder after you advance.</p><button type="button" class="button button-primary" id="confirmLevelUp">Advance to level ${preview.to}</button>`);
+  document.querySelectorAll('[name="level-up-hp"]').forEach(input=>input.onchange=()=>{const roll=document.querySelector("#levelUpRoll");if(roll)roll.disabled=document.querySelector('[name="level-up-hp"]:checked')?.value!=="rolled";});
+  document.querySelector("#confirmLevelUp").onclick=async()=>{
+    try {
+      const mode=document.querySelector('[name="level-up-hp"]:checked')?.value||"fixed";
+      const roll=document.querySelector("#levelUpRoll")?.value;
+      applyLevelUp(c,d,preview,{mode,roll:roll===""?null:roll});
+      await saveCharacter(); closeModal(); state.view="builder"; await render();
+    } catch(error) { showToast(error.message); }
+  };
+}
 
 async function openAttackManager() {
   const attacks = state.character.attacks;

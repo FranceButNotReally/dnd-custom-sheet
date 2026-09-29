@@ -82,6 +82,6 @@ test('character migration preserves schema and creates required choice container
   }
   assert.ok(Array.isArray(c.standardLanguages));
   assert.equal(c.standardLanguages.length, 2);
-  assert.equal(c.schema, 21);
+  assert.equal(c.schema, 23);
   assert.deepEqual(JSON.parse(JSON.stringify(c.inventory[0])), {name:'Winged Boots',effectActive:true,chargesCurrent:3});
 });

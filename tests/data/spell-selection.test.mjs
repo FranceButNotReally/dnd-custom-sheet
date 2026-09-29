@@ -268,7 +268,7 @@ test('a species-granted Magic Initiate feat carries its spell choices into the s
 
 test('current schema migration moves legacy known spells into prepared spells once',()=>{
   const migrated=a.migrateCharacter({schema:16,knownSpells:['Cure Wounds|XPHB'],preparedSpells:['Bless|XPHB']});
-  assert.equal(migrated.schema,21);
+  assert.equal(migrated.schema,23);
   assert.deepEqual([...migrated.preparedSpells],['Bless|XPHB','Cure Wounds|XPHB']);
   assert.deepEqual([...migrated.knownSpells],[]);
 });
