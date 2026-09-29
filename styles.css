@@ -946,3 +946,6 @@ body { min-height: 100vh; }
 .note-dialog-content .rules-ref-link { font-weight:700; }
 .feat-choice-row .field select, .choice-card .field select { min-height:42px; }
 .choice-warning { display:block; margin-top:4px; font-size:.68rem; line-height:1.25; color:#7b3f22; font-weight:700; }
+.level-up-task-detail{display:block;font-style:normal;font-size:.85em;opacity:.85;margin-top:4px;line-height:1.4}
+
+.choice-incomplete{outline:2px solid var(--accent,#b65c31);outline-offset:3px;border-radius:6px}.choice-required{display:block;color:var(--accent,#b65c31);font-weight:700;font-size:.75rem;margin-top:4px}

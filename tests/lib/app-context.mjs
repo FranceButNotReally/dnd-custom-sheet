@@ -28,7 +28,7 @@ function makeDocumentStub() {
  * This deliberately exposes the real functions rather than copied test versions,
  * so a renamed or removed implementation makes the test harness fail.
  */
-export function loadAppTestContext() {
+export function loadAppTestContext({ storage = null } = {}) {
   const source = fs.readFileSync(APP_PATH, 'utf8');
   const startupMarker = '\nensureCacheProgressRoot();';
   const cutoff = source.indexOf(startupMarker);
@@ -37,8 +37,8 @@ export function loadAppTestContext() {
   const apiNames = [
     'state', 'ABILITIES', 'ABILITY_NAMES', 'STANDARD_ARRAY', 'STANDARD_ARRAY_BY_CLASS', 'STANDARD_LANGUAGE_NAMES',
     'SKILLS', 'CONDITIONS', 'CONDITION_RULES', 'SPECIAL_SENSES', 'WEAPON_PROPERTY_INFO', 'WEAPON_MASTERY_INFO', 'SPELL_COMPONENT_INFO',
-    'emptyCharacter', 'migrateCharacter', 'abilityMod', 'formatMod', 'proficiencyBonus', 'selectedFeatObjects', 'featInstanceKey', 'featSpecKey', 'isAbilityScoreImprovementFeat',
-    'classSpellSlots', 'classCantrips', 'classPrepared', 'classKnownSpells', 'spellcastingSource', 'normalizeSpellRef', 'fixedAdditionalSpellRefs', 'hitDieFaces', 'defaultMaxHp', 'levelUpPreview', 'applyLevelUp', 'levelUpChecklist',
+    'emptyCharacter', 'migrateCharacter', 'deriveCharacter', 'saveCharacter', 'abilityMod', 'formatMod', 'proficiencyBonus', 'selectedFeatObjects', 'featInstanceKey', 'featSpecKey', 'isAbilityScoreImprovementFeat',
+    'classSpellSlots', 'classCantrips', 'classPrepared', 'classKnownSpells', 'spellcastingSource', 'normalizeSpellRef', 'fixedAdditionalSpellRefs', 'hitDieFaces', 'defaultMaxHp', 'levelUpPreview', 'applyLevelUp', 'levelUpChecklist', 'characterChoiceChecklist', 'creationChecklist', 'activeChoiceChecklist', 'completeCharacterSetup', 'unfinishedCharacter', 'proficiencyChoiceOwners', 'equipmentOriginRecord', 'normalizeStartingEquipmentGroups', 'applyStartingEquipment',
     'skillChoiceSpec', 'optionalFeatureProgression', 'progressionFeatSlots', 'availableOptionalFeatures', 'optionalFeatureIsRepeatable', 'optionalFeaturePrerequisiteMet', 'reconcileOptionalFeatureChoices', 'selectedOptionalFeatureObjects', 'optionalFeatureFeatChoiceSpecs', 'reconcileFeatureFeatChoices', 'featPrerequisiteMet', 'featCanSelectForSlot', 'getSubclassUnlockLevel', 'getClassFeatures', 'getSubclassFeatures', 'classFeatureChoiceSpecs', 'reconcileClassFeatureChoices', 'selectedClassFeatureOptionObjects', 'preSubclassSavingThrowProficiencies', 'subclassFeatureChoiceSpecs', 'selectedClassFeatureChoiceOption', 'selectedAdditionalSpellGroupName', 'resolveClassFeatureRef', 'classFeatureProficiencyChoiceSpecs', 'reconcileClassProficiencyChoices', 'applyClassProficiencyChoices',
     'featAbilitySpecs', 'featSaveSpecs', 'featSkillSpecs', 'featToolSpecs', 'featMixedChoiceSpecs', 'featExpertiseSpecs',
     'featAdditionalSpellChoiceSpecs', 'parseSpellChoiceFilter', 'fixedSpellRefsInAdditionalGroup', 'spellMatchesChoiceFilter', 'featSpellChoiceOptions', 'activeFeatSpellPlan', 'featGrantedSpellRefs', 'reconcileFeatSpellSelection', 'classFeatureSpellChoiceSpecs', 'optionalFeatureSpellChoiceSpecs', 'featureSpellChoiceOptions', 'reconcileFeatureSpellChoices', 'featureGrantedSpellRefs', 'featDamageChoiceSpecs', 'mixedChoiceOptions', 'skilledChoiceAvailable', 'reconcileSkilledChoices', 'speciesChoiceSpecs', 'reconcileSpeciesChoices', 'speciesGrantedFeatRefs', 'speciesSpellChoiceSpecs', 'reconcileSpeciesSpellChoices', 'speciesGrantedSpellRefs',
@@ -73,10 +73,12 @@ export function loadAppTestContext() {
     fetch: async () => { throw new Error('fetch disabled in unit-test context'); },
     atob: globalThis.atob,
     btoa: globalThis.btoa,
+    testStorage: storage,
   };
   vm.createContext(sandbox);
   const expose = `\n;globalThis.__TEST_API__ = {${apiNames.map(name => `${name}: typeof ${name} !== 'undefined' ? ${name} : undefined`).join(',')}};`;
-  vm.runInContext(runnable + expose, sandbox, { filename: APP_PATH });
+  const persistence = storage ? `\n idbPut = async (store,key,value) => testStorage.set(store + ':' + key, JSON.parse(JSON.stringify(value)));\n idbGet = async (store,key) => testStorage.get(store + ':' + key) ?? null;` : '';
+  vm.runInContext(runnable + persistence + expose, sandbox, { filename: APP_PATH });
   for (const [name, value] of Object.entries(sandbox.__TEST_API__)) {
     if (value === undefined) throw new Error(`Test API function/constant missing: ${name}`);
   }

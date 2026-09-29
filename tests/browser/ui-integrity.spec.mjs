@@ -36,6 +36,9 @@ async function openReadySheet(page) {
   await expect(page.locator('#dataBadge')).toContainText(LOCK.version, { timeout: 60_000 });
   await expect(page.locator('#cacheProgressRoot')).toBeHidden({ timeout: 60_000 });
   await expect(page.locator('.sheet-stage')).toBeVisible();
+  await updateCurrentCharacter(page,{creationPending:false});
+  await page.reload();
+  await expect(page.locator('.sheet-stage')).toBeVisible();
 }
 
 async function currentCharacter(page) {
@@ -225,7 +228,7 @@ test('guided level-up keeps HP rolls, damage, and pending subclass choices throu
   await updateCurrentCharacter(page, {
     name:'Level-up Sentinel', level:1, class:{name:'Fighter',source:'XPHB'}, subclass:null,
     baseStats:{str:10,dex:10,con:14,int:10,wis:10,cha:10},
-    hpCurrent:4, hpAuto:false, hpMaxOverride:null, hpLevelRolls:{}, pendingLevelUp:null,
+    hpCurrent:4, hpAuto:false, hpMaxOverride:null, hpLevelRolls:{}, pendingLevelUp:null, weaponMasteries:['Longsword|XPHB','Dagger|XPHB','Shortsword|XPHB'], progressionFeats:{'feat:Fighting Style|FS|1':{name:'Archery',source:'XPHB'}},
   });
   await page.reload();
   await page.locator('[data-action="level-up"]').click();
@@ -234,6 +237,7 @@ test('guided level-up keeps HP rolls, damage, and pending subclass choices throu
   await page.locator('#levelUpRoll').fill('4');
   await page.locator('#confirmLevelUp').click();
   await expect(page.locator('.level-up-panel')).toContainText('Finish level 2');
+  await expect(page.locator('[data-builder="level"]')).toHaveAttribute('readonly','');
   let saved=await currentCharacter(page);
   expect(saved.level).toBe(2);
   expect(saved.hpLevelRolls['2']).toBe(4);
@@ -755,4 +759,129 @@ test.describe('touch interactions', () => {
     const saved = await currentCharacter(page);
     expect(saved.conditions).not.toContain('Prone');
   });
+});
+
+test('level-up ASI selection scrolls and focuses its ability choices before finishing', async ({page}) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page,{level:3,class:{name:'Fighter',source:'XPHB'},subclass:{name:'Champion',source:'XPHB'},baseStats:{str:14,dex:14,con:14,int:10,wis:10,cha:10},progressionFeats:{'feat:Fighting Style|FS|1':{name:'Archery',source:'XPHB'}},pendingLevelUp:null,weaponMasteries:['Longsword|XPHB','Dagger|XPHB','Shortsword|XPHB']});
+  await page.reload();
+  await page.locator('[data-action="level-up"]').click();
+  await page.locator('#confirmLevelUp').click();
+  const slot=page.locator('[data-progression-feat]').filter({has:page.locator('option[value="Ability Score Improvement|XPHB"]')}).last();
+  await slot.selectOption('Ability Score Improvement|XPHB');
+  const pattern=page.locator('[data-feat-ability-mode]').last();
+  await expect(pattern).toBeFocused();
+  await expect(pattern).toBeInViewport();
+  await page.locator('.level-up-panel [data-action="finish-level-up"]').click();
+  await expect(page.locator('.level-up-panel')).toBeVisible();
+  await page.locator('.level-up-task',{hasText:'Choose your ability increase pattern'}).click();
+  await expect(pattern).toBeFocused();
+  await pattern.selectOption('plus2');
+  const increase=page.locator('[data-feat-ability]').last();
+  await expect(increase).toBeFocused();
+  await expect(increase).toBeInViewport();
+  await increase.selectOption('str');
+  await page.locator('.level-up-panel [data-action="finish-level-up"]').click();
+  await expect(page.locator('.level-up-panel')).toBeVisible();
+  await page.locator('.level-up-task',{hasText:'Choose 4 weapon masteries'}).click();
+  await expect(page.locator('[data-weapon-mastery-select]')).toBeFocused();
+  await page.locator('[data-weapon-mastery-select]').selectOption('Greatsword|XPHB');
+  await page.locator('.level-up-panel [data-action="finish-level-up"]').click();
+  await expect(page.locator('.sheet-brandline')).toBeVisible();
+  expect((await currentCharacter(page)).pendingLevelUp).toBeNull();
+});
+
+test('Wizard level-up explains spellbook additions and opens the correct spell tab', async ({page}) => {
+  await openReadySheet(page);
+  await updateCurrentCharacter(page,{level:1,class:{name:'Wizard',source:'XPHB'},subclass:null,spellbook:['Shield|XPHB'],preparedSpells:[],cantrips:[],pendingLevelUp:null});
+  await page.reload();
+  await page.locator('[data-action="level-up"]').click();
+  await expect(page.getByRole('dialog')).toContainText('Add 2 new Wizard spells');
+  await page.locator('#confirmLevelUp').click();
+  await page.locator('.level-up-task',{hasText:'Add 2 Wizard spells'}).click();
+  await expect(page.getByRole('button',{name:/^Spellbook/})).toHaveClass(/active/);
+  await expect(page.locator('.level-up-spell-guidance')).toContainText('Savant spells are additional');
+  for(const name of ['Magic Missile','Detect Magic']) {
+    await page.locator('#spellSearch').fill(name);
+    await page.locator(`[data-spell-toggle="${name}|XPHB"]`).check();
+    await expect.poll(async()=> (await currentCharacter(page)).spellbook).toContain(`${name}|XPHB`);
+  }
+  await page.getByRole('button',{name:'Back to level-up choices'}).click();
+  await expect(page.locator('.level-up-task',{hasText:'Add 2 Wizard spells'})).toContainText('Done');
+  await page.locator('.level-up-task',{hasText:'Review prepared spells'}).click();
+  await expect(page.getByRole('button',{name:/^Prepared/})).toHaveClass(/active/);
+  await page.reload();
+  const saved=await currentCharacter(page);
+  expect(saved.pendingLevelUp.spellbookBefore).toEqual(['Shield|XPHB']);
+  expect(saved.preparedSpells).toEqual([]);
+});
+
+test('unfinished creation highlights choices, blocks finishing, and warns before leaving tabs',async({page})=>{
+  await openReadySheet(page);
+  await updateCurrentCharacter(page,{creationPending:true,class:null,background:null,species:null,standardLanguages:[]});
+  await page.reload();
+  page.once('dialog',dialog=>dialog.accept());
+  await page.getByRole('button',{name:'Builder',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Finish creation',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Finish creation',exact:true}).click();
+  const species=page.locator('[data-builder="species"]');
+  await expect(species).toHaveAttribute('aria-invalid','true');
+  await expect(species).toBeFocused();
+  await expect(page.locator('.level-up-task',{hasText:'Choose a background'})).toBeVisible();
+  for(const view of ['sheet','spells','equipment','data']) {
+    const dialog=page.waitForEvent('dialog');
+    const click=page.locator(`.tab[data-view="${view}"]`).click();
+    const prompt=await dialog;
+    expect(prompt.message()).toContain('unfinished');
+    await prompt.dismiss();await click;
+    await expect(page.locator('[data-action="finish-creation"]')).toBeVisible();
+  }
+  const dialog=page.waitForEvent('dialog');
+  const click=page.locator('.tab[data-view="equipment"]').click();
+  await (await dialog).accept();await click;
+  await expect(page.locator('[data-action="finish-creation"]')).toHaveCount(0);
+  await page.reload();
+  expect((await currentCharacter(page)).creationPending).toBe(true);
+  page.once('dialog',dialog=>dialog.accept());
+  await page.getByRole('button',{name:'Builder',exact:true}).click();
+  await expect(species).toHaveAttribute('aria-invalid','true');
+});
+
+test('origin feat selection leads to its nested spell choices and highlights unanswered picks',async({page})=>{
+  await openReadySheet(page);
+  await updateCurrentCharacter(page,{creationPending:true,species:{name:'Orc',source:'XPHB'},background:{name:'Acolyte',source:'XPHB'},class:{name:'Cleric',source:'XPHB'},feat:null});
+  await page.reload();
+  page.once('dialog',dialog=>dialog.accept());
+  await page.getByRole('button',{name:'Builder',exact:true}).click();
+  await page.locator('[data-builder="feat"]').selectOption('Magic Initiate|XPHB');
+  await expect(page.locator('[data-feat-spell-list]').first()).toBeFocused();
+  await expect(page.locator('[data-feat-spell-list]').first()).toBeInViewport();
+  await page.locator('[data-feat-spell-list]').first().selectOption({label:'Cleric Spells'});
+  const ability=page.locator('[data-feat-spell-ability]').first();
+  await expect(ability).toHaveAttribute('aria-invalid','true');
+  await expect(page.locator('[data-feat-spell-pick]')).toHaveCount(3);
+  await expect(page.locator('[data-feat-spell-pick]').first()).toHaveAttribute('aria-invalid','true');
+  await page.locator('[data-feat-spell-pick]').first().selectOption('Sacred Flame|XPHB');
+  await expect(page.locator('[data-feat-spell-pick]').first()).not.toHaveAttribute('aria-invalid','true');
+  await expect(page.locator('[data-feat-spell-pick]').nth(1)).toHaveAttribute('aria-invalid','true');
+  await page.getByRole('button',{name:'Finish creation',exact:true}).click();
+  expect((await currentCharacter(page)).creationPending).toBe(true);
+  await page.locator('.level-up-task',{hasText:'Magic Initiate spellcasting ability'}).click();
+  await expect(ability).toBeFocused();
+  await expect(ability).toBeInViewport();
+});
+
+test('unfinished level-up warns on tab navigation and preserves its completion gate after reload',async({page})=>{
+  await openReadySheet(page);
+  await updateCurrentCharacter(page,{level:4,class:{name:'Fighter',source:'XPHB'},subclass:{name:'Champion',source:'XPHB'},pendingLevelUp:{from:3,to:4},progressionFeats:{}});
+  await page.reload();
+  await page.getByRole('button',{name:'Finish level-up',exact:true}).click();
+  await page.locator('.level-up-panel [data-action="finish-level-up"]').click();
+  await expect(page.locator('.level-up-panel')).toBeVisible();
+  const dialog=page.waitForEvent('dialog');
+  const click=page.locator('.tab[data-view="spells"]').click();
+  await (await dialog).dismiss();await click;
+  await expect(page.locator('.level-up-panel')).toBeVisible();
+  await page.reload();
+  expect((await currentCharacter(page)).pendingLevelUp.to).toBe(4);
 });

@@ -142,6 +142,7 @@ let dbPromise;
 function emptyCharacter() {
   return {
     schema: 23,
+    creationPending: true,
     id: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
     name: "New Character",
     player: "",
@@ -235,9 +236,11 @@ function migrateCharacter(raw) {
   if (!raw || typeof raw !== "object") return base;
   const c = { ...base, ...raw };
   c.schema = 23;
+  // Older characters remain usable; only explicitly saved drafts need completion.
+  c.creationPending = raw.creationPending === true;
   c.hpLevelRolls = Object.fromEntries(Object.entries(raw.hpLevelRolls || {}).filter(([level,roll]) => Number.isInteger(Number(level)) && Number(level) >= 2 && Number(level) <= 20 && Number.isInteger(Number(roll)) && Number(roll) >= 1 && Number(roll) <= 20));
   c.pendingLevelUp = raw.pendingLevelUp && Number(raw.pendingLevelUp.to) === Number(c.level) && Number(raw.pendingLevelUp.from) === Number(c.level) - 1
-    ? { from:Number(raw.pendingLevelUp.from), to:Number(raw.pendingLevelUp.to) } : null;
+    ? { from:Number(raw.pendingLevelUp.from), to:Number(raw.pendingLevelUp.to), ...(Number.isFinite(raw.pendingLevelUp.lastMaxHp) ? {lastMaxHp:Math.max(1,raw.pendingLevelUp.lastMaxHp)} : {}), ...(Array.isArray(raw.pendingLevelUp.spellbookBefore) ? {spellbookBefore:dedupeSpellRefs(raw.pendingLevelUp.spellbookBefore)} : {}) } : null;
   c.baseStats = { ...base.baseStats, ...(raw.baseStats || raw.stats || {}) };
   c.xp = Math.max(0, Number(raw.xp || 0));
   c.manualAbilityBonuses = { ...base.manualAbilityBonuses, ...(raw.manualAbilityBonuses || {}) };
@@ -1073,7 +1076,7 @@ function parseFeatureRef(ref) {
 function getClassFeatures(file, classObj, level) {
   const all = file?.classFeature || [];
   return (classObj?.classFeatures || []).map(parseFeatureRef).filter(Boolean).map(ref => {
-    const matches = all.filter(f => f.name === ref.name && f.className === classObj.name && Number(f.level) === ref.level && isOfficial2024Entity(f));
+    const matches = all.filter(f => textNorm(f.name) === textNorm(ref.name) && f.className === classObj.name && (!f.classSource || f.classSource === ref.classSource) && Number(f.level) === ref.level && isOfficial2024Entity(f));
     return matches.find(f => f.source === ref.source) || matches.find(f => f.source === DATA_SOURCE) || matches.find(f => f.edition === "one") || matches[0];
   }).filter(f => f && f.level <= level && isOfficial2024Entity(f));
 }
@@ -1095,7 +1098,8 @@ function resolveClassFeatureRef(file, ref) {
   if (!parsed) return null;
   const all = file?.classFeature || [];
   const matches = all.filter(f =>
-    f.name === parsed.name &&
+    textNorm(f.name) === textNorm(parsed.name) &&
+    (!f.classSource || f.classSource === parsed.classSource) &&
     f.className === parsed.className &&
     Number(f.level) === Number(parsed.level) &&
     isOfficial2024Entity(f)
@@ -2998,7 +3002,7 @@ function fixedAdditionalSpellRefs(entity, level, kind, selectedGroupName = null)
   return out;
 }
 
-function classFeatureSpellChoiceSpecs(classObj, features, level) {
+function classFeatureSpellChoiceSpecs(classObj, features, level, c = state.character) {
   const specs = [];
   const maxLevel = (() => {
     const slots = classSpellSlots(classObj, level);
@@ -3008,6 +3012,15 @@ function classFeatureSpellChoiceSpecs(classObj, features, level) {
   for (const feature of features || []) {
     const name = textNorm(feature?.name);
     const key = `${classObj?.name || "Class"}|${classObj?.source || DATA_SOURCE}|feature-spells|${feature.name}|${feature.level}`;
+    if (textNorm(classObj?.name)==="warlock" && name==="mysticarcanum") {
+      const spellLevel=({11:6,13:7,15:8,17:9})[feature.level];
+      if (spellLevel) specs.push({key,name:feature.name,level:Number(feature.level),choices:[{key:`${key}|arcanum`,count:1,grant:"prepared",label:`Mystic Arcanum level ${spellLevel} spell`,filter:{levels:[spellLevel],classes:["Warlock"],schools:[],ritual:false}}]});
+    }
+    if (textNorm(classObj?.name)==="wizard" && ["spellmastery","signaturespells"].includes(name)) {
+      const candidateRefs=dedupeSpellRefs([...(c?.spellbook || []),...featureGrantedSpellRefs(c || {},specs,"spellbook")]);
+      const choices=name==="spellmastery" ? [1,2].map(spellLevel=>({key:`${key}|mastery-${spellLevel}`,count:1,grant:"prepared",label:`Spell Mastery level ${spellLevel} spell (at will)`,candidateRefs,requireAction:true,filter:{levels:[spellLevel],classes:["Wizard"],schools:[],ritual:false}})) : [{key:`${key}|signature`,count:2,grant:"prepared",label:"Signature Spells level 3 spell",candidateRefs,filter:{levels:[3],classes:["Wizard"],schools:[],ritual:false}}];
+      specs.push({key,name:feature.name,level:Number(feature.level),choices});
+    }
     if (name === "magicaldiscoveries" && maxLevel > 0) {
       specs.push({
         key, name:feature.name, level:Number(feature.level || 0),
@@ -3016,10 +3029,10 @@ function classFeatureSpellChoiceSpecs(classObj, features, level) {
     }
     const school = ({ abjurationsavant:"A", divinationsavant:"D", evocationsavant:"V", illusionsavant:"I" })[name];
     if (school && maxLevel >= 2) {
-      const choices = [{ key:`${key}|initial`, count:2, grant:"spellbook", label:`${feature.name} spell`, filter:{ levels:[0,1,2], classes:["Wizard"], schools:[school], ritual:false } }];
+      const choices = [{ key:`${key}|initial`, count:2, grant:"spellbook", label:`${feature.name} spell`, excludedRefs:dedupeSpellRefs(c?.spellbook), filter:{ levels:[1,2], classes:["Wizard"], schools:[school], ritual:false } }];
       for (let spellLevel = 3; spellLevel <= maxLevel; spellLevel++) choices.push({
-        key:`${key}|slot-${spellLevel}`, count:1, grant:"spellbook", label:`${feature.name} spell (slot level ${spellLevel})`,
-        filter:{ levels:Array.from({length:spellLevel + 1}, (_, i) => i), classes:["Wizard"], schools:[school], ritual:false },
+        key:`${key}|slot-${spellLevel}`, count:1, grant:"spellbook", label:`${feature.name} spell (slot level ${spellLevel})`, excludedRefs:dedupeSpellRefs(c?.spellbook),
+        filter:{ levels:Array.from({length:spellLevel}, (_, i) => i+1), classes:["Wizard"], schools:[school], ritual:false },
       });
       specs.push({ key, name:feature.name, level:Number(feature.level || 0), choices });
     }
@@ -3083,6 +3096,7 @@ function featureSpellChoiceOptions(choice, spells = getLoadedSpells(), lookup = 
     const ref = `${spell.name}|${spell.source}`.toLowerCase();
     if (candidates && !candidates.has(ref)) return false;
     if (excluded.has(ref)) return false;
+    if (choice?.requireAction && !spell.time?.some(time=>time.number===1&&time.unit==="action")) return false;
     if (choice?.requireDamage && !(Array.isArray(spell.damageInflict) && spell.damageInflict.length)) return false;
     if (choice?.requireAttack && !(Array.isArray(spell.spellAttack) && spell.spellAttack.length)) return false;
     if (choice?.requireRange10) {
@@ -3191,6 +3205,7 @@ function levelUpPreview(c, d) {
     cantripsBefore:classCantrips(spellSource,from) || 0,cantripsAfter:classCantrips(spellSource,to) || 0,
     preparedBefore:classPrepared(spellSource,from,d.mods) || 0,preparedAfter:classPrepared(spellSource,to,d.mods) || 0,
     slotsBefore:classSpellSlots(spellSource,from),slotsAfter:classSpellSlots(spellSource,to),
+    spellbookAdded:textNorm(d.classObj.name)==="wizard" ? 2 : 0,
   };
 }
 function applyLevelUp(c,d,preview,hpChoice) {
@@ -3204,27 +3219,121 @@ function applyLevelUp(c,d,preview,hpChoice) {
   else if (c.hpLevelRolls) delete c.hpLevelRolls[preview.to];
   if (c.hpMaxOverride != null) c.hpMaxOverride = Number(c.hpMaxOverride)+gain;
   if (!c.hpAuto && c.hpCurrent != null && Number(c.hpCurrent)>0) c.hpCurrent = Math.min(Number(d.maxHp)+effectiveGain,Number(c.hpCurrent)+effectiveGain);
+  if (textNorm(d.classObj.name)==="warlock") {
+    const before=preview.slotsBefore.findIndex(count=>count>0),after=preview.slotsAfter.findIndex(count=>count>0);
+    if (before>=0 && after>=0 && before!==after) {
+      const spent=countSlotUsed(c,before+1);
+      setSlotUsed(c,before+1,0);
+      setSlotUsed(c,after+1,Math.min(spent,preview.slotsAfter[after]));
+    }
+  }
   c.level = preview.to;
-  c.pendingLevelUp = {from:preview.from,to:preview.to};
+  c.pendingLevelUp = {from:preview.from,to:preview.to,lastMaxHp:Number(d.maxHp)+effectiveGain, ...(preview.spellbookAdded ? {spellbookBefore:dedupeSpellRefs(c.spellbook)} : {})};
   return gain;
 }
-function levelUpChecklist(c,d) {
-  const pending = c.pendingLevelUp;
-  if (!pending || Number(pending.to) !== Number(c.level) || !d?.classObj) return [];
-  const tasks = [];
-  const add = (label,done,section,required=true) => tasks.push({label,done:Boolean(done),section,required});
-  if (getSubclassUnlockLevel(d.classObj) === pending.to && !c.subclass) add("Choose a subclass",false,"identity");
-  const oldFeats = new Set(progressionFeatSlots(d.classObj,pending.from,d.subclassObj).map(s=>s.key));
-  for (const spec of d.progressionFeatSlots || []) if (!oldFeats.has(spec.key)) add(`Choose ${spec.name}`,c.progressionFeats?.[spec.key],"class-choices");
-  const oldOptional = new Set(optionalFeatureProgression(d.classObj,pending.from,d.subclassObj).map(s=>s.key));
-  for (const spec of d.optionalFeatureSpecs || []) if (!oldOptional.has(spec.key)) add(`Choose ${spec.name}`,c.optionalFeatureChoices?.[spec.key],"class-choices");
-  for (const spec of d.classFeatureChoiceSpecs || []) if (Number(spec.level) === pending.to) add(`Choose ${spec.name}`,c.classFeatureChoices?.[spec.key],"class-choices");
-  for (const spec of d.classProficiencyChoiceSpecs || []) if (Number(spec.level) === pending.to) add(`Choose ${spec.label}`,c.classProficiencyChoices?.[spec.key],"class-choices");
-  for (const spec of d.featureFeatChoiceSpecs || []) if ((d.optionalFeatureSpecs || []).some(option=>!oldOptional.has(option.key)&&spec.key.startsWith(`${option.key}|`))) add(`Choose ${spec.name} feat`,c.featureFeatChoices?.[spec.key],"class-choices");
-  const prevSpells = classPrepared(d.spellcastingSource,pending.from,d.mods) || 0;
-  const prevCantrips = classCantrips(d.spellcastingSource,pending.from) || 0;
-  if ((d.maxPrepared || 0)>prevSpells || (d.cantrips || 0)>prevCantrips || textNorm(d.classObj.name)==="wizard") add("Review spells and cantrips",false,"spells",false);
+function characterChoiceChecklist(c,d,{creation=false}={}) {
+  const tasks=[];
+  const add=(label,done,section,control,choiceKey,extra={})=>tasks.push({label,done:Boolean(done),section,required:true,control,choiceKey,...extra});
+  if (creation) {
+    for (const key of ["species","background","class"]) add(`Choose a ${key}`,c[key],"identity","data-builder",key);
+    for (let i=0;i<2;i++) add(`Choose standard language ${i+1}`,c.standardLanguages?.[i],"origins","data-standard-language",String(i));
+    const bg=d?.backgroundObj;
+    if (bg) {
+      const spec=backgroundAbilitySpec(bg),ability=c.backgroundAbility||{};
+      const keys=ability.mode==="three"&&spec.supportsThree?["plus1","plus1b","plus1c"]:["plus2","plus1"];
+      for (const key of keys) if ((spec.plus1From||[]).length) add(`Choose background ${key==="plus2"?"+2":"+1"} ability`,ability[key],"origins","data-builder",`bg${key[0].toUpperCase()+key.slice(1)}`);
+      if (backgroundFeatNames(bg).length) add("Choose your origin feat",c.feat,"feat-choices","data-builder","feat");
+    }
+    const skills=skillChoiceSpec(d?.classObj);
+    if (skills.count) add(`Choose ${skills.count} class skills`,new Set((c.classSkillChoices||[]).filter(skill=>skills.from.includes(skill)&&!grantedSkillsFromMap(bg?.skillProficiencies).includes(skill))).size>=skills.count,"class-choices","data-class-skill",skills.from.find(skill=>!(c.classSkillChoices||[]).includes(skill)&&!grantedSkillsFromMap(bg?.skillProficiencies).includes(skill))||skills.from[0]);
+    for (const [kind,obj] of [["class",d?.classObj],["background",bg]]) for (const group of normalizeStartingEquipmentGroups(obj)) add(`Choose ${kind} starting equipment ${group.group}`,equipmentOriginRecord(c,kind).choices[group.group]!=null,"equipment","data-starting-equipment-choice",`${kind}:${group.group}`);
+  }
+  for (const [key,obj] of [["class",d?.classObj],["species",d?.speciesObj],["background",d?.backgroundObj]]) if (c[key]&&!obj) add(`Load rules for your ${key}`,false,"identity","data-builder",key,{detail:"Cached rules are needed to identify and validate all required choices."});
+  if (!d) return tasks;
+  if (d.classObj && c.level>=getSubclassUnlockLevel(d.classObj)) add("Choose a subclass",c.subclass,"identity","data-builder","subclass");
+  for (const [specs,storage,control,label] of [
+    [d.progressionFeatSlots,"progressionFeats","data-progression-feat","feat"],
+    [d.optionalFeatureSpecs,"optionalFeatureChoices","data-optional-feature","feature"],
+    [d.classFeatureChoiceSpecs,"classFeatureChoices","data-class-feature-choice","feature"],
+    [d.classProficiencyChoiceSpecs,"classProficiencyChoices","data-class-proficiency-choice","proficiency"],
+    [d.featureFeatChoiceSpecs,"featureFeatChoices","data-feature-feat","feat"],
+  ]) for (const spec of specs||[]) add(`Choose ${spec.name||spec.label||label}`,c[storage]?.[spec.key],"class-choices",control,spec.key,{detail:spec.timing||""});
+  for (const feat of d.featObjs||[]) {
+    if (isAbilityScoreImprovementFeat(feat)) add("Choose your ability increase pattern",["plus2","split"].includes(c.featAbilityModes?.[featInstanceKey(feat)]),"feat-choices","data-feat-ability-mode",featInstanceKey(feat));
+    for (const [specs,storage,control,label] of [
+      [featAbilitySpecs(feat),"featAbilityChoices","data-feat-ability","ability increase"],
+      [featSaveSpecs(feat),"featSaveChoices","data-feat-save","saving throw proficiency"],
+      [featSkillSpecs(feat),"featSkillChoices","data-feat-skill","skill proficiency"],
+      [featToolSpecs(feat),"featToolChoices","data-feat-tool","tool proficiency"],
+      [featMixedChoiceSpecs(feat),"featMixedChoices","data-feat-mixed","skill, tool, or language"],
+      [featExpertiseSpecs(feat),"featExpertiseChoices","data-feat-expertise","expertise"],
+      [featDamageChoiceSpecs(feat),"featDamageChoices","data-feat-damage","damage type"],
+    ]) for (const spec of specs) if (!spec.fixed&&!spec.linkedAbility&&spec.from?.length) {
+      const key=spec.key||featSpecKey(feat,spec);
+      add(`Choose ${feat.name} ${label}`,c[storage]?.[key],"feat-choices",control,key);
+    }
+    for (const spec of featAdditionalSpellChoiceSpecs(feat,c.level)) {
+      const selected=c.featSpellChoices?.[spec.key]||{};
+      if (spec.groups?.length) add(`Choose ${feat.name} spell list`,selected.list,"feat-choices","data-feat-spell-list",spec.key);
+      if (spec.abilityFrom.length) add(`Choose ${feat.name} spellcasting ability`,selected.ability,"feat-choices","data-feat-spell-ability",spec.key);
+      for (const choice of activeFeatSpellPlan(spec,selected)?.choices||[]) add(`Choose ${choice.count} ${feat.name} ${choice.kind} spell${choice.count===1?"":"s"}`,(selected.picks?.[choice.key]||[]).length>=choice.count,"feat-choices","data-feat-spell-choice",choice.key);
+    }
+  }
+  for (const spec of speciesChoiceSpecs(d.speciesObj)) {
+    add(`Choose ${spec.label||"species trait"}`,c.speciesChoices?.[spec.key]?.value,"origins","data-species-choice",spec.key);
+    if (spec.abilityFrom?.length) add("Choose species spellcasting ability",c.speciesChoices?.[spec.key]?.ability,"origins","data-species-choice-ability",spec.key);
+  }
+  for (const spec of d.speciesSpellChoiceSpecs||[]) add(`Choose ${spec.count} ${spec.label||"species spell"}`,(c.speciesSpellChoices?.[spec.key]||[]).length>=spec.count,"origins","data-species-spell-choice",spec.key);
+  for (const owner of proficiencyChoiceOwners(d.classObj,d.backgroundObj,d.speciesObj,d.featObjs)) for (const spec of proficiencyOwnerChoiceSpecs(owner)) for (let i=1;i<=spec.count;i++) {
+    const slot=`${spec.key}:${i}`;
+    add(`Choose ${owner.obj.name} ${spec.kind} ${i}`,c[spec.kind==="language"?"languageChoiceSlots":"toolChoiceSlots"]?.[slot],"origins","data-proficiency-choice-slot",slot);
+  }
+  for (const spec of d.featureSpellChoiceSpecs||[]) for (const choice of spec.choices||[]) add(`Choose ${choice.count} ${choice.label||spec.name}`,(c.featureSpellChoices?.[spec.key]?.picks?.[choice.key]||[]).length>=choice.count,"class-choices","data-feature-spell-choice",choice.key);
+  if (d.weaponMasteryCount) add(`Choose ${d.weaponMasteryCount} weapon masteries`,selectedWeaponMasteryRefs(c).length>=d.weaponMasteryCount,"class-choices","data-weapon-mastery-select","");
+  if (d.cantrips) add(`Choose ${d.cantrips} class cantrips`,c.cantrips.length>=d.cantrips,"spells",null,null,{spellTab:"cantrips",detail:"Bonus cantrips from species, feats, and features are separate choices."});
+  if (creation&&usesWizardSpellbook(d)) { const count=6+2*(c.level-1); add(`Choose ${count} Wizard spells for your spellbook`,c.spellbook.length>=count,"spells",null,null,{spellTab:"spellbook",detail:"Start with six level 1 Wizard spells, plus two for each later Wizard level. Spells granted by a feat, lineage, or Savant are additional."}); }
+  if (d.maxPrepared) add(`Review prepared spells (${c.preparedSpells.length}/${d.maxPrepared})`,c.preparedSpells.length>=d.maxPrepared,"spells",null,null,{spellTab:"prepared",detail:usesWizardSpellbook(d)?"Choose prepared spells from your spellbook until your class table count is filled. Always-prepared spells are additional.":"Choose eligible spells until your class table count is filled. Always-prepared spells are additional."});
   return tasks;
+}
+function levelUpChecklist(c,d) {
+  const pending=c.pendingLevelUp;
+  if (!pending||Number(pending.to)!==Number(c.level)) return [];
+  const tasks=characterChoiceChecklist(c,d);
+  if (textNorm(d?.classObj?.name)==="wizard") {
+    const before=new Set((pending.spellbookBefore||[]).map(ref=>ref.toLowerCase()));
+    const added=dedupeSpellRefs(c.spellbook).filter(ref=>!before.has(ref.toLowerCase())).length;
+    tasks.push({label:"Add 2 Wizard spells to your spellbook",done:Array.isArray(pending.spellbookBefore)&&added>=2,section:"spells",required:true,spellTab:"spellbook",detail:"Choose two new Wizard spells of level 1 or higher that you have spell slots for. These are free; Savant spells are additional."});
+  }
+  return tasks;
+}
+function creationChecklist(c,d) { return c.creationPending?characterChoiceChecklist(c,d,{creation:true}):[]; }
+function activeChoiceChecklist(c=state.character,d=state.lastDerived) { return c.creationPending?creationChecklist(c,d):levelUpChecklist(c,d); }
+function completeCharacterSetup(c,d) {
+  const unresolved=activeChoiceChecklist(c,d).filter(task=>task.required&&!task.done);
+  if (unresolved.length) return {complete:false,unresolved};
+  c.creationPending=false; c.pendingLevelUp=null;
+  return {complete:true,unresolved:[]};
+}
+function unfinishedCharacter(c=state.character) { return c.creationPending||Boolean(c.pendingLevelUp); }
+async function navigateView(view) {
+  if (view!==state.view && unfinishedCharacter() && !confirm("Character creation or level-up is unfinished. Your draft is saved. Leave this tab and return to finish later?")) return;
+  if (state.view==="builder") await readBuilder();
+  await saveCharacter(); state.view=view; return render();
+}
+function highlightIncompleteChoices() {
+  for (const task of activeChoiceChecklist().filter(task=>!task.done&&task.control)) for (const el of document.querySelectorAll(`[${task.control}]`)) if (el.getAttribute(task.control)===String(task.choiceKey||"")) {
+    if (el.matches("select") && el.value && task.control!=="data-weapon-mastery-select") continue;
+    el.setAttribute("aria-invalid","true");
+    const row=(task.control==="data-class-skill"?el.closest(".skill-grid"):el.closest(".field, .skill-check, .start-equip-group"))||el;
+    row.classList.add("choice-incomplete");
+    if (!row.querySelector(".choice-required")) { const note=document.createElement("small"); note.className="choice-required"; note.textContent="Required choice"; row.appendChild(note); }
+  }
+}
+async function renderAndFocusNewChoices(before) {
+  await render();
+  const old=new Set(before.filter(t=>!t.done).map(t=>`${t.control}:${t.choiceKey}`));
+  const next=activeChoiceChecklist().find(t=>!t.done&&t.control&&!old.has(`${t.control}:${t.choiceKey}`));
+  if (next) focusBuilderChoice(next.control,next.choiceKey);
 }
 function spellSchoolName(code) { return SPELL_SCHOOLS[code] || code || ""; }
 function skillChoiceSpec(classObj) {
@@ -3501,13 +3610,17 @@ function dedupeByName(values) {
   return (values || []).filter(x => { const key=String(x?.name || "").toLowerCase(); if (!key || seen.has(key)) return false; seen.add(key); return true; });
 }
 
+function proficiencyOwnerChoiceSpecs(owner) {
+  return [
+    ...proficiencyChoiceSpecs(owner.obj,"languageProficiencies",owner.key),
+    ...proficiencyChoiceSpecs(owner.obj?.startingProficiencies||{},"languages",`${owner.key}:starting`),
+    // Feat tool picks have instance-aware controls; do not request them twice.
+    ...(!owner.key.startsWith("feat:")?proficiencyChoiceSpecs(owner.obj,"toolProficiencies",owner.key):[]),
+    ...proficiencyChoiceSpecs(owner.obj?.startingProficiencies||{},"tools",`${owner.key}:starting`),
+  ];
+}
 function renderProficiencyChoiceFields(owners, c) {
-  const specs = owners.flatMap(owner => [
-    ...proficiencyChoiceSpecs(owner.obj, "languageProficiencies", owner.key),
-    ...proficiencyChoiceSpecs(owner.obj?.startingProficiencies || {}, "languages", `${owner.key}:starting`),
-    ...proficiencyChoiceSpecs(owner.obj, "toolProficiencies", owner.key),
-    ...proficiencyChoiceSpecs(owner.obj?.startingProficiencies || {}, "tools", `${owner.key}:starting`),
-  ]);
+  const specs = owners.flatMap(proficiencyOwnerChoiceSpecs);
   return specs.map(spec => {
     const values = spec.kind === "language" ? allLanguageOptionsForChoice(spec) : allToolOptionsForChoice(spec);
     const storage = spec.kind === "language" ? (c.languageChoiceSlots || {}) : (c.toolChoiceSlots || {});
@@ -4908,6 +5021,20 @@ function classTableResourceSpecs(classObj, features, d) {
   }
   return out;
 }
+function classSpellResourceSpecs(c,d) {
+  const out=[];
+  for(const spec of d.classFeatureSpellChoiceSpecs || []) {
+    const name=textNorm(spec.name);
+    if(!["mysticarcanum","signaturespells"].includes(name))continue;
+    for(const choice of spec.choices) for(let i=0;i<choice.count;i++) {
+      const ref=c.featureSpellChoices?.[spec.key]?.picks?.[choice.key]?.[i];
+      const spellLevel=choice.filter.levels[0];
+      out.push({id:`feature-spell:${choice.key}:${i}`,name:name==="mysticarcanum"?`Mystic Arcanum (Level ${spellLevel})`:`Signature Spell ${i+1}${ref?` · ${splitRefId(ref).name}`:""}`,max:1,recharge:name==="mysticarcanum"?"long":"both",shortRestore:"all",longRestore:"all",mode:"auto",recoveryNote:`Cast ${ref?splitRefId(ref).name:`the selected level ${spellLevel} spell`} once without a spell slot.`,origin:{type:"classfeature",name:spec.name,source:d.classObj.source}});
+    }
+  }
+  return out;
+}
+
 function reconcileResources(c, specs) {
   const existing = Array.isArray(c.resources) ? c.resources : [];
   const byId = new Map(existing.filter(r => r?.mode === "auto" && r.id).map(r => [r.id, r]));
@@ -4998,13 +5125,14 @@ async function deriveCharacter() {
     d.cantrips = classCantrips(d.spellcastingSource, c.level);
     d.maxPrepared = classPrepared(d.spellcastingSource, c.level, d.mods);
     d.knownSpells = classKnownSpells(d.spellcastingSource, c.level);
-    d.classFeatureSpellChoiceSpecs = classFeatureSpellChoiceSpecs(d.classObj, d.subclassFeatures, c.level);
+    d.classFeatureSpellChoiceSpecs = classFeatureSpellChoiceSpecs(d.classObj, [...d.subclassFeatures,...d.classFeatures], c.level,c);
     d.optionalFeatureSpellChoiceSpecs = optionalFeatureSpellChoiceSpecs(d.optionalFeatureObjects, c, d);
     d.featureSpellChoiceSpecs = [...d.classFeatureSpellChoiceSpecs, ...d.optionalFeatureSpellChoiceSpecs];
     reconcileFeatureSpellChoices(c, d.featureSpellChoiceSpecs);
     d.autoResourceSpecs = [
       ...speciesResourceSpecs(d.speciesObj, c, d),
-      ...featureResourceSpecs(d.classFeatures, d, "classfeature"),
+      ...featureResourceSpecs(d.classFeatures.filter(f=>!["mysticarcanum","signaturespells"].includes(textNorm(f.name))), d, "classfeature"),
+      ...classSpellResourceSpecs(c,d),
       ...classTableResourceSpecs(d.classObj, d.classFeatures, d),
       ...featureResourceSpecs(d.classFeatureOptionObjects, d, "classfeatureoption"),
       ...subclassResourceSpecs(d.subclassObj, d.subclassFeatures, d),
@@ -5185,6 +5313,10 @@ async function deriveCharacter() {
   if (Array.isArray(c.spellSlotsUsed) && d.spellSlots.length) c.spellSlotsUsed = c.spellSlotsUsed.slice(0, d.spellSlots.length).map((used, i) => Math.min(Math.max(0, Number(used || 0)), Number(d.spellSlots[i] || 0)));
   reconcileSpellSelections(c, d);
   c.exhaustion = clamp(Number(c.exhaustion || 0), 0, 6);
+  if (c.pendingLevelUp?.to===c.level && Number.isFinite(c.pendingLevelUp.lastMaxHp)) {
+    if (!c.hpAuto && Number(c.hpCurrent)>0) c.hpCurrent=Math.max(0,Number(c.hpCurrent)+d.maxHp-c.pendingLevelUp.lastMaxHp);
+    c.pendingLevelUp.lastMaxHp=d.maxHp;
+  }
   if (c.hpAuto || c.hpCurrent == null) { c.hpCurrent = d.maxHp; d.currentHp = d.maxHp; c.hpAuto = true; }
   else { d.currentHp = clamp(Number(c.hpCurrent || 0), 0, d.maxHp); }
   if (d.currentHp > d.maxHp && c.hpMaxOverride == null) { d.currentHp = d.maxHp; c.hpCurrent = d.maxHp; }
@@ -5566,6 +5698,7 @@ async function renderSheet(app) {
 
   const pageOne = `<div class="sheet-page">
     <div class="sheet-brandline"><div><span class="sheet-kicker">D&D 2024 · CHARACTER SHEET</span><h1>${escapeHtml(c.name || "Unnamed Character")}</h1><p>${escapeHtml(classLine || "Class not chosen")} · Level ${c.level}</p></div><div class="sheet-page-actions"><button class="sheet-nav ${page===1?"active":""}" data-action="sheet-page" data-page="1">Page 1</button><button class="sheet-nav ${page===2?"active":""}" data-action="sheet-page" data-page="2">Page 2</button>${c.pendingLevelUp?.to === c.level ? `<button class="sheet-nav" data-action="builder">Finish level-up</button>` : c.class && c.level<20 ? `<button class="sheet-nav" data-action="level-up">Level up</button>` : ""}<button class="sheet-nav" data-action="builder">Edit</button><button class="sheet-nav" data-action="character-menu">Characters</button></div></div>
+    ${c.creationPending ? `<div class="level-up-banner">Character creation is unfinished. Return to the builder to complete your choices.</div>` : ""}
     ${c.pendingLevelUp?.to === c.level ? `<div class="level-up-banner">Level ${c.level} is saved. Review your new class choices and spells in the builder before finishing.</div>` : ""}
     <div class="identity-grid">
       <div class="identity-fields"><div class="field-line"><span>Character Name</span><strong>${escapeHtml(c.name || "—")}</strong></div><div class="field-line"><span>Background</span><strong>${escapeHtml(c.background?.name || "—")}</strong></div><div class="field-line"><span>Species</span><strong>${escapeHtml(c.species?.name || "—")}</strong></div><div class="field-line"><span>Player</span><strong>${escapeHtml(c.player || "—")}</strong></div></div>
@@ -5605,13 +5738,14 @@ function countSlotUsed(c, level) { return Math.max(0, Number(c.spellSlotsUsed?.[
 function setSlotUsed(c, level, value) { if (!Array.isArray(c.spellSlotsUsed)) c.spellSlotsUsed = []; while (c.spellSlotsUsed.length < level) c.spellSlotsUsed.push(0); c.spellSlotsUsed[level - 1] = Math.max(0, Number(value)); }
 
 async function renderBuilder(app) {
-  const c = state.character;
+  let c = state.character;
   const races = officialEntries(state.data.races, "race").sort((a,b)=>a.name.localeCompare(b.name) || String(a.source).localeCompare(String(b.source)));
   const backgrounds = officialEntries(state.data.backgrounds, "background").sort((a,b)=>a.name.localeCompare(b.name) || String(a.source).localeCompare(String(b.source)));
   const feats = officialEntries(state.data.feats, "feat").sort((a,b)=>a.name.localeCompare(b.name));
   const classOptions = await getAllClassOptions();
   const bg = findBackground(c.background?.name, c.background?.source || null);
   const d = await deriveCharacter();
+  c = state.character;
   const classChoiceSpecs = d.optionalFeatureSpecs || [];
   const persistentClassChoiceSpecs = d.classFeatureChoiceSpecs || [];
   const persistentClassProficiencySpecs = d.classProficiencyChoiceSpecs || [];
@@ -5632,8 +5766,8 @@ async function renderBuilder(app) {
     uniqueMasteryItems.push(item);
   }
   const bgAbility = backgroundAbilitySpec(bg);
-  const levelUpTasks = levelUpChecklist(c,d);
-  const pendingLevelUpMarkup = c.pendingLevelUp?.to === c.level ? `<section class="card level-up-panel"><div class="section-title">Finish level ${c.level}</div><p class="mini">Your level and hit points are saved. Complete the choices below; you can return later.</p><div class="level-up-tasks">${levelUpTasks.map(task=>`<button type="button" class="level-up-task" data-action="level-up-jump" data-target="${task.section}"><span>${task.done?"✓":task.required?"○":"→"} ${escapeHtml(task.label)}</span><small>${task.done?"Done":task.required?"Choose":"Review"}</small></button>`).join("") || `<span>All new class choices are recorded.</span>`}</div><button class="button button-primary" data-action="finish-level-up">Finish level-up</button></section>` : "";
+  const levelUpTasks = activeChoiceChecklist(c,d);
+  const pendingLevelUpMarkup = (c.creationPending || c.pendingLevelUp?.to === c.level) ? `<section class="card level-up-panel"><div class="section-title">${c.creationPending?"Finish character creation":`Finish level ${c.level}`}</div><p class="mini">Your draft is saved automatically. Complete every required choice below, then finish. You can return later.</p><div class="level-up-tasks">${levelUpTasks.map(task=>`<button type="button" class="level-up-task" data-action="level-up-jump" data-target="${task.section}" data-control="${escapeHtml(task.control || "")}" data-choice-key="${escapeHtml(task.choiceKey || "")}" data-spell-tab-target="${task.spellTab || "prepared"}"><span>${task.done?"✓":task.required?"○":"→"} ${escapeHtml(task.label)}${task.detail?`<em class="level-up-task-detail">${escapeHtml(task.detail)}</em>`:""}</span><small>${task.done?"Done":task.required?"Choose":"Review"}</small></button>`).join("") || `<span>All new class choices are recorded.</span>`}</div><button class="button button-primary" data-action="${c.creationPending?"finish-creation":"finish-level-up"}">${c.creationPending?"Finish creation":"Finish level-up"}</button></section>` : "";
   const proficiencyChoicesMarkup = renderProficiencyChoiceFields(proficiencyChoiceOwners(d.classObj, bg, d.speciesObj, d.featObjs), c);
   const bgFeatRefs = backgroundFeatNames(bg);
   const availableOriginFeats = bgFeatRefs.length ? feats.filter(f => bgFeatRefs.some(ref => String(ref.name || ref).toLowerCase() === f.name.toLowerCase() && (!ref.source || String(ref.source).toLowerCase() === String(f.source).toLowerCase()))) : [];
@@ -5776,7 +5910,7 @@ async function renderBuilder(app) {
     const groups = normalizeStartingEquipmentGroups(obj);
     if (!groups.length) return `<div class="empty">No structured starting-equipment choices are available for this ${kind} in the cached 5etools data.</div>`;
     const current = equipmentOriginRecord(c, kind).choices;
-    return groups.map(group => `<div class="start-equip-group"><div class="subhead">Equipment choice ${group.group}</div><div class="start-equip-grid">${group.options.map(ch=>`<div class="start-equip-option ${String(current[group.group])===String(ch.key)?"selected":""}"><div class="start-equip-head"><strong>${escapeHtml(ch.label)}</strong>${String(current[group.group])===String(ch.key)?`<span class="status-pill">Applied</span>`:""}</div><div class="mini">${equipmentChoiceDescriptionHtml(ch)}</div><button class="button button-small button-primary" data-action="apply-starting-equipment" data-kind="${kind}" data-group="${group.group}" data-option="${escapeHtml(ch.key)}">Use ${escapeHtml(ch.label)}</button></div>`).join("")}</div></div>`).join("");
+    return groups.map(group => `<div class="start-equip-group" data-starting-equipment-choice="${kind}:${group.group}"><div class="subhead">Equipment choice ${group.group}</div><div class="start-equip-grid">${group.options.map(ch=>`<div class="start-equip-option ${String(current[group.group])===String(ch.key)?"selected":""}"><div class="start-equip-head"><strong>${escapeHtml(ch.label)}</strong>${String(current[group.group])===String(ch.key)?`<span class="status-pill">Applied</span>`:""}</div><div class="mini">${equipmentChoiceDescriptionHtml(ch)}</div><button class="button button-small button-primary" data-action="apply-starting-equipment" data-kind="${kind}" data-group="${group.group}" data-option="${escapeHtml(ch.key)}">Use ${escapeHtml(ch.label)}</button></div>`).join("")}</div></div>`).join("");
   };
   const startingEquipmentMarkup = `${d.classObj ? `<section class="card compact-gap"><div class="section-head"><div><div class="section-title">Starting equipment</div><div class="mini">These choices come from 5etools structured 2024 starting-equipment data. Applying an option replaces the app's previously applied starting equipment for that source.</div></div></div><h3 class="subhead">${escapeHtml(d.classObj.name)}</h3>${startOptions(d.classObj,"class")}${bg ? `<h3 class="subhead">${escapeHtml(bg.name)}</h3>${startOptions(bg,"background")}` : ""}</section>` : ""}`;
 
@@ -5786,7 +5920,7 @@ async function renderBuilder(app) {
     <section class="card"><div class="section-title">Identity</div><div class="form-grid three">
       <label class="field">Character name<input type="text" data-builder="name" value="${escapeHtml(c.name)}"></label>
       <label class="field">Player<input type="text" data-builder="player" value="${escapeHtml(c.player)}"></label>
-      <label class="field">Level<input type="number" min="1" max="20" data-builder="level" value="${c.level}"></label><label class="field">Experience Points<input type="number" min="0" step="1" data-builder="xp" value="${Number(c.xp || 0)}"></label>
+      <label class="field">Level<input type="number" min="1" max="20" data-builder="level" value="${c.level}" ${c.pendingLevelUp?"readonly":""}></label><label class="field">Experience Points<input type="number" min="0" step="1" data-builder="xp" value="${Number(c.xp || 0)}"></label>
       <label class="field">Species<select data-builder="species"><option value="">— Select —</option>${selectRefOptions(races,c.species)}</select></label>
       <label class="field">Background<select data-builder="background"><option value="">— Select —</option>${selectRefOptions(backgrounds,c.background)}</select></label>
       <label class="field">Class<select data-builder="class"><option value="">— Select —</option>${classOptions.map(x=>`<option value="${escapeHtml(refValue(x))}" ${c.class?.name===x.name && c.class?.source===x.source?"selected":""}>${escapeHtml(x.name)}${x.source!==DATA_SOURCE?` · ${escapeHtml(sourceLabel(x.source))}`:""}</option>`).join("")}</select></label>
@@ -5811,6 +5945,7 @@ ${startingEquipmentMarkup}
     <div class="grid two compact-gap"><section class="card"><div class="section-head"><div><div class="section-title">Combat overrides</div><div class="mini">Leave these blank to use automatic 2024 calculations.</div></div><button class="button button-small" data-action="clear-combat-overrides">Clear overrides</button></div><div class="form-grid two"><label class="field">AC override<input type="number" min="0" max="60" data-builder="acOverride" value="${c.acOverride ?? ""}" placeholder="Automatic: ${d.ac}"></label><label class="field">Speed override<input type="number" min="0" max="200" data-builder="speedOverride" value="${c.speedOverride ?? ""}" placeholder="Automatic"></label><label class="field">Max HP override<input type="number" min="1" max="1000" data-builder="hpMaxOverride" value="${c.hpMaxOverride ?? ""}" placeholder="Automatic: ${d.maxHp}"><small class="field-help">Automatic maximum: ${d.maxHp}</small></label><label class="field">Current HP<input type="number" min="0" max="1000" data-builder="hpCurrent" value="${c.hpAuto ? "" : (c.hpCurrent ?? "")}" placeholder="${c.hpAuto ? `Automatic (${c.hpCurrent ?? 0})` : "Manual"}"></label><label class="field">Temporary HP<input type="number" min="0" max="1000" data-builder="tempHp" value="${c.tempHp}"></label><label class="field full">Additional senses<input type="text" data-builder="senses" value="${escapeHtml((c.senses || []).join(", "))}" placeholder="e.g. Tremorsense 10 ft."></label></div></section><section class="card"><div class="section-title">Notes</div><p class="mini">The full character sheet follows the official 2024 two-page organization; this builder is for setup and corrections.</p><textarea data-builder="notes" rows="7">${escapeHtml(c.notes)}</textarea></section></div>
   `;
   bindEvents();
+  highlightIncompleteChoices();
   populateSubclasses(c.class?.name, c.subclass?.name);
 }
 
@@ -5903,8 +6038,8 @@ function spellAvailableToCharacter(spell, d = state.lastDerived) {
 async function renderSpellbook(app) {
   if (!state.data.spellFiles.has(String(DATA_SOURCE).toLowerCase())) await loadSpellSource(state.version, DATA_SOURCE);
   await hydrateSpellData(state.version, true);
-  const c = state.character;
   await deriveCharacter();
+  const c = state.character;
   let spells = Array.isArray(state.data.spells?.spell) ? officialEntries(state.data.spells, "spell").sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name)) : [];
   if (!spells.length) { await loadSpellSource(state.version, DATA_SOURCE); mergeOfficialSpells(); spells = officialEntries(state.data.spells, "spell").sort((a,b)=>a.level-b.level||a.name.localeCompare(b.name)); }
   const maxPrepared = state.lastDerived?.maxPrepared ?? null;
@@ -5932,7 +6067,9 @@ async function renderSpellbook(app) {
   };
   const automaticCount = automaticRefs.size;
 
-  app.innerHTML = `${pageHeader("SPELLBOOK", `${escapeHtml(c.name || "Character")} · Spells`, `${escapeHtml(className || "No class")} · 2024 official spell data`, `<button class="button" data-action="sheet">Character</button>`)}
+  const levelUpSpellTasks = activeChoiceChecklist(c,state.lastDerived).filter(task=>task.section==="spells");
+  const levelUpSpellGuidance = levelUpSpellTasks.length ? `<section class="card level-up-spell-guidance"><div class="section-title">Level ${c.level} spell choices</div>${levelUpSpellTasks.map(task=>`<p><strong>${task.done?"✓ ":""}${escapeHtml(task.label)}</strong>${task.detail?`<br><span class="mini">${escapeHtml(task.detail)}</span>`:""}</p>`).join("")}<button class="button" data-action="builder">${c.creationPending?"Back to creation choices":"Back to level-up choices"}</button></section>` : "";
+  app.innerHTML = `${pageHeader("SPELLBOOK", `${escapeHtml(c.name || "Character")} · Spells`, `${escapeHtml(className || "No class")} · 2024 official spell data`, `<button class="button" data-action="sheet">Character</button>`)}${levelUpSpellGuidance}
     <section class="card">${availableTabs.length ? `<div class="tabbar">${availableTabs.map(value=>`<button class="tab-inner ${tab===value?"active":""}" data-spell-tab="${value}">${tabLabel(value)}</button>`).join("")}</div><p class="muted">Only spells on your class or subclass list and of a level you can currently prepare are shown.${usesWizardSpellbook(state.lastDerived) ? " Wizard prepared spells must first be in your spellbook." : ""}${automaticCount ? ` ${automaticCount} always-prepared or bonus spell${automaticCount===1?" is":"s are"} added automatically.` : ""}</p><div class="spell-toolbar"><input id="spellSearch" type="search" placeholder="Search eligible 2024 spells…"><select id="spellLevel"><option value="all">All levels</option>${Array.from({length:10},(_,i)=>`<option value="${i}">${i===0?"Cantrip":`Level ${i}`}</option>`).join("")}</select></div><div id="spellResults" class="spell-results"></div>` : `<div class="empty">This class and subclass do not currently grant spell selection.</div>`}</section>`;
   bindEvents();
   if (availableTabs.length) renderSpellResults(available);
@@ -6157,6 +6294,16 @@ function bindConditionTooltips(root = document) {
 }
 
 
+function focusBuilderChoice(control,key) {
+  if (!/^data-[a-z-]+$/.test(control)) return false;
+  const targets = [...document.querySelectorAll(`[${control}]`)].filter(el=>el.getAttribute(control)===key);
+  const target = targets.find(el=>el.matches("select")&&!el.value)||targets[0];
+  if (!target) return false;
+  (target.closest(".feat-choice-row, .field") || target).scrollIntoView({behavior:"smooth",block:"center"});
+  (target.matches("input,select,button,textarea")?target:target.querySelector("input,select,button,textarea"))?.focus({preventScroll:true});
+  return true;
+}
+
 function bindEvents() {
   bindRuleReferenceLinks(document);
   bindConditionTooltips(document);
@@ -6167,26 +6314,28 @@ function bindEvents() {
         if (action === "sync") return syncData(true);
         if (action === "builder") { state.view = "builder"; return render(); }
         if (action === "level-up") return openLevelUp();
-        if (action === "finish-level-up") {
+        if (action === "finish-level-up" || action === "finish-creation") {
           await deriveCharacter();
-          const unresolved = levelUpChecklist(state.character,state.lastDerived).filter(task=>task.required&&!task.done);
-          if (unresolved.length) { showToast(`Choose ${unresolved[0].label.toLowerCase()} before finishing.`); return; }
+          const {unresolved}=completeCharacterSetup(state.character,state.lastDerived);
+          if (unresolved.length) { const task=unresolved[0]; showToast(`${task.label} before finishing.`); if (task.control) focusBuilderChoice(task.control,task.choiceKey); return; }
           state.character.pendingLevelUp = null;
+          state.character.creationPending = false;
           await saveCharacter(); state.view = "sheet"; return render();
         }
         if (action === "level-up-jump") {
-          if (el.dataset.target === "spells") { state.view="spells"; return render(); }
+          if (el.dataset.target === "spells") { state.view="spells"; state.spellPickerTab=el.dataset.spellTabTarget||"prepared"; return render(); }
+          if (el.dataset.control && focusBuilderChoice(el.dataset.control,el.dataset.choiceKey)) return;
           const heading = el.dataset.target === "identity" ? "Identity" : "Class feature choices";
           const target = [...document.querySelectorAll(".card")].find(card => card.querySelector(":scope > .section-title, :scope > .section-head .section-title")?.textContent === heading);
           target?.scrollIntoView({behavior:"smooth",block:"start"}); return;
         }
-        if (action === "sheet") { state.view = "sheet"; return render(); }
+        if (action === "sheet") return navigateView("sheet");
         if (action === "sheet-page") { state.sheetPage = Number(el.dataset.page || 1); return render(); }
-        if (action === "spells") { state.view = "spells"; state.spellPickerTab = "prepared"; return render(); }
-        if (action === "spells-tab") { state.view = "spells"; state.spellPickerTab = el.dataset.spellTab || "prepared"; return render(); }
-        if (action === "equipment") { state.view = "equipment"; return render(); }
+        if (action === "spells") { state.spellPickerTab="prepared"; return navigateView("spells"); }
+        if (action === "spells-tab") { state.spellPickerTab=el.dataset.spellTab||"prepared"; return navigateView("spells"); }
+        if (action === "equipment") return navigateView("equipment");
         if (action === "character-menu") return openCharacterMenu();
-        if (action === "save-builder") { await readBuilder(); await saveCharacter(); await deriveCharacter(); state.view = "sheet"; showToast("Character saved."); return render(); }
+        if (action === "save-builder") { await readBuilder(); await saveCharacter(); await deriveCharacter(); showToast("Character saved."); return navigateView("sheet"); }
         if (action === "optional-feature-detail") { const ref = splitRefId(decodeURIComponent(el.dataset.name || "")); const obj = findOfficial(state.data.optionalfeatures, "optionalfeature", ref.name, ref.source || null); if (obj) return openModal(obj.name, `<div class="modal-kicker">${escapeHtml(sourceLabel(obj.source))}</div><div class="rules-text formatted-rules">${renderRichEntries(obj.entries)}</div>`); }
         if (action === "apply-starting-equipment") { await readBuilder(); const kind = el.dataset.kind; const group = el.dataset.group || "1"; const option = el.dataset.option; const obj = kind === "class" ? state.lastDerived?.classObj : state.lastDerived?.backgroundObj; if (obj) await applyStartingEquipment(kind, group, option, obj); return render(); }
         if (action === "export") return exportCharacter();
@@ -6320,8 +6469,9 @@ function bindEvents() {
   document.querySelectorAll("[data-builder]").forEach(el => {
     el.onchange = async () => {
       const key = el.dataset.builder;
+      const before=activeChoiceChecklist();
       await readBuilder();
-      if (["background","bgMode","bgPlus2","bgPlus1","bgPlus1b","bgPlus1c","species","class","subclass","feat","level","xp"].includes(key)) render();
+      if (["background","bgMode","bgPlus2","bgPlus1","bgPlus1b","bgPlus1c","species","class","subclass","feat","level","xp"].includes(key)) await renderAndFocusNewChoices(before);
     };
   });
   document.querySelectorAll("[data-class-proficiency-choice]").forEach(el => el.onchange = async () => {
@@ -6331,7 +6481,7 @@ function bindEvents() {
     else state.character.classProficiencyChoices[key] = el.value;
     await saveCharacter(); render();
   });
-  document.querySelectorAll("[data-class-feature-choice]").forEach(el => el.onchange = async () => {
+  document.querySelectorAll("[data-class-feature-choice]").forEach(el => el.onchange = async () => { const before=activeChoiceChecklist();
     if (!state.character.classFeatureChoices) state.character.classFeatureChoices = {};
     const key = el.dataset.classFeatureChoice;
     if (!el.value) delete state.character.classFeatureChoices[key];
@@ -6339,7 +6489,7 @@ function bindEvents() {
       const ref = splitRefId(el.value);
       state.character.classFeatureChoices[key] = { name: ref.name, source: ref.source || DATA_SOURCE };
     }
-    await saveCharacter(); render();
+    await saveCharacter(); await renderAndFocusNewChoices(before);
   });
   document.querySelectorAll("[data-feature-spell-pick]").forEach(el => el.onchange = async () => {
     if (!state.character.featureSpellChoices) state.character.featureSpellChoices = {};
@@ -6357,7 +6507,7 @@ function bindEvents() {
     state.character.featureSpellChoices[specKey] = record;
     await saveCharacter(); render();
   });
-  document.querySelectorAll("[data-feature-feat]").forEach(el => el.onchange = async () => {
+  document.querySelectorAll("[data-feature-feat]").forEach(el => el.onchange = async () => { const before=activeChoiceChecklist();
     if (!state.character.featureFeatChoices) state.character.featureFeatChoices = {};
     const key = el.dataset.featureFeat;
     if (!el.value) delete state.character.featureFeatChoices[key];
@@ -6365,22 +6515,24 @@ function bindEvents() {
       const ref = splitRefId(el.value);
       state.character.featureFeatChoices[key] = { name:ref.name, source:ref.source || DATA_SOURCE };
     }
-    await saveCharacter(); render();
+    await saveCharacter(); await renderAndFocusNewChoices(before);
   });
-  document.querySelectorAll("[data-optional-feature]").forEach(el => el.onchange = async () => {
+  document.querySelectorAll("[data-optional-feature]").forEach(el => el.onchange = async () => { const before=activeChoiceChecklist();
     const key = el.dataset.optionalFeature;
     if (!state.character.optionalFeatureChoices) state.character.optionalFeatureChoices = {};
     if (!el.value) delete state.character.optionalFeatureChoices[key];
     else { const ref = splitRefId(el.value); state.character.optionalFeatureChoices[key] = { name: ref.name, source: ref.source || DATA_SOURCE }; }
-    await saveCharacter(); render();
+    await saveCharacter(); await renderAndFocusNewChoices(before);
   });
-  document.querySelectorAll("[data-progression-feat]").forEach(el => el.onchange = async () => {
+  document.querySelectorAll("[data-progression-feat]").forEach(el => el.onchange = async () => { const before=activeChoiceChecklist();
     if (!state.character.progressionFeats) state.character.progressionFeats = {};
     const key = el.dataset.progressionFeat;
     if (!el.value) delete state.character.progressionFeats[key];
     else { const ref = splitRefId(el.value); state.character.progressionFeats[key] = { name: ref.name, source: ref.source || DATA_SOURCE }; }
     state.character.feats = [...(state.character.feat ? [state.character.feat] : []), ...(state.character.additionalFeats || []), ...Object.values(state.character.progressionFeats)];
-    await saveCharacter(); render();
+    await saveCharacter(); await renderAndFocusNewChoices(before);
+    const feat = selectedFeatObjects(state.character).find(f=>f._instanceKey===`progression-${key}`);
+    if (isAbilityScoreImprovementFeat(feat)) focusBuilderChoice("data-feat-ability-mode",featInstanceKey(feat));
   });
   document.querySelectorAll("[data-weapon-mastery-select]").forEach(el => el.onchange = async () => {
     const key = el.value; const max = state.lastDerived?.weaponMasteryCount || 0;
@@ -6415,7 +6567,10 @@ function bindEvents() {
     const key = el.dataset.featAbilityMode;
     if (el.value) state.character.featAbilityModes[key] = el.value;
     else delete state.character.featAbilityModes[key];
-    await saveCharacter(); render();
+    await saveCharacter(); await render();
+    const feat = selectedFeatObjects(state.character).find(f=>featInstanceKey(f)===key);
+    const spec = featAbilitySpecs(feat)[0];
+    if (spec) focusBuilderChoice("data-feat-ability",featSpecKey(feat,spec));
   });
   document.querySelectorAll("[data-feat-ability]").forEach(el => el.onchange = async () => { state.character.featAbilityChoices[el.dataset.featAbility] = el.value; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-save]").forEach(el => el.onchange = async () => { state.character.featSaveChoices[el.dataset.featSave] = el.value; await saveCharacter(); render(); });
@@ -6424,7 +6579,7 @@ function bindEvents() {
   document.querySelectorAll("[data-feat-mixed]").forEach(el => el.onchange = async () => { const key=el.dataset.featMixed; if (el.value) state.character.featMixedChoices[key]=el.value; else delete state.character.featMixedChoices[key]; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-expertise]").forEach(el => el.onchange = async () => { const key=el.dataset.featExpertise; if (el.value) state.character.featExpertiseChoices[key]=el.value; else delete state.character.featExpertiseChoices[key]; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-damage]").forEach(el => el.onchange = async () => { const key=el.dataset.featDamage; if (el.value) state.character.featDamageChoices[key]=el.value; else delete state.character.featDamageChoices[key]; await saveCharacter(); render(); });
-  document.querySelectorAll("[data-feat-spell-list]").forEach(el => el.onchange = async () => { const key=el.dataset.featSpellList; const cur=state.character.featSpellChoices[key]||{}; state.character.featSpellChoices[key]=el.value?{...cur,list:el.value,picks:{}}:{...cur,picks:{}}; if(!el.value) delete state.character.featSpellChoices[key].list; await saveCharacter(); render(); });
+  document.querySelectorAll("[data-feat-spell-list]").forEach(el => el.onchange = async () => { const before=activeChoiceChecklist(); const key=el.dataset.featSpellList; const cur=state.character.featSpellChoices[key]||{}; state.character.featSpellChoices[key]=el.value?{...cur,list:el.value,picks:{}}:{...cur,picks:{}}; if(!el.value) delete state.character.featSpellChoices[key].list; await saveCharacter(); await renderAndFocusNewChoices(before); });
   document.querySelectorAll("[data-feat-spell-ability]").forEach(el => el.onchange = async () => { const key=el.dataset.featSpellAbility; const cur=state.character.featSpellChoices[key]||{}; state.character.featSpellChoices[key]=el.value?{...cur,ability:el.value}:{...cur}; if(!el.value) delete state.character.featSpellChoices[key].ability; await saveCharacter(); render(); });
   document.querySelectorAll("[data-feat-spell-pick]").forEach(el => el.onchange = async () => {
     const key=el.dataset.featSpellPick, choiceKey=el.dataset.featSpellChoice, index=Math.max(0,Number(el.dataset.featSpellIndex||0));
@@ -6436,7 +6591,7 @@ function bindEvents() {
     state.character.featSpellChoices[key]={...cur,picks};
     await saveCharacter(); render();
   });
-  document.querySelectorAll("[data-species-choice]").forEach(el => el.onchange = async () => { const key=el.dataset.speciesChoice; const cur=state.character.speciesChoices[key]||{}; if(el.value) state.character.speciesChoices[key]={...cur,value:el.value}; else delete state.character.speciesChoices[key]; await saveCharacter(); render(); });
+  document.querySelectorAll("[data-species-choice]").forEach(el => el.onchange = async () => { const before=activeChoiceChecklist(); const key=el.dataset.speciesChoice; const cur=state.character.speciesChoices[key]||{}; if(el.value) state.character.speciesChoices[key]={...cur,value:el.value}; else delete state.character.speciesChoices[key]; await saveCharacter(); await renderAndFocusNewChoices(before); });
   document.querySelectorAll("[data-species-choice-ability]").forEach(el => el.onchange = async () => { const key=el.dataset.speciesChoiceAbility; const cur=state.character.speciesChoices[key]||{}; if(el.value) state.character.speciesChoices[key]={...cur,ability:el.value}; else { const next={...cur}; delete next.ability; if(next.value) state.character.speciesChoices[key]=next; else delete state.character.speciesChoices[key]; } await saveCharacter(); render(); });
   document.querySelectorAll("[data-species-spell-choice]").forEach(el => el.onchange = async () => {
     const key=el.dataset.speciesSpellChoice, index=Math.max(0,Number(el.dataset.speciesSpellIndex||0));
@@ -6455,7 +6610,7 @@ function bindEvents() {
   if (search) search.oninput = () => { updateSpellResultFilter().catch(console.warn); }; if (level) level.onchange = () => { updateSpellResultFilter().catch(console.warn); };
   document.querySelectorAll("[data-currency]").forEach(el => el.onchange = async () => { state.character.currency[el.dataset.currency] = Math.max(0, Number(el.value || 0)); await saveCharacter(); });
   const classSelect = document.querySelector('[data-builder="class"]');
-  if (classSelect) classSelect.onchange = async () => {
+  if (classSelect) classSelect.onchange = async () => { const before=activeChoiceChecklist();
     await readBuilder();
     state.character.subclass = null;
     const obj = state.character.class ? getClassFromFile(await getClassDetails(state.character.class.name), state.character.class.name, state.character.class.source || null) : null;
@@ -6470,10 +6625,10 @@ function bindEvents() {
       await saveCharacter();
     }
     await populateSubclasses(splitRefId(classSelect.value).name, null);
-    render();
+    await renderAndFocusNewChoices(before);
   };
   const backgroundSelect = document.querySelector('[data-builder="background"]');
-  if (backgroundSelect) backgroundSelect.onchange = async () => {
+  if (backgroundSelect) backgroundSelect.onchange = async () => { const before=activeChoiceChecklist();
     const previous = state.character.background?.name;
     await readBuilder();
     const obj = state.character.background ? findBackground(state.character.background.name, state.character.background.source || null) : null;
@@ -6487,10 +6642,10 @@ function bindEvents() {
       removeStartingEquipmentOrigin(state.character, "background");
       await saveCharacter();
     }
-    render();
+    await renderAndFocusNewChoices(before);
   };
   const subclassSelect = document.querySelector('[data-builder="subclass"]');
-  if (subclassSelect) subclassSelect.onchange = async () => { await readBuilder(); render(); };
+  if (subclassSelect) subclassSelect.onchange = async () => { const before=activeChoiceChecklist(); await readBuilder(); await renderAndFocusNewChoices(before); };
 }
 
 function debounce(fn, ms) { let timer; return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); }; }
@@ -6503,7 +6658,7 @@ async function readBuilder() {
   const get = key => document.querySelector(`[data-builder="${key}"]`);
   if (get("name")) c.name = get("name").value.trim() || "Unnamed Character";
   if (get("player")) c.player = get("player").value.trim();
-  if (get("level")) c.level = clamp(Number(get("level").value || 1),1,20);
+  if (get("level") && !c.pendingLevelUp) c.level = clamp(Number(get("level").value || 1),1,20);
   if (get("xp")) c.xp = Math.max(0, Number(get("xp").value || 0));
   const previousClass = c.class?.name || null;
   const previousBackground = c.background?.name || null;
@@ -6653,6 +6808,7 @@ function renderResourceManager() { closeModal(); openResourceManager(); }
 async function openLevelUp() {
   const d=await deriveCharacter();
   const c=state.character;
+  if (unfinishedCharacter(c)) { showToast("Finish your current character choices before leveling up again."); state.view="builder"; return render(); }
   const preview=levelUpPreview(c,d);
   if (!preview) { showToast(c.level>=20?"Level 20 is the maximum.":"Choose a class before leveling up."); return; }
   const features=[...preview.newClassFeatures,...preview.newSubclassFeatures];
@@ -6660,6 +6816,7 @@ async function openLevelUp() {
   const changes=[
     ...(preview.proficiencyAfter>preview.proficiencyBefore?[`Proficiency Bonus: +${preview.proficiencyBefore} → +${preview.proficiencyAfter}`]:[]),
     ...slots,
+    ...(preview.spellbookAdded?["Add 2 new Wizard spells to your spellbook (in addition to Savant spells)"]:[]),
     ...(preview.cantripsAfter>preview.cantripsBefore?[`Cantrips: ${preview.cantripsBefore} → ${preview.cantripsAfter}`]:[]),
     ...(preview.preparedAfter>preview.preparedBefore?[`Prepared spells: ${preview.preparedBefore} → ${preview.preparedAfter}`]:[]),
     ...(preview.needsSubclass?["Choose a subclass"]:[]),
@@ -7006,7 +7163,7 @@ ensureCacheProgressRoot();
 window.addEventListener("online",()=>{state.online=true;updateHeader();showToast("Back online.");});
 window.addEventListener("offline",()=>{state.online=false;updateHeader();showToast("Offline mode. Cached rules data remains available.");});
 window.addEventListener("beforeinstallprompt",event=>{event.preventDefault();state.deferredInstallPrompt=event;updateHeader();});
-document.querySelectorAll(".tab").forEach(btn=>btn.addEventListener("click",()=>{state.view=btn.dataset.view;render();}));
+document.querySelectorAll(".tab").forEach(btn=>btn.addEventListener("click",()=>navigateView(btn.dataset.view)));
 
 function ensureCacheProgressRoot() {
   if (document.querySelector("#cacheProgressRoot")) return;
